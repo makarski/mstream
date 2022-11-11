@@ -1,0 +1,8 @@
+[[connectors]]
+name = "myapp"
+db_connection = "mongodb://localhost:27017,localhost:27018,localhost:27019"
+db_name = "mydb"
+db_collection = "mycollecttion"
+schema = "projects/{project_name}/schemas/{schema_name}"
+topic = "projects/{project_name}/topics/{topic_name}"
+subscription = "projects/{project_name}/subscriptions/{schema_name}" # optional
