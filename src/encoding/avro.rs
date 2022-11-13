@@ -77,18 +77,24 @@ mod tests {
     use mongodb::bson::doc;
     use crate::encoding::avro::encode2;
     #[test]
-    fn encode2_with_valid_schema_and_payload(){
+    fn encode2_with_valid_schema_and_valid_payload(){
         let raw_schema = r###"
             {
                 "type" : "record",
                 "name" : "Employee",
                 "fields" : [
                 { "name" : "name" , "type" : "string" },
-                { "name" : "age" , "type" : "int" }
+                { "name" : "age" , "type" : "int" },
+                { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]}
                 ]
             }
         "###;
-        let mongodb_document = doc!{"name": "Jon Doe", "age": 32, "additional_field": "foobar"};
+        let mongodb_document = doc!{
+            "name": "Jon Doe",
+            "age": 32,
+            "gender": "OTHER",
+            "additional_field": "foobar"
+        };
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_ok())
     }
@@ -122,5 +128,5 @@ mod tests {
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_err())
     }
-
+    
 }
