@@ -70,3 +70,57 @@ impl From<&Bson> for Wrap {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use mongodb::bson::doc;
+    use crate::encoding::avro::encode2;
+    #[test]
+    fn encode2_with_valid_schema_and_payload(){
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "Employee",
+                "fields" : [
+                { "name" : "name" , "type" : "string" },
+                { "name" : "age" , "type" : "int" }
+                ]
+            }
+        "###;
+        let mongodb_document = doc!{"name": "Jon Doe", "age": 32, "additional_field": "foobar"};
+        let result = encode2(mongodb_document, raw_schema);
+        assert!(result.is_ok())
+    }
+
+    #[test]
+    fn encode2_with_invalid_schema(){
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "Employee",
+            }
+        "###;
+        let mongodb_document = doc!{"name": "Jon Doe", "age": 32};
+        let result = encode2(mongodb_document, raw_schema);
+        assert!(result.is_err())
+    }
+
+    #[test]
+    fn encode2_with_valid_schema_but_invalid_payload(){
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "Employee",
+                "fields" : [
+                { "name" : "name" , "type" : "string" },
+                { "name" : "age" , "type" : "int" }
+                ]
+            }
+        "###;
+        let mongodb_document = doc!{"first_name": "Jon", "last_name": "Doe"};
+        let result = encode2(mongodb_document, raw_schema);
+        assert!(result.is_err())
+    }
+
+}
