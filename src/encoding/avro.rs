@@ -83,8 +83,8 @@ mod tests {
             "name": "Jon Doe",
             "age": 32,
             "gender": "OTHER",
-            "additional_field": "foobar"  // will be omitted
-            // "nickname": "null" // will be omitted
+            "additional_field": "foobar",  // will be omitted
+            "nickname": null // will be omitted
         };
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_ok())
