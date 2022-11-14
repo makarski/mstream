@@ -13,24 +13,13 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
     // find a field in bson
     // cast the bson value to expected avro value
     // put avro value into the record
-
-    let field_names: Vec<String> = record
-        .fields
-        .iter()
-        .map(|(field_name, _)| field_name.clone())
-        .collect();
-
-    for field_name in field_names {
+    for field_name in mongo_doc.keys().cloned(){
         let db_val = mongo_doc
             .get(&field_name)
             .ok_or_else(|| anyhow::anyhow!("failed to find value for key: {}", field_name))?;
-
         let avro_val = Wrap::from(db_val).0;
         record.put(&field_name, avro_val);
     }
-
-    // println!("{:?}", record);
-
     avro_writer.append(record)?;
     Ok(avro_writer.into_inner()?)
 }
@@ -78,6 +67,7 @@ mod tests {
     use crate::encoding::avro::encode2;
     #[test]
     fn encode2_with_valid_schema_and_valid_payload(){
+        // { "name": "nickname", "type": ["null", "string"], "default": null}
         let raw_schema = r###"
             {
                 "type" : "record",
@@ -93,7 +83,8 @@ mod tests {
             "name": "Jon Doe",
             "age": 32,
             "gender": "OTHER",
-            "additional_field": "foobar"
+            "additional_field": "foobar"  // will be omitted
+            // "nickname": "null" // will be omitted
         };
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_ok())
@@ -128,5 +119,5 @@ mod tests {
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_err())
     }
-    
+
 }
