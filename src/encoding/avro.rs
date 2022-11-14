@@ -71,13 +71,13 @@ impl From<&Bson> for Wrap {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
+    use crate::{encoding::avro::encode2, pubsub::api::schema};
+    use avro_rs::{Reader, Schema};
     use mongodb::bson::doc;
-    use crate::encoding::avro::encode2;
     #[test]
-    fn encode2_with_valid_schema_and_valid_payload(){
+    fn encode2_with_valid_schema_and_valid_payload() {
         let raw_schema = r###"
             {
                 "type" : "record",
@@ -89,31 +89,50 @@ mod tests {
                 ]
             }
         "###;
-        let mongodb_document = doc!{
+        let mongodb_document = doc! {
             "name": "Jon Doe",
             "age": 32,
             "gender": "OTHER",
             "additional_field": "foobar"
         };
         let result = encode2(mongodb_document, raw_schema);
-        assert!(result.is_ok())
+
+        let schema = Schema::parse_str(&raw_schema);
+        assert!(schema.is_ok());
+
+        let schema = schema.unwrap();
+
+        assert!(result.is_ok());
+
+        let results = result.unwrap().clone();
+
+        let reader = Reader::with_schema(&schema, results.as_slice());
+
+        assert!(reader.is_ok());
+
+        for v in reader.unwrap().into_iter() {
+            assert!(v.is_ok());
+            let v = v.unwrap();
+
+            println!("{:?}", v);
+        }
     }
 
     #[test]
-    fn encode2_with_invalid_schema(){
+    fn encode2_with_invalid_schema() {
         let raw_schema = r###"
             {
                 "type" : "record",
                 "name" : "Employee",
             }
         "###;
-        let mongodb_document = doc!{"name": "Jon Doe", "age": 32};
+        let mongodb_document = doc! {"name": "Jon Doe", "age": 32};
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_err())
     }
 
     #[test]
-    fn encode2_with_valid_schema_but_invalid_payload(){
+    fn encode2_with_valid_schema_but_invalid_payload() {
         let raw_schema = r###"
             {
                 "type" : "record",
@@ -124,9 +143,8 @@ mod tests {
                 ]
             }
         "###;
-        let mongodb_document = doc!{"first_name": "Jon", "last_name": "Doe"};
+        let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_err())
     }
-    
 }
