@@ -13,7 +13,7 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
     // find a field in bson
     // cast the bson value to expected avro value
     // put avro value into the record
-    for field_name in mongo_doc.keys().cloned(){
+    for field_name in mongo_doc.keys(){
         let db_val = mongo_doc
             .get(&field_name)
             .ok_or_else(|| anyhow::anyhow!("failed to find value for key: {}", field_name))?;
