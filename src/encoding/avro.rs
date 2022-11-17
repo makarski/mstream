@@ -13,7 +13,7 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
     // find a field in bson
     // cast the bson value to expected avro value
     // put avro value into the record
-    for field_name in mongo_doc.keys(){
+    for field_name in mongo_doc.keys() {
         let db_val = mongo_doc
             .get(&field_name)
             .ok_or_else(|| anyhow::anyhow!("failed to find value for key: {}", field_name))?;
@@ -60,13 +60,12 @@ impl From<&Bson> for Wrap {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use mongodb::bson::doc;
     use crate::encoding::avro::encode2;
+    use mongodb::bson::doc;
     #[test]
-    fn encode2_with_valid_schema_and_valid_payload(){
+    fn encode2_with_valid_schema_and_valid_payload() {
         // { "name": "nickname", "type": ["null", "string"], "default": null}
         let raw_schema = r###"
             {
@@ -79,7 +78,7 @@ mod tests {
                 ]
             }
         "###;
-        let mongodb_document = doc!{
+        let mongodb_document = doc! {
             "name": "Jon Doe",
             "age": 32,
             "gender": "OTHER",
@@ -91,20 +90,20 @@ mod tests {
     }
 
     #[test]
-    fn encode2_with_invalid_schema(){
+    fn encode2_with_invalid_schema() {
         let raw_schema = r###"
             {
                 "type" : "record",
                 "name" : "Employee",
             }
         "###;
-        let mongodb_document = doc!{"name": "Jon Doe", "age": 32};
+        let mongodb_document = doc! {"name": "Jon Doe", "age": 32};
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_err())
     }
 
     #[test]
-    fn encode2_with_valid_schema_but_invalid_payload(){
+    fn encode2_with_valid_schema_but_invalid_payload() {
         let raw_schema = r###"
             {
                 "type" : "record",
@@ -115,9 +114,8 @@ mod tests {
                 ]
             }
         "###;
-        let mongodb_document = doc!{"first_name": "Jon", "last_name": "Doe"};
+        let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
         let result = encode2(mongodb_document, raw_schema);
         assert!(result.is_err())
     }
-
 }
