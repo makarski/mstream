@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use avro_rs::{types::Record, Schema, Writer};
 use mongodb::bson::Document;
 
@@ -8,18 +8,15 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
     let mut avro_writer = Writer::new(&schema, Vec::new());
     let mut record = Record::new(avro_writer.schema()).context("failed to create record")?;
 
-    // need to read avro schema
-    // pick a data type by field name
-    // find a field in bson
-    // cast the bson value to expected avro value
-    // put avro value into the record
     for field_name in mongo_doc.keys() {
         let db_val = mongo_doc
             .get(&field_name)
             .ok_or_else(|| anyhow::anyhow!("failed to find value for key: {}", field_name))?;
-        let avro_val = Wrap::from(db_val).0;
+
+        let avro_val = Wrap::try_from(db_val)?.0;
         record.put(&field_name, avro_val);
     }
+
     avro_writer.append(record)?;
     Ok(avro_writer.into_inner()?)
 }
@@ -30,40 +27,105 @@ use mongodb::bson::Bson;
 
 struct Wrap(AvroVal);
 
-impl From<&Bson> for Wrap {
-    fn from(bson_val: &Bson) -> Self {
+impl TryFrom<&Bson> for Wrap {
+    type Error = anyhow::Error;
+
+    /// Converts Bson Value into Avro
+    ///
+    /// Mongo types reference: https://www.mongodb.com/docs/manual/reference/bson-types/
+    /// Avro types reference: https://docs.oracle.com/cd/E26161_02/html/GettingStartedGuide/avroschemas.html#avro-primitivedatatypes
+    ///
+    /// Supported bson->avro type conversion:
+    ///     * bool   -> boolean
+    ///     * double -> double
+    ///     * int32  -> int
+    ///     * int64  -> long
+    ///     * null   -> null
+    ///     * string -> string
+    ///     * array  -> array
+    ///     * object -> record
+    fn try_from(bson_val: &Bson) -> Result<Self, Self::Error> {
         let bson_type = bson_val.element_type();
 
-        match bson_type {
-            ElementType::Boolean => Wrap(AvroVal::Boolean(bson_val.as_bool().unwrap())),
-            ElementType::Double => Wrap(AvroVal::Double(bson_val.as_f64().unwrap())),
-            ElementType::Int32 => Wrap(AvroVal::Int(bson_val.as_i32().unwrap())),
-            ElementType::Int64 => Wrap(AvroVal::Long(bson_val.as_i64().unwrap())),
+        let result = match bson_type {
+            ElementType::Boolean => {
+                Wrap(AvroVal::Boolean(bson_val.as_bool().ok_or_else(|| {
+                    anyhow!("failed to convert bson to boolean: {}", bson_val)
+                })?))
+            }
+            // Only double (64 bit) is supported. This should be used instead of Float (32bit)
+            ElementType::Double => {
+                Wrap(AvroVal::Double(bson_val.as_f64().ok_or_else(|| {
+                    anyhow!("failed to convert bson to double: {}", bson_val)
+                })?))
+            }
+            ElementType::Int32 => {
+                Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
+                    anyhow!("failed to convert bson to int: {}", bson_val)
+                })?))
+            }
+            ElementType::Int64 => {
+                Wrap(AvroVal::Long(bson_val.as_i64().ok_or_else(|| {
+                    anyhow!("failed to convert bson to long: {}", bson_val)
+                })?))
+            }
             ElementType::Null => Wrap(AvroVal::Null),
-            ElementType::String => Wrap(AvroVal::String(bson_val.as_str().unwrap().to_owned())),
-            ElementType::Undefined => Wrap(AvroVal::Null),
-            ElementType::EmbeddedDocument => todo!(), // need - hashmap + recursive
-            ElementType::Array => todo!(),            // need - recursive
-            ElementType::Binary => todo!(),           // to check
+            ElementType::String => Wrap(AvroVal::String(
+                bson_val
+                    .as_str()
+                    .ok_or_else(|| anyhow!("failed to convert bson to string: {}", bson_val))?
+                    .to_owned(),
+            )),
+            ElementType::EmbeddedDocument => {
+                let bson_map = bson_val
+                    .as_document()
+                    .ok_or_else(|| anyhow!("failed to convert to document: {}", bson_val))?;
+
+                let mut avro_rec = Vec::new();
+                for (key, bson_v) in bson_map.into_iter() {
+                    let avro_v = Self::try_from(bson_v)?.0;
+                    avro_rec.push((key.clone(), avro_v));
+                }
+
+                Wrap(AvroVal::Record(avro_rec))
+            }
+            ElementType::Array => {
+                let bson_vec = bson_val
+                    .as_array()
+                    .ok_or_else(|| anyhow!("failed to convert bson to array: {}", bson_val))?;
+
+                let mut avro_arr = Vec::new();
+                for bson_v in bson_vec {
+                    let avro_v = Self::try_from(bson_v)?;
+                    avro_arr.push(avro_v.0);
+                }
+
+                Wrap(AvroVal::Array(avro_arr))
+            }
+
+            ElementType::Binary => todo!(), // to check
             ElementType::ObjectId => todo!(),
             ElementType::DateTime => todo!(), // need
             ElementType::RegularExpression => todo!(),
-            ElementType::DbPointer => todo!(),
             ElementType::JavaScriptCode => todo!(),
-            ElementType::Symbol => todo!(),
-            ElementType::JavaScriptCodeWithScope => todo!(),
             ElementType::Timestamp => todo!(),  // need
             ElementType::Decimal128 => todo!(), // need
             ElementType::MaxKey => todo!(),
             ElementType::MinKey => todo!(),
-        }
+            ElementType::JavaScriptCodeWithScope => unimplemented!("deprecated in mongodb 4.4"),
+            ElementType::Undefined | ElementType::DbPointer | ElementType::Symbol => {
+                unimplemented!("deprecated in mongodb")
+            }
+        };
+
+        Ok(result)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::encoding::avro::encode2;
-    use anyhow::bail;
+    use anyhow::{bail, Context};
     use avro_rs::{Reader, Schema};
     use mongodb::bson::doc;
 
@@ -77,7 +139,17 @@ mod tests {
                 "fields" : [
                     { "name" : "name" , "type" : "string" },
                     { "name" : "age" , "type" : "int" },
-                    { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]}
+                    { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]},
+                    { "name": "teams", "type": "array", "items": "string" },
+                    { "name": "performance_grades", "type": "array", "items": "int" },
+                    { "name": "project", "type": {
+                        "type": "record",
+                        "name": "EmployeeProject",
+                        "fields": [
+                            { "name": "title", "type": "string" },
+                            { "name": "rating", "type": "double" }
+                        ]
+                    }}
                 ]
             }
         "###;
@@ -86,6 +158,12 @@ mod tests {
             "name": "Jon Doe",
             "age": 32,
             "gender": "OTHER",
+            "teams": ["team A", "team B", "team C"],
+            "performance_grades": [3, 3, 5],
+            "project": doc! {
+                "title": "Awesome Project",
+                "rating": 92.5_f64
+            },
             "additional_field": "foobar",  // will be omitted
             "nickname": null // will be omitted
         };
@@ -125,8 +203,12 @@ mod tests {
     }
 
     fn validate_avro_encoded(avro_b: Vec<u8>, raw_schema: &str) -> anyhow::Result<()> {
-        let compiled_schema = Schema::parse_str(raw_schema)?;
-        let reader = Reader::with_schema(&compiled_schema, avro_b.as_slice())?;
+        let compiled_schema = Schema::parse_str(raw_schema)
+            .context("failed to compile schema from a raw definition")?;
+
+        let reader = Reader::with_schema(&compiled_schema, avro_b.as_slice())
+            .context("failed to compile avro reader")?;
+
         for actual_record in reader.into_iter() {
             if !actual_record?.validate(&compiled_schema) {
                 bail!("failed to validate schema");
