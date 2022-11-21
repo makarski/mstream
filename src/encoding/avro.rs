@@ -63,21 +63,25 @@ impl From<&Bson> for Wrap {
 #[cfg(test)]
 mod tests {
     use crate::encoding::avro::encode2;
+    use anyhow::bail;
+    use avro_rs::{Reader, Schema};
     use mongodb::bson::doc;
+
     #[test]
-    fn encode2_with_valid_schema_and_valid_payload() {
+    fn encode2_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {
         // { "name": "nickname", "type": ["null", "string"], "default": null}
         let raw_schema = r###"
             {
                 "type" : "record",
                 "name" : "Employee",
                 "fields" : [
-                { "name" : "name" , "type" : "string" },
-                { "name" : "age" , "type" : "int" },
-                { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]}
+                    { "name" : "name" , "type" : "string" },
+                    { "name" : "age" , "type" : "int" },
+                    { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]}
                 ]
             }
         "###;
+
         let mongodb_document = doc! {
             "name": "Jon Doe",
             "age": 32,
@@ -85,11 +89,13 @@ mod tests {
             "additional_field": "foobar",  // will be omitted
             "nickname": null // will be omitted
         };
-        let result = encode2(mongodb_document, raw_schema);
-        assert!(result.is_ok())
+
+        let result = encode2(mongodb_document, raw_schema)?;
+        validate_avro_encoded(result, raw_schema)
     }
 
     #[test]
+    #[should_panic(expected = "Failed to parse schema from JSON")]
     fn encode2_with_invalid_schema() {
         let raw_schema = r###"
             {
@@ -98,24 +104,35 @@ mod tests {
             }
         "###;
         let mongodb_document = doc! {"name": "Jon Doe", "age": 32};
-        let result = encode2(mongodb_document, raw_schema);
-        assert!(result.is_err())
+        encode2(mongodb_document, raw_schema).unwrap();
     }
 
     #[test]
+    #[should_panic(expected = "Value does not match schema")]
     fn encode2_with_valid_schema_but_invalid_payload() {
         let raw_schema = r###"
             {
                 "type" : "record",
                 "name" : "Employee",
                 "fields" : [
-                { "name" : "name" , "type" : "string" },
-                { "name" : "age" , "type" : "int" }
+                    { "name" : "name" , "type" : "string" },
+                    { "name" : "age" , "type" : "int" }
                 ]
             }
         "###;
         let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
-        let result = encode2(mongodb_document, raw_schema);
-        assert!(result.is_err())
+        encode2(mongodb_document, raw_schema).unwrap();
+    }
+
+    fn validate_avro_encoded(avro_b: Vec<u8>, raw_schema: &str) -> anyhow::Result<()> {
+        let compiled_schema = Schema::parse_str(raw_schema)?;
+        let reader = Reader::with_schema(&compiled_schema, avro_b.as_slice())?;
+        for actual_record in reader.into_iter() {
+            if !actual_record?.validate(&compiled_schema) {
+                bail!("failed to validate schema");
+            }
+        }
+
+        Ok(())
     }
 }
