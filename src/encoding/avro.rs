@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context};
-use avro_rs::{types::Record, Schema, Writer};
+use avro_rs::{types::Record, Decimal, Schema, Writer};
 use mongodb::bson::Document;
 
 pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>> {
@@ -36,14 +36,15 @@ impl TryFrom<&Bson> for Wrap {
     /// Avro types reference: https://docs.oracle.com/cd/E26161_02/html/GettingStartedGuide/avroschemas.html#avro-primitivedatatypes
     ///
     /// Supported bson->avro type conversion:
-    ///     * bool   -> boolean
-    ///     * double -> double
-    ///     * int32  -> int
-    ///     * int64  -> long
-    ///     * null   -> null
-    ///     * string -> string
-    ///     * array  -> array
-    ///     * object -> record
+    ///     * bool       -> boolean
+    ///     * double     -> double
+    ///     * int32      -> int
+    ///     * int64      -> long
+    ///     * null       -> null
+    ///     * string     -> string
+    ///     * array      -> array
+    ///     * object     -> record
+    ///     * decimal128 -> bytes (logicalType: decimal)
     fn try_from(bson_val: &Bson) -> Result<Self, Self::Error> {
         let bson_type = bson_val.element_type();
 
@@ -108,8 +109,9 @@ impl TryFrom<&Bson> for Wrap {
             ElementType::DateTime => todo!(), // need
             ElementType::RegularExpression => todo!(),
             ElementType::JavaScriptCode => todo!(),
-            ElementType::Timestamp => todo!(),  // need
-            ElementType::Decimal128 => todo!(), // need
+            ElementType::Timestamp => todo!(), // need
+            // https://www.mongodb.com/developer/products/mongodb/bson-data-types-decimal128/
+            ElementType::Decimal128 => Wrap(AvroVal::Decimal(Decimal::from(bson_val.to_string()))),
             ElementType::MaxKey => todo!(),
             ElementType::MinKey => todo!(),
             ElementType::JavaScriptCodeWithScope => unimplemented!("deprecated in mongodb 4.4"),
@@ -127,7 +129,7 @@ mod tests {
     use crate::encoding::avro::encode2;
     use anyhow::{bail, Context};
     use avro_rs::{Reader, Schema};
-    use mongodb::bson::doc;
+    use mongodb::bson::{doc, Decimal128};
 
     #[test]
     fn encode2_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {
@@ -149,10 +151,13 @@ mod tests {
                             { "name": "title", "type": "string" },
                             { "name": "rating", "type": "double" }
                         ]
-                    }}
+                    }},
+                    { "name": "score", "type": "bytes", "logicalType": "decimal", "scale": 2, "precision": 4 }
                 ]
             }
         "###;
+
+        let employee_score: &[u8; 16] = b"12345678.9876543";
 
         let mongodb_document = doc! {
             "name": "Jon Doe",
@@ -164,6 +169,7 @@ mod tests {
                 "title": "Awesome Project",
                 "rating": 92.5_f64
             },
+            "score": Decimal128::from_bytes(*employee_score),
             "additional_field": "foobar",  // will be omitted
             "nickname": null // will be omitted
         };
