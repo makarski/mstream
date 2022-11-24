@@ -15,10 +15,10 @@ auth:
 	gcloud auth login
 
 run-listen:
-	cargo run -F listen -- $(auth_token)
+	RUST_LOG=info cargo run -F listen -- $(auth_token)
 
 run-persist:
-	cargo run -F persist --no-default-features
+	RUST_LOG=info cargo run -F persist --no-default-features
 
 run-subscribe:
-	cargo run -F subscribe -- $(auth_token)
+	RUST_LOG=info cargo run -F subscribe --no-default-features -- $(auth_token) 

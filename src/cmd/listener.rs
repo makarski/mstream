@@ -5,6 +5,8 @@ use crate::pubsub::api::{PublishRequest, PubsubMessage};
 use crate::pubsub::publ::{publisher, PublisherService};
 use crate::registry::Registry;
 
+use anyhow::anyhow;
+use log::{error, info};
 use mongodb::bson::Document;
 use mongodb::change_stream::event::ChangeStreamEvent;
 use mongodb::change_stream::ChangeStream;
@@ -12,11 +14,10 @@ use mongodb::options::{ChangeStreamOptions, FullDocumentType};
 use mongodb::Client;
 
 pub async fn listen(cfg: Config, access_token: &str) -> anyhow::Result<()> {
-    // listening
-    println!("{}", "listen...");
+    info!("{}", "listening");
 
-    let schema_registry = Registry::with_token(access_token).await.unwrap();
-    let publisher = publisher(access_token).await.unwrap();
+    let schema_registry = Registry::with_token(access_token).await?;
+    let publisher = publisher(access_token).await?;
     let mut event_handler = CdcEventHandler::new(schema_registry, publisher);
 
     for connector in cfg.connectors {
@@ -24,22 +25,20 @@ pub async fn listen(cfg: Config, access_token: &str) -> anyhow::Result<()> {
         // todo: check synchronization
         // tokio::spawn(async move {
         let db_client = db_client(connector.name, &connector.db_connection).await?;
-        println!("created main db client");
 
         // todo: move the loop to main thread - switch the task processing to a spawn
-        let mut cs = change_stream(db_client, &connector.db_name, &connector.db_collection)
-            .await
-            .unwrap();
+        let mut cs = change_stream(db_client, &connector.db_name, &connector.db_collection).await?;
 
         while cs.is_alive() {
-            if let Some(event) = cs.next_if_any().await.unwrap() {
+            if let Some(event) = cs.next_if_any().await? {
                 // tokio::spawn(async move {
                 // println!("{:?}", event.full_document.unwrap().get("title"));
 
                 if let Some(mongo_doc) = event.full_document {
-                    event_handler
+                    _ = event_handler
                         .handle_cdc_event(mongo_doc, &connector.schema, &connector.topic)
-                        .await;
+                        .await
+                        .map_err(|err| error!("{err}"));
                 }
                 // });
             }
@@ -82,25 +81,25 @@ impl CdcEventHandler {
         }
     }
 
-    async fn handle_cdc_event(&mut self, mongo_doc: Document, schema_name: &str, topic: &str) {
-        // todo: handle the error message and write to log
-
+    async fn handle_cdc_event(
+        &mut self,
+        mongo_doc: Document,
+        schema_name: &str,
+        topic: &str,
+    ) -> anyhow::Result<()> {
         let schema = self
             .schema_registry
             .get_schema(schema_name.to_owned())
-            .await
-            .unwrap();
+            .await?;
 
-        let encoded = encode2(mongo_doc, &schema.definition).unwrap();
+        let encoded = encode2(mongo_doc, &schema.definition)?;
 
         // todo: publish operation type to attributes field
         // check if routing can be done based on attributes on pubsub side
 
         let hex_encoded = hex::encode(encoded.clone());
-
-        println!("> hex: {}", hex_encoded);
-
         let hex_vec = hex_encoded.as_bytes().to_vec();
+
         let message = self
             .publisher
             .publish(PublishRequest {
@@ -111,11 +110,20 @@ impl CdcEventHandler {
                 }],
             })
             .await
-            .expect("failed to publish a message");
+            .map_err(|err| {
+                anyhow!(
+                    "{} schema: {}. topic: {}",
+                    err.message(),
+                    schema_name,
+                    topic
+                )
+            })?;
 
-        println!(
+        info!(
             "successfully published a message: {:?}",
             message.into_inner().message_ids
         );
+
+        Ok(())
     }
 }
