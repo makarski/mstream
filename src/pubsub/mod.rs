@@ -28,8 +28,6 @@ impl Interceptor for AuthInterceptor {
             })?,
         );
 
-        println!("{:?}", request);
-
         Ok(request)
     }
 }

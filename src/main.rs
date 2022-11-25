@@ -4,6 +4,7 @@ use std::vec;
 
 use anyhow::anyhow;
 use config::Config;
+use log::info;
 use mongodb::bson::{doc, Document};
 
 mod cmd;
@@ -15,14 +16,19 @@ mod registry;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    pretty_env_logger::try_init()?;
+
     let config = config::Config::load("config.toml")?;
-    println!("{:?}", config);
+    info!("config: {:?}", config);
 
     if cfg!(feature = "listen") || cfg!(feature = "subscribe") {
         let agrs: Vec<String> = std::env::args().collect();
-        println!("{:?}", agrs);
+        info!("cli args: {:?}", agrs);
 
-        let access_token = &agrs[1];
+        let access_token = &agrs
+            .iter()
+            .nth(1)
+            .ok_or_else(|| anyhow!("access token not provided"))?;
 
         #[cfg(feature = "listen")]
         cmd::listener::listen(config.clone(), access_token).await?;
@@ -35,13 +41,13 @@ async fn main() -> anyhow::Result<()> {
     {
         for connector in config.connectors {
             let client = db::db_client(connector.name, &connector.db_connection).await?;
-            println!("created main db client");
+            info!("created main db client");
 
             for dbname in client.list_database_names(None, None).await? {
-                println!("{}", dbname);
+                info!("{}", dbname);
             }
 
-            println!("persisting to: {}", &connector.db_name);
+            info!("persisting to: {}", &connector.db_name);
 
             // init db and collection
             let db = client.database(&connector.db_name);
@@ -64,7 +70,10 @@ async fn pull_from_pubsub(cfg: Config, access_token: &str) -> anyhow::Result<()>
         let mut schema_registry = registry::Registry::with_token(access_token).await?;
         let schema = schema_registry.get_schema(schema_name).await?;
 
-        println!("> obtaining messages from subscription");
+        info!(
+            "obtaining messages from subscription: {}",
+            connector.subscription,
+        );
 
         let mut subscriber = pubsub::sub::subscriber(access_token).await?;
         let response = subscriber
@@ -75,7 +84,7 @@ async fn pull_from_pubsub(cfg: Config, access_token: &str) -> anyhow::Result<()>
             })
             .await?;
 
-        println!("> successfully obtained a subscribe response");
+        info!("successfully obtained a subscribe response");
 
         for message in response.into_inner().received_messages {
             let msg = message
@@ -87,7 +96,7 @@ async fn pull_from_pubsub(cfg: Config, access_token: &str) -> anyhow::Result<()>
             let reader = avro_rs::Reader::with_schema(&avr_schema, payload.as_slice())?;
 
             for value in reader {
-                println!("> obtained message: {:?}", value?);
+                info!("> obtained message: {:?}", value?);
             }
         }
     }
@@ -102,11 +111,11 @@ async fn schemas(access_token: &str) {
     let mut schema_registry = registry::Registry::with_token(access_token).await.unwrap();
     let schemas = schema_registry.list_schemas(project_name).await.unwrap();
     for schema in schemas.schemas {
-        println!("> obtaining schema: {}...", &schema.name);
+        info!("obtaining schema: {}", &schema.name);
 
         let schema = schema_registry.get_schema(schema.name).await.unwrap();
 
-        println!("{:?}", schema);
+        info!("schema obtained: {:?}", schema);
     }
 }
 
