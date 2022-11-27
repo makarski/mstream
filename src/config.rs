@@ -1,5 +1,4 @@
 use serde_derive::Deserialize;
-use toml;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Config {

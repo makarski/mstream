@@ -26,8 +26,7 @@ async fn main() -> anyhow::Result<()> {
         info!("cli args: {:?}", agrs);
 
         let access_token = agrs
-            .iter()
-            .nth(1)
+            .get(1)
             .ok_or_else(|| anyhow!("access token not provided"))?;
 
         #[cfg(feature = "listen")]
@@ -134,6 +133,6 @@ async fn persist_data(coll: &mongodb::Collection<Document>) -> Result<(), mongod
 
     match coll.insert_many(docs, None).await {
         Ok(_) => Ok(()),
-        Err(err) => return Err(err),
+        Err(err) => Err(err),
     }
 }

@@ -23,9 +23,8 @@ pub async fn listen(cfg: Config, access_token: String) -> anyhow::Result<()> {
         );
 
         tokio::spawn(async move {
-            match listen_handle(connector, access_token.as_str()).await {
-                Err(err) => error!("{err}"),
-                _ => {}
+            if let Err(err) = listen_handle(connector, access_token.as_str()).await {
+                error!("{err}")
             }
         });
     }

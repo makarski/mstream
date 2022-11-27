@@ -227,7 +227,7 @@ mod tests {
         let reader = Reader::with_schema(&compiled_schema, avro_b.as_slice())
             .context("failed to compile avro reader")?;
 
-        for actual_record in reader.into_iter() {
+        for actual_record in reader {
             if !actual_record?.validate(&compiled_schema) {
                 bail!("failed to validate schema");
             }
