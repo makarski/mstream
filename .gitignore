@@ -1,4 +1,4 @@
 /target
 config.toml
 Cargo.lock
-src/pubsub/api
+src/pubsub/api/*
