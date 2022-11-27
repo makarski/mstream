@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, Connector};
 use crate::db::db_client;
 use crate::encoding::avro::encode2;
 use crate::pubsub::api::{PublishRequest, PubsubMessage};
@@ -13,39 +13,50 @@ use mongodb::change_stream::ChangeStream;
 use mongodb::options::{ChangeStreamOptions, FullDocumentType};
 use mongodb::Client;
 
-pub async fn listen(cfg: Config, access_token: &str) -> anyhow::Result<()> {
-    info!("{}", "listening");
+pub async fn listen(cfg: Config, access_token: String) -> anyhow::Result<()> {
+    for connector in cfg.connectors {
+        let access_token = access_token.clone();
 
+        info!(
+            "listening to: {}:{}",
+            connector.db_name, connector.db_collection
+        );
+
+        tokio::spawn(async move {
+            match listen_handle(connector, access_token.as_str()).await {
+                Err(err) => error!("{err}"),
+                _ => {}
+            }
+        });
+    }
+
+    Ok(())
+}
+
+async fn listen_handle(connector: Connector, access_token: &str) -> anyhow::Result<()> {
+    // todo: check whether gcp and db clients could be shared across threads
+    // instead of re-initiating them for each connector
     let schema_registry = Registry::with_token(access_token).await?;
     let publisher = publisher(access_token).await?;
     let mut event_handler = CdcEventHandler::new(schema_registry, publisher);
+    let db_client = db_client(connector.name, &connector.db_connection).await?;
 
-    for connector in cfg.connectors {
-        // need to spawn this scope in a separate (green) thread
-        // todo: check synchronization
-        // tokio::spawn(async move {
-        let db_client = db_client(connector.name, &connector.db_connection).await?;
+    // todo: move the loop to main thread - switch the task processing to a spawn
+    let mut cs = change_stream(db_client, &connector.db_name, &connector.db_collection).await?;
 
-        // todo: move the loop to main thread - switch the task processing to a spawn
-        let mut cs = change_stream(db_client, &connector.db_name, &connector.db_collection).await?;
-
-        while cs.is_alive() {
-            if let Some(event) = cs.next_if_any().await? {
-                // tokio::spawn(async move {
-                // println!("{:?}", event.full_document.unwrap().get("title"));
-
-                if let Some(mongo_doc) = event.full_document {
-                    _ = event_handler
-                        .handle_cdc_event(mongo_doc, &connector.schema, &connector.topic)
-                        .await
-                        .map_err(|err| error!("{err}"));
-                }
-                // });
+    while cs.is_alive() {
+        if let Some(event) = cs.next_if_any().await? {
+            // todo: think whether we should process each event
+            // as a separate concurrent task
+            if let Some(mongo_doc) = event.full_document {
+                _ = &event_handler
+                    .handle_cdc_event(mongo_doc, &connector.schema, &connector.topic)
+                    .await
+                    .map_err(|err| error!("{err}"));
             }
-
-            // resume_token = cs.resume_token();
         }
-        // });
+
+        // resume_token = cs.resume_token();
     }
 
     Ok(())

@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use tonic::service::{interceptor::InterceptedService, Interceptor};
 use tonic::transport::{Channel, ClientTlsConfig};
 use tonic::{Code, Request, Status};
@@ -38,7 +39,8 @@ async fn tls_transport() -> anyhow::Result<Channel> {
     let channel = Channel::from_static(ENDPOINT)
         .tls_config(tls_config)?
         .connect()
-        .await?;
+        .await
+        .map_err(|err| anyhow!("failed to initiate tls_transport: {}", err))?;
 
     Ok(channel)
 }

@@ -25,13 +25,19 @@ async fn main() -> anyhow::Result<()> {
         let agrs: Vec<String> = std::env::args().collect();
         info!("cli args: {:?}", agrs);
 
-        let access_token = &agrs
+        let access_token = agrs
             .iter()
             .nth(1)
             .ok_or_else(|| anyhow!("access token not provided"))?;
 
         #[cfg(feature = "listen")]
-        cmd::listener::listen(config.clone(), access_token).await?;
+        {
+            cmd::listener::listen(config.clone(), access_token.to_string()).await?;
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {}
+                Err(err) => log::error!("unable to listen to shutdown signal: {}", err),
+            }
+        }
 
         #[cfg(feature = "subscribe")]
         pull_from_pubsub(config, access_token).await?;
