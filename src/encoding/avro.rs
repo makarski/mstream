@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context};
+use avro_rs::schema::SchemaKind;
 use avro_rs::{types::Record, Decimal, Schema, Writer};
 use mongodb::bson::Document;
 
@@ -8,13 +9,20 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
     let mut avro_writer = Writer::new(&schema, Vec::new());
     let mut record = Record::new(avro_writer.schema()).context("failed to create record")?;
 
-    for (field_name, value) in record.fields.iter_mut() {
-        let bson_val = mongo_doc
-            .get(&field_name)
-            .ok_or_else(|| anyhow!("failed to find bson property '{}' for schema", &field_name))?;
+    if let Schema::Record { ref fields, .. } = schema {
+        for field in fields.iter() {
+            let field_name = &field.name;
 
-        let avro_val = Wrap::try_from(bson_val)?.0;
-        *value = avro_val;
+            let bson_val = mongo_doc.get(&field_name).ok_or_else(|| {
+                anyhow!("failed to find bson property '{}' for schema", &field_name)
+            })?;
+
+            let avro_val =
+                Wrap::try_from(BsonWithSchema(bson_val.clone(), field.schema.clone()))?.0;
+            record.put(field_name, avro_val);
+        }
+    } else {
+        bail!("expect a record raw schema. got: {}", raw_schema);
     }
 
     avro_writer.append(record)?;
@@ -22,12 +30,13 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
 }
 
 use avro_rs::types::Value as AvroVal;
-use mongodb::bson::spec::ElementType;
 use mongodb::bson::Bson;
+
+struct BsonWithSchema(Bson, Schema);
 
 struct Wrap(AvroVal);
 
-impl TryFrom<&Bson> for Wrap {
+impl TryFrom<BsonWithSchema> for Wrap {
     type Error = anyhow::Error;
 
     /// Converts Bson Value into Avro
@@ -45,93 +54,112 @@ impl TryFrom<&Bson> for Wrap {
     ///     * array      -> array
     ///     * object     -> record
     ///     * decimal128 -> bytes (logicalType: decimal)
-    fn try_from(bson_val: &Bson) -> Result<Self, Self::Error> {
-        let bson_type = bson_val.element_type();
+    fn try_from(val: BsonWithSchema) -> Result<Self, Self::Error> {
+        let bson_val = val.0;
+        let avro_schema = val.1;
 
-        match bson_type {
-            ElementType::Boolean => {
-                Ok(Wrap(AvroVal::Boolean(bson_val.as_bool().ok_or_else(
-                    || anyhow!("failed to convert bson to boolean: {}", bson_val),
-                )?)))
-            }
-            // Only double (64 bit) is supported. This should be used instead of Float (32bit)
-            ElementType::Double => {
-                Ok(Wrap(AvroVal::Double(bson_val.as_f64().ok_or_else(
-                    || anyhow!("failed to convert bson to double: {}", bson_val),
-                )?)))
-            }
-            ElementType::Int32 => {
-                Ok(Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
-                    anyhow!("failed to convert bson to int: {}", bson_val)
-                })?)))
-            }
-            ElementType::Int64 => {
-                Ok(Wrap(AvroVal::Long(bson_val.as_i64().ok_or_else(|| {
-                    anyhow!("failed to convert bson to long: {}", bson_val)
-                })?)))
-            }
-            ElementType::Null => Ok(Wrap(AvroVal::Null)),
-            ElementType::String => Ok(Wrap(AvroVal::String(
-                bson_val
-                    .as_str()
-                    .ok_or_else(|| anyhow!("failed to convert bson to string: {}", bson_val))?
-                    .to_owned(),
-            ))),
-            ElementType::EmbeddedDocument => {
+        let get_string = |bson_val: Bson| -> Result<String, Self::Error> {
+            Ok(bson_val
+                .as_str()
+                .ok_or_else(|| anyhow!("failed to convert bson to string: {}", bson_val))?
+                .to_owned())
+        };
+
+        match avro_schema {
+            Schema::Record {
+                ref name,
+                ref fields,
+                ..
+            } => {
                 let bson_map = bson_val
                     .as_document()
                     .ok_or_else(|| anyhow!("failed to convert to document: {}", bson_val))?;
 
                 let mut avro_rec = Vec::new();
-                for (key, bson_v) in bson_map.into_iter() {
-                    let avro_v = Self::try_from(bson_v)?.0;
-                    avro_rec.push((key.clone(), avro_v));
+
+                for field in fields {
+                    let bson_v = bson_map.get(&field.name).ok_or_else(|| {
+                        anyhow!(
+                            "failed to obtain field '{}' from bson document. avro schema: {}",
+                            field.name,
+                            name.name,
+                        )
+                    })?;
+
+                    let avro_v =
+                        Self::try_from(BsonWithSchema(bson_v.clone(), field.schema.clone()))?.0;
+                    avro_rec.push((field.name.clone(), avro_v));
                 }
 
                 Ok(Wrap(AvroVal::Record(avro_rec)))
             }
-            ElementType::Array => {
+            Schema::Null => Ok(Wrap(AvroVal::Null)),
+            Schema::Boolean => {
+                Ok(Wrap(AvroVal::Boolean(bson_val.as_bool().ok_or_else(
+                    || anyhow!("failed to convert bson to boolean: {}", bson_val),
+                )?)))
+            }
+            Schema::Int => {
+                Ok(Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
+                    anyhow!("failed to convert bson to int: {}", bson_val)
+                })?)))
+            }
+            Schema::Long => {
+                Ok(Wrap(AvroVal::Long(bson_val.as_i64().ok_or_else(|| {
+                    anyhow!("failed to convert bson to long: {}", bson_val)
+                })?)))
+            }
+            Schema::Double => {
+                Ok(Wrap(AvroVal::Double(bson_val.as_f64().ok_or_else(
+                    || anyhow!("failed to convert bson to double: {}", bson_val),
+                )?)))
+            }
+            Schema::Bytes => todo!(),
+            Schema::String => Ok(Wrap(AvroVal::String(get_string(bson_val)?))),
+            Schema::Array(array_schema) => {
                 let bson_vec = bson_val
-                    .as_array()
-                    .ok_or_else(|| anyhow!("failed to convert bson to array: {}", bson_val))?;
-
+                .as_array()
+                .ok_or_else(|| anyhow!("failed to convert bson to array: {}", bson_val))?;
+                
                 let mut avro_arr = Vec::new();
-                for bson_v in bson_vec {
-                    let avro_v = Self::try_from(bson_v)?;
+                
+                for bson_v in bson_vec.iter().cloned() {
+                    let avro_v = Self::try_from(BsonWithSchema(bson_v, *array_schema.clone()))?;
                     avro_arr.push(avro_v.0);
                 }
-
+                
                 Ok(Wrap(AvroVal::Array(avro_arr)))
             }
-            ElementType::Binary => bail!("binary datatype is not implemented: {}", bson_val), // to check
-            ElementType::ObjectId => bail!("objectId type is not implemented: {}", bson_val),
-            ElementType::DateTime => bail!("datetime datatype is not implemented: {}", bson_val), // need
-            ElementType::RegularExpression => bail!(
-                "regularExpression datatype is not implemented: {}",
-                bson_val
-            ),
-            ElementType::JavaScriptCode => {
-                bail!("JavaScriptCode datatype is not implemented: {}", bson_val)
-            }
-            ElementType::Timestamp => bail!("timestamp datatype is not implemented: {}", bson_val), // need
-            // https://www.mongodb.com/developer/products/mongodb/bson-data-types-decimal128/
-            ElementType::Decimal128 => {
+            Schema::Decimal { .. } => {
+                // https://www.mongodb.com/developer/products/mongodb/bson-data-types-decimal128/
                 Ok(Wrap(AvroVal::Decimal(Decimal::from(bson_val.to_string()))))
             }
-            ElementType::MaxKey => bail!("maxkey datatype is not implemented: {}", bson_val),
-            ElementType::MinKey => bail!("minkey datatype is not implemented: {}", bson_val),
-            ElementType::JavaScriptCodeWithScope => {
-                bail!(
-                    "JavaScriptCodeWithScope is deprecated in mongodb 4.4: {}",
-                    bson_val
-                )
+            Schema::Enum { name, symbols, .. } => {
+                let item = get_string(bson_val)?;
+                
+                if let Some(i) = symbols.iter().position(|s| s.eq(&item)) {
+                    Ok(Wrap(AvroVal::Enum(i as i32, item)))
+                } else {
+                    bail!(
+                        "failed to convert bson to enum for avro field: '{}'",
+                        name.name
+                    );
+                }
             }
-            ElementType::Undefined | ElementType::DbPointer | ElementType::Symbol => {
-                bail!(
-                    "undefined | dbPointer | symbol is deprecated in mongodb: {}",
-                    bson_val
-                )
-            }
+            Schema::Float => bail!("avro type float (32-bit) is not supported, use double (64-bit) instead. bson value: {}", bson_val),
+            Schema::Map(_)
+            | Schema::Union(_)
+            | Schema::Fixed { .. }
+            | Schema::Uuid
+            | Schema::Date
+            | Schema::TimeMillis
+            | Schema::TimeMicros
+            | Schema::TimestampMillis
+            | Schema::TimestampMicros
+            | Schema::Duration => bail!(
+                "avro type '{:?}' is not implemented",
+                SchemaKind::from(avro_schema)
+            ),
         }
     }
 }
