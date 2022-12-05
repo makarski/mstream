@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, bail, Context, Ok};
 use avro_rs::schema::SchemaKind;
 use avro_rs::{types::Record, Decimal, Schema, Writer};
 use mongodb::bson::Document;
@@ -42,7 +42,7 @@ impl TryFrom<BsonWithSchema> for Wrap {
     /// Converts Bson Value into Avro
     ///
     /// Mongo types reference: https://www.mongodb.com/docs/manual/reference/bson-types/
-    /// Avro types reference: https://docs.oracle.com/cd/E26161_02/html/GettingStartedGuide/avroschemas.html#avro-primitivedatatypes
+    /// Avro types reference: https://avro.apache.org/docs/1.11.1/specification/
     ///
     /// Supported bson->avro type conversion:
     ///     * bool       -> boolean
@@ -54,6 +54,11 @@ impl TryFrom<BsonWithSchema> for Wrap {
     ///     * array      -> array
     ///     * object     -> record
     ///     * decimal128 -> bytes (logicalType: decimal)
+    ///
+    /// Additional supported avro types:
+    ///     * union https://avro.apache.org/docs/1.11.1/specification/#unions
+    ///     * enum  https://avro.apache.org/docs/1.11.1/specification/#enums
+    ///     
     fn try_from(val: BsonWithSchema) -> Result<Self, Self::Error> {
         let bson_val = val.0;
         let avro_schema = val.1;
@@ -119,16 +124,14 @@ impl TryFrom<BsonWithSchema> for Wrap {
             Schema::Array(array_schema) => {
                 let bson_vec = bson_val
                 .as_array()
-                .ok_or_else(|| anyhow!("failed to convert bson to array: {}", bson_val))?;
-                
+                        .ok_or_else(|| anyhow!("failed to convert bson to array: {}", bson_val))?;
+
                 let mut avro_arr = Vec::new();
-                
                 for bson_v in bson_vec.iter().cloned() {
                     let avro_v = Self::try_from(BsonWithSchema(bson_v, *array_schema.clone()))?;
                     avro_arr.push(avro_v.0);
                 }
-                
-                Ok(Wrap(AvroVal::Array(avro_arr)))
+                        Ok(Wrap(AvroVal::Array(avro_arr)))
             }
             Schema::Decimal { .. } => {
                 // https://www.mongodb.com/developer/products/mongodb/bson-data-types-decimal128/
@@ -136,7 +139,6 @@ impl TryFrom<BsonWithSchema> for Wrap {
             }
             Schema::Enum { name, symbols, .. } => {
                 let item = get_string(bson_val)?;
-                
                 if let Some(i) = symbols.iter().position(|s| s.eq(&item)) {
                     Ok(Wrap(AvroVal::Enum(i as i32, item)))
                 } else {
@@ -146,9 +148,27 @@ impl TryFrom<BsonWithSchema> for Wrap {
                     );
                 }
             }
+            Schema::Union(union_schema) => {
+                match bson_val {
+                    Bson::Null if !union_schema.is_nullable() => {bail!("got a null bson value for an non-nullable avro union schema");},
+                    Bson::Null => {
+                        Ok(Wrap(AvroVal::Union(Box::new(AvroVal::Null))))
+                    }
+                    _ => {
+                        let union_variant = union_schema.variants().iter()
+                        .find(|&schema| schema.ne(&Schema::Null))
+                        .ok_or_else(||
+                            anyhow!("failed to find a non-null schema variant in avro definition while converting from bson: {}", bson_val)
+                        )?;
+                        let converted_avro = Self::try_from(
+                            BsonWithSchema(bson_val, union_variant.clone())
+                        )?.0;
+                        Ok(Wrap(AvroVal::Union(Box::new(converted_avro))))
+                    }
+                }
+            }
             Schema::Float => bail!("avro type float (32-bit) is not supported, use double (64-bit) instead. bson value: {}", bson_val),
             Schema::Map(_)
-            | Schema::Union(_)
             | Schema::Fixed { .. }
             | Schema::Uuid
             | Schema::Date
@@ -173,12 +193,13 @@ mod tests {
 
     #[test]
     fn encode2_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {
-        // { "name": "nickname", "type": ["null", "string"], "default": null}
         let raw_schema = r###"
-            {
-                "type" : "record",
-                "name" : "Employee",
-                "fields" : [
+        {
+            "type" : "record",
+            "name" : "Employee",
+            "fields" : [
+                    { "name": "nickname", "type": ["null", "string"], "default": null },
+                    { "name": "nickname2", "type": ["null", "string"], "default": null },
                     { "name" : "name" , "type" : "string" },
                     { "name" : "age" , "type" : "int" },
                     { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]},
@@ -210,8 +231,9 @@ mod tests {
                 "rating": 92.5_f64
             },
             "score": Decimal128::from_bytes(*employee_score),
+            "nickname": null,
+            "nickname2": "ABC",
             "additional_field": "foobar",  // will be omitted
-            "nickname": null // will be omitted
         };
 
         let result = encode2(mongodb_document, raw_schema)?;
