@@ -100,9 +100,12 @@ impl TryFrom<BsonWithSchema> for Wrap {
             }
             Schema::Null => Ok(Wrap(AvroVal::Null)),
             Schema::Boolean => {
-                Ok(Wrap(AvroVal::Boolean(bson_val.as_bool().ok_or_else(
+                let bool_val = bson_val.as_bool().ok_or_else(
                     || anyhow!("failed to convert bson to boolean: {}", bson_val),
-                )?)))
+                )?;
+
+
+                Ok(Wrap(AvroVal::Boolean(bool_val)))
             }
             Schema::Int => {
                 Ok(Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
@@ -200,8 +203,8 @@ mod tests {
             "fields" : [
                     { "name": "nickname", "type": ["null", "string"], "default": null },
                     { "name": "nickname2", "type": ["null", "string"], "default": null },
-                    { "name" : "name" , "type" : "string" },
-                    { "name" : "age" , "type" : "int" },
+                    { "name": "name" , "type" : "string" },
+                    { "name": "age" , "type" : "int" },
                     { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]},
                     { "name": "teams", "type": "array", "items": "string" },
                     { "name": "performance_grades", "type": "array", "items": "int" },
@@ -213,7 +216,9 @@ mod tests {
                             { "name": "rating", "type": "double" }
                         ]
                     }},
-                    { "name": "score", "type": "bytes", "logicalType": "decimal", "scale": 2, "precision": 4 }
+                    { "name": "score", "type": "bytes", "logicalType": "decimal", "scale": 2, "precision": 4 },
+                    { "name": "is_active", "type": "boolean" },
+                    { "name": "long_number", "type": "long" }
                 ]
             }
         "###;
@@ -233,6 +238,8 @@ mod tests {
             "score": Decimal128::from_bytes(*employee_score),
             "nickname": null,
             "nickname2": "ABC",
+            "is_active": true,
+            "long_number": 100500_i64,
             "additional_field": "foobar",  // will be omitted
         };
 
