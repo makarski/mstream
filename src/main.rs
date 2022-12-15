@@ -97,8 +97,8 @@ async fn pull_from_pubsub(cfg: Config, access_token: &str) -> anyhow::Result<()>
                 .ok_or_else(|| anyhow!("failed to unwrap response message"))?;
 
             let payload = hex::decode(msg.data)?;
-            let avr_schema = avro_rs::Schema::parse_str(&schema.definition)?;
-            let reader = avro_rs::Reader::with_schema(&avr_schema, payload.as_slice())?;
+            let avr_schema = apache_avro::Schema::parse_str(&schema.definition)?;
+            let reader = apache_avro::Reader::with_schema(&avr_schema, payload.as_slice())?;
 
             for value in reader {
                 info!("> obtained message: {:?}", value?);
