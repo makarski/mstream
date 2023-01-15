@@ -1,13 +1,10 @@
 use anyhow::{anyhow, bail, Context, Ok};
-use apache_avro::schema::SchemaKind;
-use apache_avro::{types::Record, Decimal, Schema, Writer};
+use apache_avro::{schema::SchemaKind, to_avro_datum, types::Record, Decimal, Schema};
 use mongodb::bson::Document;
 
 pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>> {
     let schema = Schema::parse_str(raw_schema)?;
-
-    let mut avro_writer = Writer::new(&schema, Vec::new());
-    let mut record = Record::new(avro_writer.schema()).context("failed to create record")?;
+    let mut record = Record::new(&schema).context("failed to create record")?;
 
     if let Schema::Record { ref fields, .. } = schema {
         for field in fields.iter() {
@@ -25,8 +22,7 @@ pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>>
         bail!("expect a record raw schema. got: {}", raw_schema);
     }
 
-    avro_writer.append(record)?;
-    Ok(avro_writer.into_inner()?)
+    Ok(to_avro_datum(&schema, record)?)
 }
 
 use apache_avro::types::Value as AvroVal;
@@ -121,7 +117,6 @@ impl TryFrom<BsonWithSchema> for Wrap {
                     || anyhow!("failed to convert bson to double: {}", bson_val),
                 )?)))
             }
-            Schema::Bytes => todo!(),
             Schema::String => Ok(Wrap(AvroVal::String(get_string(bson_val)?))),
             Schema::Array(array_schema) => {
                 let bson_vec = bson_val
@@ -153,13 +148,13 @@ impl TryFrom<BsonWithSchema> for Wrap {
             Schema::Union(union_schema) => {
                 let union_variant_position = || -> anyhow::Result<u32> {
                     Ok(union_schema.variants().iter()
-                            .position(|schema| schema.ne(&Schema::Null))
-                            .ok_or_else(||
-                                anyhow!(
-                                    "failed to find a non-null schema variant in avro definition while converting from bson: {}",
-                                    bson_val
-                                )
-                            )? as u32)
+                    .position(|schema| schema.ne(&Schema::Null))
+                    .ok_or_else(||
+                        anyhow!(
+                            "failed to find a non-null schema variant in avro definition while converting from bson: {}",
+                            bson_val
+                        )
+                    )? as u32)
                 };
 
                 match bson_val {
@@ -190,6 +185,7 @@ impl TryFrom<BsonWithSchema> for Wrap {
             | Schema::TimestampMillis
             | Schema::TimestampMicros
             | Schema::Duration
+            | Schema::Bytes
             | Schema::Ref { .. } => bail!(
                 "avro type '{:?}' is not implemented",
                 SchemaKind::from(avro_schema)
@@ -202,7 +198,7 @@ impl TryFrom<BsonWithSchema> for Wrap {
 mod tests {
     use crate::encoding::avro::encode2;
     use anyhow::{bail, Context};
-    use apache_avro::{Reader, Schema};
+    use apache_avro::{from_avro_datum, Schema};
     use mongodb::bson::{doc, Decimal128};
 
     #[test]
@@ -292,13 +288,10 @@ mod tests {
         let compiled_schema = Schema::parse_str(raw_schema)
             .context("failed to compile schema from a raw definition")?;
 
-        let reader = Reader::with_schema(&compiled_schema, avro_b.as_slice())
-            .context("failed to compile avro reader")?;
-
-        for actual_record in reader {
-            if !actual_record?.validate(&compiled_schema) {
-                bail!("failed to validate schema");
-            }
+        let mut reader = avro_b.as_slice();
+        let avro_value = from_avro_datum(&compiled_schema, &mut reader, None)?;
+        if !avro_value.validate(&compiled_schema) {
+            bail!("failed to validate schema");
         }
 
         Ok(())

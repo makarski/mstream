@@ -1,17 +1,20 @@
 use crate::config::{Config, Connector};
 use crate::db::db_client;
 use crate::encoding::avro::encode2;
-use crate::pubsub::api::{PublishRequest, PubsubMessage};
-use crate::pubsub::publ::{publisher, PublisherService};
+use crate::pubsub::{
+    api::{PublishRequest, PubsubMessage},
+    publ::{publisher, PublisherService},
+};
 use crate::registry::Registry;
 
 use anyhow::anyhow;
 use log::{error, info};
-use mongodb::bson::Document;
-use mongodb::change_stream::event::ChangeStreamEvent;
-use mongodb::change_stream::ChangeStream;
-use mongodb::options::{ChangeStreamOptions, FullDocumentType};
-use mongodb::Client;
+use mongodb::{
+    bson::Document,
+    change_stream::{event::ChangeStreamEvent, ChangeStream},
+    options::{ChangeStreamOptions, FullDocumentType},
+    Client,
+};
 
 pub async fn listen(cfg: Config, access_token: String) -> anyhow::Result<()> {
     for connector in cfg.connectors {
@@ -102,20 +105,17 @@ impl CdcEventHandler {
             .get_schema(schema_name.to_owned())
             .await?;
 
-        let encoded = encode2(mongo_doc, &schema.definition)?;
-
         // todo: publish operation type to attributes field
         // check if routing can be done based on attributes on pubsub side
 
-        let hex_encoded = hex::encode(encoded.clone());
-        let hex_vec = hex_encoded.as_bytes().to_vec();
+        let avro_encoded = encode2(mongo_doc, &schema.definition)?;
 
         let message = self
             .publisher
             .publish(PublishRequest {
                 topic: topic.to_owned(),
                 messages: vec![PubsubMessage {
-                    data: hex_vec,
+                    data: avro_encoded,
                     ..Default::default()
                 }],
             })
@@ -130,8 +130,10 @@ impl CdcEventHandler {
             })?;
 
         info!(
-            "successfully published a message: {:?}",
-            message.into_inner().message_ids
+            "successfully published a message: {:?}. schema: {}. topic: {}",
+            message.into_inner().message_ids,
+            schema_name,
+            topic
         );
 
         Ok(())
