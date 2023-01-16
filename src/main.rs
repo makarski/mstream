@@ -2,7 +2,8 @@
 
 use std::vec;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
+use apache_avro::from_avro_datum;
 use config::Config;
 use log::info;
 use mongodb::bson::{doc, Document};
@@ -70,20 +71,20 @@ async fn pull_from_pubsub(cfg: Config, access_token: &str) -> anyhow::Result<()>
 
     for connector in cfg.connectors {
         // config name
-        let schema_name = connector.schema;
+        let schema_name = connector.schema.clone();
 
         let mut schema_registry = registry::Registry::with_token(access_token).await?;
         let schema = schema_registry.get_schema(schema_name).await?;
 
         info!(
             "obtaining messages from subscription: {}",
-            connector.subscription,
+            &connector.subscription,
         );
 
         let mut subscriber = pubsub::sub::subscriber(access_token).await?;
         let response = subscriber
             .pull(PullRequest {
-                subscription: connector.subscription,
+                subscription: connector.subscription.clone(),
                 max_messages: 5,
                 ..Default::default()
             })
@@ -96,13 +97,20 @@ async fn pull_from_pubsub(cfg: Config, access_token: &str) -> anyhow::Result<()>
                 .message
                 .ok_or_else(|| anyhow!("failed to unwrap response message"))?;
 
-            let payload = hex::decode(msg.data)?;
             let avr_schema = apache_avro::Schema::parse_str(&schema.definition)?;
-            let reader = apache_avro::Reader::with_schema(&avr_schema, payload.as_slice())?;
+            let mut buffer = msg.data.as_slice();
 
-            for value in reader {
-                info!("> obtained message: {:?}", value?);
-            }
+            let avro_value =
+                from_avro_datum(&avr_schema, &mut buffer, None).with_context(|| {
+                    anyhow!(
+                        "failed to convert avro data to avro value: {:?}. sub: {}. topic: {}. schema: {}", msg.data, 
+                        &connector.subscription,
+                        &connector.topic,
+                        &connector.schema,
+                    )
+                })?;
+
+            info!("> obtained message: {:?}", avro_value);
         }
     }
 
@@ -126,9 +134,7 @@ async fn schemas(access_token: &str) {
 
 async fn persist_data(coll: &mongodb::Collection<Document>) -> Result<(), mongodb::error::Error> {
     let docs = vec![
-        doc! {"uuid": uuid::Uuid::new_v4().to_string(), "customerId": "Customer 1", "classification": "NAC", "number": 1, "yes_no": true},
-        doc! {"uuid": uuid::Uuid::new_v4().to_string(), "customerId": "Customer 2", "classification": "FAK", "number": 2, "yes_no": true},
-        doc! {"uuid": uuid::Uuid::new_v4().to_string(), "customerId": "Customer 3", "classification": "BASKET", "number": 3, "yes_no": false},
+        doc! { "name": "one two three", "age": 28, "is_active": true, "long_number": 1234556_i64, "rating": 22.22_f64  },
     ];
 
     match coll.insert_many(docs, None).await {
