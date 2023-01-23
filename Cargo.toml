@@ -22,15 +22,3 @@ pretty_env_logger = "0.4"
 
 [build-dependencies]
 tonic-build = "0.8"
-
-[features]
-default = ["publish"]
-persist = []
-publish = ["listen"]
-subscribe = []
-listen = []
-
-# [dependencies.mongodb]
-# version = "2.3.0"
-# default-features = false
-# features = ["async-std-runtime"]
