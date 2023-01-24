@@ -1,6 +1,6 @@
 use crate::config::{Config, Connector};
 use crate::db::db_client;
-use crate::encoding::avro::encode2;
+use crate::encoding::avro::encode;
 use crate::pubsub::{
     api::{PublishRequest, PubsubMessage},
     publ::{publisher, PublisherService},
@@ -108,7 +108,7 @@ impl CdcEventHandler {
         // todo: publish operation type to attributes field
         // check if routing can be done based on attributes on pubsub side
 
-        let avro_encoded = encode2(mongo_doc, &schema.definition)?;
+        let avro_encoded = encode(mongo_doc, &schema.definition)?;
 
         let message = self
             .publisher

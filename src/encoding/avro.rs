@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Context, Ok};
 use apache_avro::{schema::SchemaKind, to_avro_datum, types::Record, Decimal, Schema};
 use mongodb::bson::Document;
 
-pub fn encode2(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>> {
+pub fn encode(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>> {
     let schema = Schema::parse_str(raw_schema)?;
     let mut record = Record::new(&schema).context("failed to create record")?;
 
@@ -196,13 +196,13 @@ impl TryFrom<BsonWithSchema> for Wrap {
 
 #[cfg(test)]
 mod tests {
-    use crate::encoding::avro::encode2;
+    use crate::encoding::avro::encode;
     use anyhow::{bail, Context};
     use apache_avro::{from_avro_datum, Schema};
     use mongodb::bson::{doc, Decimal128};
 
     #[test]
-    fn encode2_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {
+    fn encode_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {
         let raw_schema = r###"
         {
             "type" : "record",
@@ -250,13 +250,13 @@ mod tests {
             "additional_field": "foobar",  // will be omitted
         };
 
-        let result = encode2(mongodb_document, raw_schema)?;
+        let result = encode(mongodb_document, raw_schema)?;
         validate_avro_encoded(result, raw_schema)
     }
 
     #[test]
     #[should_panic(expected = "Failed to parse schema from JSON")]
-    fn encode2_with_invalid_schema() {
+    fn encode_with_invalid_schema() {
         let raw_schema = r###"
             {
                 "type" : "record",
@@ -264,12 +264,12 @@ mod tests {
             }
         "###;
         let mongodb_document = doc! {"name": "Jon Doe", "age": 32};
-        encode2(mongodb_document, raw_schema).unwrap();
+        encode(mongodb_document, raw_schema).unwrap();
     }
 
     #[test]
     #[should_panic(expected = "failed to find bson property 'name' for schema")]
-    fn encode2_with_valid_schema_but_invalid_payload() {
+    fn encode_with_valid_schema_but_invalid_payload() {
         let raw_schema = r###"
             {
                 "type" : "record",
@@ -281,7 +281,7 @@ mod tests {
             }
         "###;
         let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
-        encode2(mongodb_document, raw_schema).unwrap();
+        encode(mongodb_document, raw_schema).unwrap();
     }
 
     fn validate_avro_encoded(avro_b: Vec<u8>, raw_schema: &str) -> anyhow::Result<()> {
