@@ -4,42 +4,42 @@ services:
   mongo1:
     container_name: mongo1
     hostname: mongo1
-    image: mongo:5
+    image: mongo:6 
     restart: always
     networks:
       - mongoCluster
-    expose:
-      - 27017
+    volumes:
+      - mongovol1:/data/db
     ports:
-      - 27017:27017
-    command: mongod --replSet myReplSet --bind_ip localhost,mongo1
+      - "27017:27017"
+    command: mongod --replSet myReplSet --bind_ip_all
   mongo2:
     container_name: mongo2
     hostname: mongo2
-    image: mongo:5
+    image: mongo:6 
     restart: always
     networks:
       - mongoCluster
-    expose:
-      - 27017
+    volumes:
+      - mongovol2:/data/db
     ports:
-      - 27018:27017
-    command: mongod --replSet myReplSet --bind_ip localhost,mongo2
+      - "27018:27017"
+    command: mongod --replSet myReplSet --bind_ip_all
   mongo3:
     container_name: mongo3
     hostname: mongo3
-    image: mongo:5
+    image: mongo:6 
     restart: always
     networks:
       - mongoCluster
-    expose:
-      - 27017
+    volumes:
+      - mongovol3:/data/db
     ports:
-      - 27019:27017
-    command: mongod --replSet myReplSet --bind_ip localhost,mongo3
+      - "27019:27017"
+    command: mongod --replSet myReplSet --bind_ip_all
 
   mongoinit:
-    image: mongo:5
+    image: mongo:6
     networks:
       - mongoCluster
     restart: "no"
@@ -48,15 +48,20 @@ services:
       - mongo2
       - mongo3
     command: >
-      mongosh --host mongo1 --eval "rs.initiate({
-        _id: \"myReplSet\",
+      bash -c "sleep 10 && mongosh --host mongo1 --eval \"rs.initiate({
+        _id: 'myReplSet',
         members: [
-          {_id: 0, host: \"mongo1\"},
-          {_id: 1, host: \"mongo2\"},
-          {_id: 2, host: \"mongo3\"},
+          {_id: 0, host: 'mongo1'},
+          {_id: 1, host: 'mongo2'},
+          {_id: 2, host: 'mongo3'},
         ]
-      })"
+      })\""
 
 networks:
   mongoCluster:
     name: mongoCluster
+
+volumes:
+  mongovol1:
+  mongovol2:
+  mongovol3:
