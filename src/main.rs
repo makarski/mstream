@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
         .get(1)
         .ok_or_else(|| anyhow!("access token not provided"))?;
 
-    mgocdc::run_app(access_token, "config.toml").await?;
+    mstream::run_app(access_token, "config.toml").await?;
     match tokio::signal::ctrl_c().await {
         Ok(()) => {}
         Err(err) => log::error!("unable to listen to shutdown signal: {}", err),

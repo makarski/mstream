@@ -1,4 +1,4 @@
-mgocdc
+mstream
 ===
 
 The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) for collections specified in config.

@@ -1,10 +1,11 @@
 use anyhow::anyhow;
 use apache_avro::AvroSchema;
-use mgocdc::pubsub::api::AcknowledgeRequest;
 use mongodb::{
     bson::{doc, Document},
     Collection, Database,
 };
+use mstream::pubsub::api::AcknowledgeRequest;
+use mstream::pubsub::{api::PullRequest, sub::subscriber};
 use serde::{Deserialize, Serialize};
 
 // PUBSUB constants
@@ -28,8 +29,8 @@ pub struct Employee {
 }
 
 pub async fn start_app_listener(rx: tokio::sync::oneshot::Receiver<bool>, ps_access_token: String) {
-    use mgocdc::cmd::listener;
-    use mgocdc::config::{Config, Connector};
+    use mstream::cmd::listener;
+    use mstream::config::{Config, Connector};
 
     tokio::spawn(async move {
         let config = Config {
@@ -63,8 +64,6 @@ pub async fn drop_db(db: Database) -> anyhow::Result<()> {
 }
 
 pub async fn pull_from_pubsub(access_token: &str) -> anyhow::Result<Vec<Employee>> {
-    use mgocdc::pubsub::{api::PullRequest, sub::subscriber};
-
     let mut sub = subscriber(access_token).await?;
     let response = sub
         .pull(PullRequest {
