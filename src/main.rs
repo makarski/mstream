@@ -12,9 +12,6 @@ mod registry;
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::try_init()?;
 
-    let config = config::Config::load("config.toml")?;
-    info!("config: {:?}", config);
-
     let agrs: Vec<String> = std::env::args().collect();
     info!("cli args: {:?}", agrs);
 
@@ -22,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
         .get(1)
         .ok_or_else(|| anyhow!("access token not provided"))?;
 
-    cmd::listener::listen(config.clone(), access_token.to_string()).await?;
+    mgocdc::run_app(access_token, "config.toml").await?;
     match tokio::signal::ctrl_c().await {
         Ok(()) => {}
         Err(err) => log::error!("unable to listen to shutdown signal: {}", err),

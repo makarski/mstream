@@ -13,7 +13,6 @@ pub struct Connector {
     pub db_collection: String,
     pub schema: String,
     pub topic: String,
-    pub subscription: String,
 }
 
 impl Config {
