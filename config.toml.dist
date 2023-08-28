@@ -5,4 +5,3 @@ db_name = "mydb"
 db_collection = "mycollecttion"
 schema = "projects/{project_name}/schemas/{schema_name}"
 topic = "projects/{project_name}/topics/{topic_name}"
-subscription = "projects/{project_name}/subscriptions/{schema_name}" # optional

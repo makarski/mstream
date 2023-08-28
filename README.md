@@ -41,3 +41,10 @@ $ make integration-tests
 
 #### Configuring Docker Mongo Cluster
 https://www.mongodb.com/compatibility/deploying-a-mongodb-cluster-with-docker
+
+## License
+
+License under either or:
+
+* [MIT](LICENSE-MIT)
+* [Apache License, Version 2.0](LICENSE-APACHE)
