@@ -1,4 +1,4 @@
-.?PHONY: db-up db-stop db-check auth run-listen print-token integration-tests unit-tests
+.?PHONY: db-up db-stop db-check auth run-listen print-token integration-tests unit-tests setup-config
 
 auth_token=$(shell gcloud auth print-access-token)
 
@@ -14,14 +14,17 @@ db-check:
 auth:
 	gcloud auth login
 
-run-listen:
-	RUST_LOG=info cargo run -- $(auth_token)
+setup-config:
+	@./setup_config.sh
+
+run-listen: setup-config
+	RUST_LOG=info cargo run
 
 print-token:
 	gcloud auth print-access-token
 
 integration-tests:
-	RUST_LOG=info AUTH_TOKEN=$(auth_token) cargo test -- --nocapture --ignored
+	@RUST_LOG=debug AUTH_TOKEN=$(auth_token) cargo test -- --nocapture --ignored
 
 unit-tests:
 	RUST_LOG=info cargo test -- --nocapture

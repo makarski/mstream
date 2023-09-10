@@ -9,14 +9,13 @@ Create and update events are picked up and sent as binary-encoded entities to re
 Install [gcloud](https://cloud.google.com/sdk/docs/install)
 
 ```sh
-# config your app
-$ cp config.toml.dist config.toml
-
 # Spawn mongo cluster in docker
 $ make db-up
 $ make db-check
 
 # Listen to db events and publish to pubsub
+$ make setup-config
+$ source .env
 $ make run-listen
 ```
 

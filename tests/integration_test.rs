@@ -11,11 +11,10 @@ use setup::{drop_db, fixtures, pull_from_pubsub, setup_db, start_app_listener, E
 async fn test_created_updated_db_to_pubsub() {
     pretty_env_logger::try_init().unwrap();
 
-    let access_token = std::env::var("AUTH_TOKEN").expect("AUTH_TOKEN env var not set");
     let (tx, rx) = oneshot::channel();
 
     // spawn change stream listener
-    start_app_listener(rx, access_token.to_string()).await;
+    start_app_listener(rx).await;
 
     info!("setting up db, sleeping for 10 secs");
     sleep(Duration::from_secs(10)).await;
@@ -27,21 +26,19 @@ async fn test_created_updated_db_to_pubsub() {
     // testing create events
     let created_employees = setup_db(&coll).await.unwrap();
     sleep(Duration::from_secs(10)).await;
-    assert_employees_eq_pubsub(created_employees, &access_token)
-        .await
-        .unwrap();
+    assert_employees_eq_pubsub(created_employees).await.unwrap();
 
     // testing update events
     info!("modifiying db, sleeping for 10 secs...");
     let modified_employees = modify_assert_employees_db(&coll).await.unwrap();
     sleep(Duration::from_secs(10)).await;
-    assert_employees_eq_pubsub(modified_employees, &access_token)
+    assert_employees_eq_pubsub(modified_employees)
         .await
         .unwrap();
 
     // stop db cdc listener
     tx.send(true).unwrap();
-    drop_db(db).await.unwrap();
+    // drop_db(db).await.unwrap();
 }
 
 async fn modify_assert_employees_db(coll: &Collection<Employee>) -> anyhow::Result<Vec<Employee>> {
@@ -77,11 +74,8 @@ async fn modify_assert_employees_db(coll: &Collection<Employee>) -> anyhow::Resu
     Ok(modified_employees)
 }
 
-async fn assert_employees_eq_pubsub(
-    expected: Vec<Employee>,
-    ps_access_token: &str,
-) -> anyhow::Result<()> {
-    let mut events = pull_from_pubsub(ps_access_token).await?;
+async fn assert_employees_eq_pubsub(expected: Vec<Employee>) -> anyhow::Result<()> {
+    let mut events = pull_from_pubsub().await?;
     events.sort_by(|a, b| a.id.cmp(&b.id));
 
     for (i, event) in events.into_iter().enumerate() {

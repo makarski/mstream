@@ -1,33 +1,40 @@
+use anyhow::anyhow;
+use log::{debug, error, info};
+use mongodb::bson::Document;
+use mongodb::change_stream::{event::ChangeStreamEvent, ChangeStream};
+use mongodb::options::{ChangeStreamOptions, FullDocumentType};
+use mongodb::Client;
+
 use crate::config::{Config, Connector};
 use crate::db::db_client;
 use crate::encoding::avro::encode;
-use crate::pubsub::{
-    api::{PublishRequest, PubsubMessage},
-    publ::{publisher, PublisherService},
-};
-use crate::registry::Registry;
+use crate::pubsub;
+use pubsub::api::{PublishRequest, PubsubMessage};
+use pubsub::srvc::{publisher, PublisherService, SchemaService};
+use pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
-use anyhow::anyhow;
-use log::{error, info};
-use mongodb::{
-    bson::Document,
-    change_stream::{event::ChangeStreamEvent, ChangeStream},
-    options::{ChangeStreamOptions, FullDocumentType},
-    Client,
-};
-
-pub async fn listen(cfg: Config, access_token: String) -> anyhow::Result<()> {
-    for connector in cfg.connectors {
-        let access_token = access_token.clone();
-
-        info!(
+/// Listen to mongodb change streams and publish the events to a pubsub topic
+pub async fn listen_streams<P>(cfg: Config, token_provider: P) -> anyhow::Result<()>
+where
+    P: GCPTokenProvider + Clone + Send + Sync + 'static,
+{
+    for connector_cfg in cfg.connectors {
+        debug!(
             "listening to: {}:{}",
-            connector.db_name, connector.db_collection
+            connector_cfg.db_name, connector_cfg.db_collection
         );
 
+        let token_provider = token_provider.clone();
         tokio::spawn(async move {
-            if let Err(err) = listen_handle(connector, access_token.as_str()).await {
-                error!("{err}")
+            let stream_listener = StreamListener::new(connector_cfg, token_provider).await;
+
+            match stream_listener {
+                Ok(mut stream_listener) => {
+                    if let Err(err) = stream_listener.listen().await {
+                        error!("{err}")
+                    }
+                }
+                Err(err) => error!("{err}"),
             }
         });
     }
@@ -35,74 +42,66 @@ pub async fn listen(cfg: Config, access_token: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn listen_handle(connector: Connector, access_token: &str) -> anyhow::Result<()> {
-    // todo: check whether gcp and db clients could be shared across threads
-    // instead of re-initiating them for each connector
-    let schema_registry = Registry::with_token(access_token).await?;
-    let publisher = publisher(access_token).await?;
-    let mut event_handler = CdcEventHandler::new(schema_registry, publisher);
-    let db_client = db_client(connector.name, &connector.db_connection).await?;
+/// ChangeStream is a mongodb change stream
+type CStream = ChangeStream<ChangeStreamEvent<Document>>;
 
-    // todo: move the loop to main thread - switch the task processing to a spawn
-    let mut cs = change_stream(db_client, &connector.db_name, &connector.db_collection).await?;
+/// StreamListener listens to a mongodb change stream and publishes the events to a pubsub topic
+struct StreamListener<P: GCPTokenProvider + Clone> {
+    connector_name: String,
+    schema_name: String,
+    topic: String,
+    db_name: String,
+    db_collection: String,
+    schema_srvc: SchemaService<ServiceAccountAuth<P>>,
+    publisher: PublisherService<ServiceAccountAuth<P>>,
+    db_client: Client,
+}
 
-    while cs.is_alive() {
-        if let Some(event) = cs.next_if_any().await? {
-            // todo: think whether we should process each event
-            // as a separate concurrent task
-            if let Some(mongo_doc) = event.full_document {
-                _ = &event_handler
-                    .handle_cdc_event(mongo_doc, &connector.schema, &connector.topic)
-                    .await
-                    .map_err(|err| error!("{err}"));
+impl<P> StreamListener<P>
+where
+    P: GCPTokenProvider + Clone,
+{
+    async fn new(connector: Connector, token_provider: P) -> anyhow::Result<Self> {
+        let auth_interceptor = ServiceAccountAuth::new(token_provider.clone());
+
+        let schema_srvc = SchemaService::with_interceptor(auth_interceptor.clone()).await?;
+        let publisher = publisher(auth_interceptor).await?;
+        let db_client = db_client(connector.name.clone(), &connector.db_connection).await?;
+
+        Ok(Self {
+            connector_name: connector.name,
+            schema_name: connector.schema,
+            topic: connector.topic,
+            db_name: connector.db_name,
+            db_collection: connector.db_collection,
+            schema_srvc,
+            publisher,
+            db_client,
+        })
+    }
+
+    /// Listen to a mongodb change stream and publish the events to a pubsub topic
+    async fn listen(&mut self) -> anyhow::Result<()> {
+        let mut cs = self.change_stream().await?;
+
+        while cs.is_alive() {
+            if let Some(event) = cs.next_if_any().await? {
+                if let Some(mongo_doc) = event.full_document {
+                    _ = &self
+                        .process_event(mongo_doc)
+                        .await
+                        .map_err(|err| error!("{err}"));
+                }
             }
         }
 
-        // resume_token = cs.resume_token();
+        Ok(())
     }
 
-    Ok(())
-}
-
-type CdcStream = ChangeStream<ChangeStreamEvent<Document>>;
-
-async fn change_stream(
-    db_client: Client,
-    db_name: &str,
-    coll_name: &str,
-) -> anyhow::Result<CdcStream> {
-    let db = db_client.database(db_name);
-    let coll = db.collection::<Document>(coll_name);
-
-    let opts = ChangeStreamOptions::builder()
-        .full_document(Some(FullDocumentType::UpdateLookup))
-        .build();
-
-    Ok(coll.watch(None, Some(opts)).await?)
-}
-
-struct CdcEventHandler {
-    schema_registry: Registry,
-    publisher: PublisherService,
-}
-
-impl CdcEventHandler {
-    fn new(schema_registry: Registry, publisher: PublisherService) -> Self {
-        CdcEventHandler {
-            schema_registry,
-            publisher,
-        }
-    }
-
-    async fn handle_cdc_event(
-        &mut self,
-        mongo_doc: Document,
-        schema_name: &str,
-        topic: &str,
-    ) -> anyhow::Result<()> {
+    async fn process_event(&mut self, mongo_doc: Document) -> anyhow::Result<()> {
         let schema = self
-            .schema_registry
-            .get_schema(schema_name.to_owned())
+            .schema_srvc
+            .get_schema(self.schema_name.clone())
             .await?;
 
         // todo: publish operation type to attributes field
@@ -113,7 +112,7 @@ impl CdcEventHandler {
         let message = self
             .publisher
             .publish(PublishRequest {
-                topic: topic.to_owned(),
+                topic: self.topic.clone(),
                 messages: vec![PubsubMessage {
                     data: avro_encoded,
                     ..Default::default()
@@ -122,20 +121,33 @@ impl CdcEventHandler {
             .await
             .map_err(|err| {
                 anyhow!(
-                    "{} schema: {}. topic: {}",
+                    "{}. stream: {}. schema: {}. topic: {}",
                     err.message(),
-                    schema_name,
-                    topic
+                    &self.connector_name,
+                    &self.schema_name,
+                    &self.topic
                 )
             })?;
 
         info!(
-            "successfully published a message: {:?}. schema: {}. topic: {}",
-            message.into_inner().message_ids,
-            schema_name,
-            topic
+            "successfully published a message: {:?}. stream: {}. schema: {}. topic: {}",
+            message.into_inner(),
+            &self.connector_name,
+            &self.schema_name,
+            &self.topic,
         );
 
         Ok(())
+    }
+
+    async fn change_stream(&self) -> anyhow::Result<CStream> {
+        let db = self.db_client.database(&self.db_name);
+        let coll = db.collection::<Document>(&self.db_collection);
+
+        let opts = ChangeStreamOptions::builder()
+            .full_document(Some(FullDocumentType::UpdateLookup))
+            .build();
+
+        Ok(coll.watch(None, Some(opts)).await?)
     }
 }

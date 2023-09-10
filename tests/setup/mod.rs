@@ -1,12 +1,15 @@
+use std::env;
+
 use anyhow::anyhow;
 use apache_avro::AvroSchema;
-use mongodb::{
-    bson::{doc, Document},
-    Collection, Database,
-};
-use mstream::pubsub::api::AcknowledgeRequest;
-use mstream::pubsub::{api::PullRequest, sub::subscriber};
+use mongodb::bson::{doc, Document};
+use mongodb::{Collection, Database};
 use serde::{Deserialize, Serialize};
+use tokio::sync::oneshot;
+use tonic::service::Interceptor;
+
+use mstream::pubsub::api::{AcknowledgeRequest, PullRequest};
+use mstream::pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
 // PUBSUB constants
 const PUBSUB_SCHEMA: &str = "projects/mgocdc/schemas/employee-integration-test";
@@ -28,7 +31,7 @@ pub struct Employee {
     pub rating: f64,
 }
 
-pub async fn start_app_listener(rx: tokio::sync::oneshot::Receiver<bool>, ps_access_token: String) {
+pub async fn start_app_listener(rx: oneshot::Receiver<bool>) {
     use mstream::cmd::listener;
     use mstream::config::{Config, Connector};
 
@@ -42,9 +45,14 @@ pub async fn start_app_listener(rx: tokio::sync::oneshot::Receiver<bool>, ps_acc
                 schema: PUBSUB_SCHEMA.to_owned(),
                 topic: PUBSUB_TOPIC.to_owned(),
             }],
+            gcp_serv_acc_key_path: None,
         };
 
-        listener::listen(config, ps_access_token).await.unwrap();
+        let token_provider = AccessToken::init().unwrap();
+        listener::listen_streams(config, token_provider)
+            .await
+            .unwrap();
+
         rx.await.unwrap();
     });
 }
@@ -63,15 +71,49 @@ pub async fn drop_db(db: Database) -> anyhow::Result<()> {
     Ok(db.drop(None).await?)
 }
 
-pub async fn pull_from_pubsub(access_token: &str) -> anyhow::Result<Vec<Employee>> {
-    let mut sub = subscriber(access_token).await?;
-    let response = sub
+#[derive(Clone, Debug)]
+pub struct AccessToken(String);
+
+impl AccessToken {
+    pub fn init() -> anyhow::Result<Self> {
+        let access_token = env::var("AUTH_TOKEN")
+            .map_err(|err| anyhow!("env var AUTH_TOKEN is not set: {}", err))?;
+        Ok(Self(access_token))
+    }
+}
+
+impl GCPTokenProvider for AccessToken {
+    fn access_token(&mut self) -> anyhow::Result<String> {
+        Ok(format!("Bearer {}", &self.0))
+    }
+}
+
+use mstream::pubsub::api::subscriber_client::SubscriberClient;
+use tonic::service::interceptor::InterceptedService;
+use tonic::transport::Channel;
+
+type SubscriberService<I> = SubscriberClient<InterceptedService<Channel, I>>;
+
+async fn subscriber<I: Interceptor>(interceptor: I) -> anyhow::Result<SubscriberService<I>> {
+    use mstream::pubsub::tls_transport;
+    let channel = tls_transport().await?;
+    Ok(SubscriberClient::with_interceptor(channel, interceptor))
+}
+
+pub async fn pull_from_pubsub() -> anyhow::Result<Vec<Employee>> {
+    let auth_interceptor = ServiceAccountAuth::new(AccessToken::init()?);
+    let mut ps_subscriber = subscriber(auth_interceptor.clone()).await?;
+
+    log::info!("pulling from pubsub...");
+
+    let response = ps_subscriber
         .pull(PullRequest {
             subscription: PUBSUB_SUBSCRIPTION.to_owned(),
             max_messages: 5,
             return_immediately: false,
         })
-        .await?;
+        .await
+        .map_err(|err| anyhow!("failed to pull from pubsub: {}", err))?;
 
     let avro_schema = Employee::get_schema();
     let mut employees = vec![];
@@ -87,11 +129,13 @@ pub async fn pull_from_pubsub(access_token: &str) -> anyhow::Result<Vec<Employee
         let employee: Employee = apache_avro::from_value(&avro_value)?;
         employees.push(employee);
 
-        sub.acknowledge(AcknowledgeRequest {
-            subscription: PUBSUB_SUBSCRIPTION.to_owned(),
-            ack_ids: vec![message.ack_id],
-        })
-        .await?;
+        ps_subscriber
+            .acknowledge(AcknowledgeRequest {
+                subscription: PUBSUB_SUBSCRIPTION.to_owned(),
+                ack_ids: vec![message.ack_id],
+            })
+            .await
+            .map_err(|err| anyhow!("failed to acknowledge message: {}", err))?;
     }
 
     Ok(employees)

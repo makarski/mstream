@@ -2,3 +2,5 @@
 config.toml
 Cargo.lock
 src/pubsub/api/*
+.env
+mstream-config.toml
