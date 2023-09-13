@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use anyhow::anyhow;
 use log::{debug, error, info};
 use mongodb::bson::Document;
-use mongodb::change_stream::{event::ChangeStreamEvent, ChangeStream};
-use mongodb::options::{ChangeStreamOptions, FullDocumentType};
+use mongodb::change_stream::event::{ChangeStreamEvent, OperationType};
+use mongodb::change_stream::ChangeStream;
+use mongodb::options::{ChangeStreamOptions, FullDocumentBeforeChangeType, FullDocumentType};
 use mongodb::Client;
 
 use crate::config::{Config, Connector};
@@ -85,20 +88,48 @@ where
         let mut cs = self.change_stream().await?;
 
         while cs.is_alive() {
-            if let Some(event) = cs.next_if_any().await? {
-                if let Some(mongo_doc) = event.full_document {
-                    _ = &self
-                        .process_event(mongo_doc)
-                        .await
-                        .map_err(|err| error!("{err}"));
+            let Some(event) = cs.next_if_any().await? else { continue };
+            let headers = self.event_metadata(&event);
+
+            let mongo_doc = match event.operation_type {
+                OperationType::Insert | OperationType::Update => {
+                    debug!("caught insert/update event: {:?}", event);
+                    event.full_document
                 }
+                OperationType::Delete => {
+                    debug!("caught delete event: {:?}", event);
+                    event.full_document_before_change
+                }
+
+                // currently not handling other operation types
+                _ => None,
+            };
+
+            if let Some(mongo_doc) = mongo_doc {
+                _ = &self
+                    .process_event(mongo_doc, headers)
+                    .await
+                    .map_err(|err| error!("{err}"));
             }
         }
 
         Ok(())
     }
 
-    async fn process_event(&mut self, mongo_doc: Document) -> anyhow::Result<()> {
+    fn event_metadata(&self, event: &ChangeStreamEvent<Document>) -> HashMap<String, String> {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "operation_type".to_string(),
+            format!("{:?}", event.operation_type),
+        );
+        metadata
+    }
+
+    async fn process_event(
+        &mut self,
+        mongo_doc: Document,
+        headers: HashMap<String, String>,
+    ) -> anyhow::Result<()> {
         let schema = self
             .schema_srvc
             .get_schema(self.schema_name.clone())
@@ -115,6 +146,7 @@ where
                 topic: self.topic.clone(),
                 messages: vec![PubsubMessage {
                     data: avro_encoded,
+                    attributes: headers,
                     ..Default::default()
                 }],
             })
@@ -146,6 +178,7 @@ where
 
         let opts = ChangeStreamOptions::builder()
             .full_document(Some(FullDocumentType::UpdateLookup))
+            .full_document_before_change(Some(FullDocumentBeforeChangeType::WhenAvailable))
             .build();
 
         Ok(coll.watch(None, Some(opts)).await?)
