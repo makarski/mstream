@@ -100,7 +100,7 @@ async fn subscriber<I: Interceptor>(interceptor: I) -> anyhow::Result<Subscriber
     Ok(SubscriberClient::with_interceptor(channel, interceptor))
 }
 
-pub async fn pull_from_pubsub() -> anyhow::Result<Vec<Employee>> {
+pub async fn pull_from_pubsub(msg_number: i32) -> anyhow::Result<Vec<Employee>> {
     let auth_interceptor = ServiceAccountAuth::new(AccessToken::init()?);
     let mut ps_subscriber = subscriber(auth_interceptor.clone()).await?;
 
@@ -109,8 +109,8 @@ pub async fn pull_from_pubsub() -> anyhow::Result<Vec<Employee>> {
     let response = ps_subscriber
         .pull(PullRequest {
             subscription: PUBSUB_SUBSCRIPTION.to_owned(),
-            max_messages: 5,
-            return_immediately: false,
+            max_messages: msg_number,
+            ..Default::default()
         })
         .await
         .map_err(|err| anyhow!("failed to pull from pubsub: {}", err))?;

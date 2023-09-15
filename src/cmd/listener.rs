@@ -93,11 +93,11 @@ where
 
             let mongo_doc = match event.operation_type {
                 OperationType::Insert | OperationType::Update => {
-                    debug!("caught insert/update event: {:?}", event);
+                    debug!("got insert/update event: {:?}", event);
                     event.full_document
                 }
                 OperationType::Delete => {
-                    debug!("caught delete event: {:?}", event);
+                    debug!("got delete event: {:?}", event);
                     event.full_document_before_change
                 }
 

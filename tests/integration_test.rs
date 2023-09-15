@@ -29,16 +29,17 @@ async fn test_created_updated_db_to_pubsub() {
     assert_employees_eq_pubsub(created_employees).await.unwrap();
 
     // testing update events
-    info!("modifiying db, sleeping for 10 secs...");
+    info!("modifiying db, sleeping for 20 secs...");
     let modified_employees = modify_assert_employees_db(&coll).await.unwrap();
-    sleep(Duration::from_secs(10)).await;
+
+    sleep(Duration::from_secs(20)).await;
     assert_employees_eq_pubsub(modified_employees)
         .await
         .unwrap();
 
     // stop db cdc listener
     tx.send(true).unwrap();
-    // drop_db(db).await.unwrap();
+    drop_db(db).await.unwrap();
 }
 
 async fn modify_assert_employees_db(coll: &Collection<Employee>) -> anyhow::Result<Vec<Employee>> {
@@ -75,7 +76,20 @@ async fn modify_assert_employees_db(coll: &Collection<Employee>) -> anyhow::Resu
 }
 
 async fn assert_employees_eq_pubsub(expected: Vec<Employee>) -> anyhow::Result<()> {
-    let mut events = pull_from_pubsub().await?;
+    let mut events = pull_from_pubsub(expected.len() as i32).await?;
+
+    if events.len() < expected.len() {
+        let num = expected.len() - events.len();
+
+        debug!(
+            "pulling {} more events from pubsub to match the expected number of events",
+            num
+        );
+
+        let events2 = pull_from_pubsub(num as i32).await?;
+        events.extend(events2);
+    }
+
     events.sort_by(|a, b| a.id.cmp(&b.id));
 
     for (i, event) in events.into_iter().enumerate() {
