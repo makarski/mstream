@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use log::{debug, error, info};
 use mongodb::bson::Document;
-use mongodb::change_stream::event::{ChangeStreamEvent, OperationType};
+use mongodb::change_stream::event::{ChangeStreamEvent, OperationType, ResumeToken};
 use mongodb::change_stream::ChangeStream;
 use mongodb::options::{ChangeStreamOptions, FullDocumentBeforeChangeType, FullDocumentType};
 use mongodb::Client;
+use tokio::sync::mpsc::Sender;
 
 use crate::config::{Config, Connector};
 use crate::db::db_client;
@@ -17,18 +18,20 @@ use pubsub::srvc::{publisher, PublisherService, SchemaService};
 use pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
 /// Listen to mongodb change streams and publish the events to a pubsub topic
-pub async fn listen_streams<P>(cfg: Config, token_provider: P) -> anyhow::Result<()>
+pub async fn listen_streams<P>(done_ch: Sender<String>, cfg: Config, token_provider: P)
 where
     P: GCPTokenProvider + Clone + Send + Sync + 'static,
 {
     for connector_cfg in cfg.connectors {
-        debug!(
+        info!(
             "listening to: {}:{}",
             connector_cfg.db_name, connector_cfg.db_collection
         );
 
         let token_provider = token_provider.clone();
+        let done_ch = done_ch.clone();
         tokio::spawn(async move {
+            let cnt_name = connector_cfg.name.clone();
             let stream_listener = StreamListener::new(connector_cfg, token_provider).await;
 
             match stream_listener {
@@ -39,10 +42,16 @@ where
                 }
                 Err(err) => error!("{err}"),
             }
+
+            // send done signal
+            if let Err(err) = done_ch.send(cnt_name.clone()).await {
+                error!(
+                    "failed to send done signal: {}: connector: {}",
+                    err, cnt_name
+                );
+            }
         });
     }
-
-    Ok(())
 }
 
 /// ChangeStream is a mongodb change stream
@@ -58,6 +67,7 @@ struct StreamListener<P: GCPTokenProvider + Clone> {
     schema_srvc: SchemaService<ServiceAccountAuth<P>>,
     publisher: PublisherService<ServiceAccountAuth<P>>,
     db_client: Client,
+    resume_token: Option<ResumeToken>,
 }
 
 impl<P> StreamListener<P>
@@ -80,16 +90,27 @@ where
             schema_srvc,
             publisher,
             db_client,
+            resume_token: None,
         })
     }
 
     /// Listen to a mongodb change stream and publish the events to a pubsub topic
     async fn listen(&mut self) -> anyhow::Result<()> {
+        if !self.collection_exists().await {
+            bail!(
+                "collection does not exist: {}.{}.{}",
+                &self.connector_name,
+                &self.db_name,
+                &self.db_collection
+            );
+        }
+
         let mut cs = self.change_stream().await?;
 
         while cs.is_alive() {
             let Some(event) = cs.next_if_any().await? else { continue };
             let headers = self.event_metadata(&event);
+            // self.resume_token = cs.resume_token();
 
             let mongo_doc = match event.operation_type {
                 OperationType::Insert | OperationType::Update => {
@@ -98,7 +119,18 @@ where
                 }
                 OperationType::Delete => {
                     debug!("got delete event: {:?}", event);
+
+                    // Todo: check if this is the correct way to get the full document
                     event.full_document_before_change
+                }
+                OperationType::Invalidate => {
+                    bail!("got invalidate event: {:?}", event);
+                }
+                OperationType::Drop => {
+                    bail!("got drop event: {:?}", event);
+                }
+                OperationType::DropDatabase => {
+                    bail!("got drop database event: {:?}", event);
                 }
 
                 // currently not handling other operation types
@@ -135,8 +167,7 @@ where
             .get_schema(self.schema_name.clone())
             .await?;
 
-        // todo: publish operation type to attributes field
-        // check if routing can be done based on attributes on pubsub side
+        // todo: check if routing can be done based on attributes on pubsub side
 
         let avro_encoded = encode(mongo_doc, &schema.definition)?;
 
@@ -179,8 +210,16 @@ where
         let opts = ChangeStreamOptions::builder()
             .full_document(Some(FullDocumentType::UpdateLookup))
             .full_document_before_change(Some(FullDocumentBeforeChangeType::WhenAvailable))
+            .start_after(self.resume_token.clone())
             .build();
 
         Ok(coll.watch(None, Some(opts)).await?)
+    }
+
+    async fn collection_exists(&self) -> bool {
+        let db = self.db_client.database(&self.db_name);
+        let coll = db.collection::<Document>(&self.db_collection);
+
+        coll.list_indexes(None).await.is_ok()
     }
 }

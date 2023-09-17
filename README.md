@@ -2,7 +2,7 @@ mstream
 ===
 
 The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) for collections specified in config.
-Create and update events are picked up and sent as binary-encoded entities to respective GCP PubSub Topics.
+Create and update events are picked up and sent as avro binary-encoded entities to respective GCP PubSub Topics.
 
 #### Running
 

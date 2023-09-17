@@ -5,7 +5,7 @@ use apache_avro::AvroSchema;
 use mongodb::bson::{doc, Document};
 use mongodb::{Collection, Database};
 use serde::{Deserialize, Serialize};
-use tokio::sync::oneshot;
+use tokio::sync::mpsc;
 use tonic::service::Interceptor;
 
 use mstream::pubsub::api::{AcknowledgeRequest, PullRequest};
@@ -31,7 +31,7 @@ pub struct Employee {
     pub rating: f64,
 }
 
-pub async fn start_app_listener(rx: oneshot::Receiver<bool>) {
+pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
     use mstream::cmd::listener;
     use mstream::config::{Config, Connector};
 
@@ -49,11 +49,7 @@ pub async fn start_app_listener(rx: oneshot::Receiver<bool>) {
         };
 
         let token_provider = AccessToken::init().unwrap();
-        listener::listen_streams(config, token_provider)
-            .await
-            .unwrap();
-
-        rx.await.unwrap();
+        listener::listen_streams(done_ch, config, token_provider).await;
     });
 }
 
