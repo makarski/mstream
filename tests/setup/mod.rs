@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::env;
 
 use anyhow::anyhow;
 use apache_avro::AvroSchema;
 use mongodb::bson::{doc, Document};
-use mongodb::{Collection, Database};
+use mongodb::Collection;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tonic::service::Interceptor;
@@ -17,6 +18,7 @@ const PUBSUB_TOPIC: &str = "projects/mgocdc/topics/employee-test-poc";
 const PUBSUB_SUBSCRIPTION: &str = "projects/mgocdc/subscriptions/employee-test-sub";
 
 // DB constants
+const CONNECTOR_NAME: &str = "employee-stream-test";
 pub const DB_NAME: &str = "integration-tests";
 pub const DB_COLLECTION: &str = "employees";
 pub const DB_CONNECTION: &str = "mongodb://localhost:27017";
@@ -38,7 +40,7 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
     tokio::spawn(async move {
         let config = Config {
             connectors: vec![Connector {
-                name: "employee".to_owned(),
+                name: CONNECTOR_NAME.to_owned(),
                 db_connection: DB_CONNECTION.to_owned(),
                 db_name: DB_NAME.to_owned(),
                 db_collection: DB_COLLECTION.to_owned(),
@@ -53,18 +55,23 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
     });
 }
 
-pub async fn setup_db(coll: &Collection<Employee>) -> anyhow::Result<Vec<Employee>> {
+pub async fn setup_db(
+    coll: &Collection<Employee>,
+) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
     let docs = fixtures()
         .into_iter()
         .map(|(before, _, _)| before)
         .collect::<Vec<_>>();
 
     coll.insert_many(docs.clone(), None).await?;
-    Ok(docs)
-}
 
-pub async fn drop_db(db: Database) -> anyhow::Result<()> {
-    Ok(db.drop(None).await?)
+    Ok(docs
+        .into_iter()
+        .map(|item| {
+            let attributes = generate_pubsub_attributes("insert");
+            (attributes, item)
+        })
+        .collect::<Vec<_>>())
 }
 
 #[derive(Clone, Debug)]
@@ -96,7 +103,18 @@ async fn subscriber<I: Interceptor>(interceptor: I) -> anyhow::Result<Subscriber
     Ok(SubscriberClient::with_interceptor(channel, interceptor))
 }
 
-pub async fn pull_from_pubsub(msg_number: i32) -> anyhow::Result<Vec<Employee>> {
+pub fn generate_pubsub_attributes(op_type: &str) -> HashMap<String, String> {
+    HashMap::from([
+        ("stream_name".to_owned(), CONNECTOR_NAME.to_owned()),
+        ("operation_type".to_owned(), op_type.to_owned()),
+        ("database".to_owned(), DB_NAME.to_owned()),
+        ("collection".to_owned(), DB_COLLECTION.to_owned()),
+    ])
+}
+
+pub async fn pull_from_pubsub(
+    msg_number: i32,
+) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
     let auth_interceptor = ServiceAccountAuth::new(AccessToken::init()?);
     let mut ps_subscriber = subscriber(auth_interceptor.clone()).await?;
 
@@ -123,7 +141,7 @@ pub async fn pull_from_pubsub(msg_number: i32) -> anyhow::Result<Vec<Employee>> 
         let avro_value = apache_avro::from_avro_datum(&avro_schema, &mut buffer, None)?;
 
         let employee: Employee = apache_avro::from_value(&avro_value)?;
-        employees.push(employee);
+        employees.push((msg.attributes, employee));
 
         ps_subscriber
             .acknowledge(AcknowledgeRequest {

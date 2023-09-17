@@ -6,7 +6,6 @@ Create and update events are picked up and sent as avro binary-encoded entities 
 
 `Minimum tested MongoDB version: 6.0`
 
-
 ```mermaid
 sequenceDiagram
     participant mstream
@@ -28,7 +27,9 @@ sequenceDiagram
     deactivate mstream
 ```
 
-**[Supported events](https://www.mongodb.com/docs/v6.0/reference/change-events/)**
+### Event Processing
+
+**[Supported MongoDB events](https://www.mongodb.com/docs/v6.0/reference/change-events/)**
 * Insert document
 * Update document
 * Delete document
@@ -38,10 +39,26 @@ sequenceDiagram
 * Drop collection
 * Drop database
 
+#### Message Structure
 
-#### Running
+A processed change stream is transformed into a pubsub message with the following structure:
 
-Install [gcloud](https://cloud.google.com/sdk/docs/install)
+**[Attributes](https://cloud.google.com/pubsub/docs/publisher#using-attributes)**
+
+attribute name | attribute value
+---------------| ----------------
+stream_name    | connector name provided in config
+operation_type | event type: `insert`, `update`, `delete`
+database       | mongodb database name
+collection     | mongodb collection name
+
+Attributes can be used to configure fine-grained subscriptions. For more details see [documentation](https://cloud.google.com/pubsub/docs/subscription-message-filter#filtering_syntax)
+
+**Payload**
+
+Payload represents a mongo db document encoded in avro format
+
+### Running
 
 ```sh
 # Spawn mongo cluster in docker
@@ -51,10 +68,12 @@ $ make db-check
 # Listen to db events and publish to pubsub
 $ make setup-config
 $ source .env
+
+# This will run the app with 'cargo run' and debug log level
 $ make run-listen
 ```
 
-#### Testing
+### Testing
 
 **Unit tests**
 
@@ -63,6 +82,8 @@ $ make unit-tests
 ```
 
 **Integration tests** _(to be run locally)_
+
+Install [gcloud](https://cloud.google.com/sdk/docs/install) - google access token will be retrieved through gcloud cli tool, unlike production case scenario where the application relies on service account configuration.
 
 In order to run integration tests, it is required to have locally spawned mongodb cluster
 and a configured GCP pubsub topic, schema and subscription.
@@ -73,7 +94,7 @@ It is planned to automate creating GCP resources in the future. For now check `t
 $ make integration-tests
 ```
 
-#### Configuring Docker Mongo Cluster
+### Configuring Docker Mongo Cluster
 https://www.mongodb.com/compatibility/deploying-a-mongodb-cluster-with-docker
 
 ## License

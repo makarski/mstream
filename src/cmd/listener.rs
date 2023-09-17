@@ -96,20 +96,11 @@ where
 
     /// Listen to a mongodb change stream and publish the events to a pubsub topic
     async fn listen(&mut self) -> anyhow::Result<()> {
-        if !self.collection_exists().await {
-            bail!(
-                "collection does not exist: {}.{}.{}",
-                &self.connector_name,
-                &self.db_name,
-                &self.db_collection
-            );
-        }
-
         let mut cs = self.change_stream().await?;
 
         while cs.is_alive() {
             let Some(event) = cs.next_if_any().await? else { continue };
-            let headers = self.event_metadata(&event);
+            let attributes = self.event_metadata(&event);
             // self.resume_token = cs.resume_token();
 
             let mongo_doc = match event.operation_type {
@@ -137,7 +128,7 @@ where
 
             if let Some(mongo_doc) = mongo_doc {
                 _ = &self
-                    .process_event(mongo_doc, headers)
+                    .process_event(mongo_doc, attributes)
                     .await
                     .map_err(|err| error!("{err}"));
             }
@@ -147,18 +138,21 @@ where
     }
 
     fn event_metadata(&self, event: &ChangeStreamEvent<Document>) -> HashMap<String, String> {
-        let mut metadata = HashMap::new();
-        metadata.insert(
-            "operation_type".to_string(),
-            format!("{:?}", event.operation_type),
-        );
-        metadata
+        HashMap::from([
+            ("stream_name".to_owned(), self.connector_name.clone()),
+            (
+                "operation_type".to_owned(),
+                format!("{:?}", event.operation_type).to_lowercase(),
+            ),
+            ("database".to_owned(), self.db_name.clone()),
+            ("collection".to_owned(), self.db_collection.clone()),
+        ])
     }
 
     async fn process_event(
         &mut self,
         mongo_doc: Document,
-        headers: HashMap<String, String>,
+        attributes: HashMap<String, String>,
     ) -> anyhow::Result<()> {
         let schema = self
             .schema_srvc
@@ -175,7 +169,7 @@ where
                 topic: self.topic.clone(),
                 messages: vec![PubsubMessage {
                     data: avro_encoded,
-                    attributes: headers,
+                    attributes,
                     ..Default::default()
                 }],
             })
@@ -227,12 +221,5 @@ where
             .build();
 
         Ok(coll.watch(None, Some(opts)).await?)
-    }
-
-    async fn collection_exists(&self) -> bool {
-        let db = self.db_client.database(&self.db_name);
-        let coll = db.collection::<Document>(&self.db_collection);
-
-        coll.list_indexes(None).await.is_ok()
     }
 }

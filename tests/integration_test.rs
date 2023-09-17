@@ -1,10 +1,14 @@
+use std::collections::HashMap;
+
 use log::{debug, info};
 use mongodb::{bson::doc, options::UpdateOptions, Client, Collection};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
 mod setup;
-use setup::{drop_db, fixtures, pull_from_pubsub, setup_db, start_app_listener, Employee};
+use setup::{
+    fixtures, generate_pubsub_attributes, pull_from_pubsub, setup_db, start_app_listener, Employee,
+};
 
 #[tokio::test]
 #[ignore = "Integration test - requires a running mongodb in docker and connection to GCP pubsub"]
@@ -13,6 +17,11 @@ async fn test_created_updated_db_to_pubsub() {
 
     let client = Client::with_uri_str(setup::DB_CONNECTION).await.unwrap();
     let db = client.database(setup::DB_NAME);
+    db.drop(None).await.unwrap();
+    db.create_collection(setup::DB_COLLECTION, None)
+        .await
+        .unwrap();
+
     let coll = db.collection(setup::DB_COLLECTION);
 
     // spawn change stream listener
@@ -36,10 +45,12 @@ async fn test_created_updated_db_to_pubsub() {
         .await
         .unwrap();
 
-    drop_db(db).await.unwrap();
+    db.drop(None).await.unwrap();
 }
 
-async fn modify_assert_employees_db(coll: &Collection<Employee>) -> anyhow::Result<Vec<Employee>> {
+async fn modify_assert_employees_db(
+    coll: &Collection<Employee>,
+) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
     // https://www.mongodb.com/developer/languages/rust/rust-mongodb-crud-tutorial/
 
     let fixtures = fixtures();
@@ -66,13 +77,16 @@ async fn modify_assert_employees_db(coll: &Collection<Employee>) -> anyhow::Resu
             before.id
         );
 
-        modified_employees.push(after);
+        let attributes = generate_pubsub_attributes("update");
+        modified_employees.push((attributes, after));
     }
 
     Ok(modified_employees)
 }
 
-async fn assert_employees_eq_pubsub(expected: Vec<Employee>) -> anyhow::Result<()> {
+async fn assert_employees_eq_pubsub(
+    expected: Vec<(HashMap<String, String>, Employee)>,
+) -> anyhow::Result<()> {
     let mut events = pull_from_pubsub(expected.len() as i32).await?;
 
     if events.len() < expected.len() {
@@ -87,13 +101,24 @@ async fn assert_employees_eq_pubsub(expected: Vec<Employee>) -> anyhow::Result<(
         events.extend(events2);
     }
 
-    events.sort_by(|a, b| a.id.cmp(&b.id));
+    events.sort_by(|a, b| a.1.id.cmp(&b.1.id));
 
-    for (i, event) in events.into_iter().enumerate() {
+    for (i, (attributes, event)) in events.into_iter().enumerate() {
         debug!("{:?}", event);
 
+        for (k, v) in expected[i].0.iter() {
+            assert_eq!(
+                Some(v),
+                attributes.get(k),
+                "failed to assume attribute key {} contains the expected value: {}. id: {}",
+                k,
+                v,
+                event.id
+            );
+        }
+
         assert_eq!(
-            expected[i], event,
+            expected[i].1, event,
             "failed to assume the expected employee eq to the pubsub message. id: {}",
             event.id
         );
