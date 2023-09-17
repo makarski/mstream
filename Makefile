@@ -18,7 +18,7 @@ setup-config:
 	@./setup_config.sh
 
 run-listen: setup-config
-	RUST_LOG=info cargo run
+	RUST_LOG=debug cargo run
 
 print-token:
 	gcloud auth print-access-token

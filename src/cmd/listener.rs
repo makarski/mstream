@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, bail};
 use log::{debug, error, info};
-use mongodb::bson::Document;
+use mongodb::bson::{doc, Document};
 use mongodb::change_stream::event::{ChangeStreamEvent, OperationType, ResumeToken};
 use mongodb::change_stream::ChangeStream;
 use mongodb::options::{ChangeStreamOptions, FullDocumentBeforeChangeType, FullDocumentType};
@@ -119,8 +119,6 @@ where
                 }
                 OperationType::Delete => {
                     debug!("got delete event: {:?}", event);
-
-                    // Todo: check if this is the correct way to get the full document
                     event.full_document_before_change
                 }
                 OperationType::Invalidate => {
@@ -205,6 +203,21 @@ where
 
     async fn change_stream(&self) -> anyhow::Result<CStream> {
         let db = self.db_client.database(&self.db_name);
+
+        // enable support for full document before and after change
+        // used to obtain the document for delete events
+        // https://docs.mongodb.com/manual/reference/command/collMod/#dbcmd.collMod
+        db.run_command(
+            doc! {
+                "collMod": self.db_collection.clone(),
+                "changeStreamPreAndPostImages": doc! {
+                    "enabled": true,
+                }
+            },
+            None,
+        )
+        .await?;
+
         let coll = db.collection::<Document>(&self.db_collection);
 
         let opts = ChangeStreamOptions::builder()

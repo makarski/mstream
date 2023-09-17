@@ -4,6 +4,9 @@ mstream
 The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) for collections specified in config.
 Create and update events are picked up and sent as avro binary-encoded entities to respective GCP PubSub Topics.
 
+`Minimum tested MongoDB version: 6.0`
+
+
 ```mermaid
 sequenceDiagram
     participant mstream
@@ -24,6 +27,17 @@ sequenceDiagram
     mstream->>gcp_topic: publish avro encoded document
     deactivate mstream
 ```
+
+**[Supported events](https://www.mongodb.com/docs/v6.0/reference/change-events/)**
+* Insert document
+* Update document
+* Delete document
+
+**The worker will report an error and stop execution for events**
+* Invalidate stream
+* Drop collection
+* Drop database
+
 
 #### Running
 
