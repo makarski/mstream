@@ -74,7 +74,9 @@ impl<P> StreamListener<P>
 where
     P: GCPTokenProvider + Clone,
 {
-    async fn new(connector: Connector, token_provider: P) -> anyhow::Result<Self> {
+    async fn new(connector: Connector, mut token_provider: P) -> anyhow::Result<Self> {
+        // token provider is lazily initialized - warm it up
+        let _ = token_provider.access_token()?;
         let auth_interceptor = ServiceAccountAuth::new(token_provider.clone());
 
         let schema_srvc = SchemaService::with_interceptor(auth_interceptor.clone()).await?;
@@ -210,7 +212,14 @@ where
             },
             None,
         )
-        .await?;
+        .await
+        .map_err(|err| {
+            anyhow!(
+                "failed to enable full document support for stream: {}, {}",
+                &self.connector_name,
+                err
+            )
+        })?;
 
         let coll = db.collection::<Document>(&self.db_collection);
 

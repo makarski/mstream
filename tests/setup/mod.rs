@@ -47,7 +47,7 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 schema: PUBSUB_SCHEMA.to_owned(),
                 topic: PUBSUB_TOPIC.to_owned(),
             }],
-            gcp_serv_acc_key_path: None,
+            gcp_serv_acc_key_path: "service_account_key.json".to_owned(),
         };
 
         let token_provider = AccessToken::init().unwrap();

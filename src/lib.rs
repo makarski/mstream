@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use gauth::serv_account::ServiceAccount;
 use log::{debug, warn};
 use tokio::sync::mpsc;
@@ -13,13 +12,8 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path)?;
     debug!("config: {:?}", config);
 
-    let service_account = ServiceAccount::from_file(
-        config
-            .gcp_serv_acc_key_path
-            .as_ref()
-            .ok_or_else(|| anyhow!("missing service account key path"))?,
-        pubsub::SCOPES.to_vec(),
-    );
+    let service_account =
+        ServiceAccount::from_file(&config.gcp_serv_acc_key_path, pubsub::SCOPES.to_vec());
 
     let worker_count = config.connectors.len();
     let (tx, mut rx) = mpsc::channel::<String>(worker_count);

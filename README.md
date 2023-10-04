@@ -65,12 +65,8 @@ Payload represents a mongo db document encoded in avro format
 $ make db-up
 $ make db-check
 
-# Listen to db events and publish to pubsub
-$ make setup-config
-$ source .env
-
 # This will run the app with 'cargo run' and debug log level
-$ make run-listen
+$ make run-debug
 ```
 
 ### Testing

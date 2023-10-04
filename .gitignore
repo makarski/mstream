@@ -4,3 +4,4 @@ Cargo.lock
 src/pubsub/api/*
 .env
 mstream-config.toml
+mstream-config.toml.bak
