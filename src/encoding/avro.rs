@@ -2,8 +2,7 @@ use anyhow::{anyhow, bail, Context, Ok};
 use apache_avro::{schema::SchemaKind, to_avro_datum, types::Record, Decimal, Schema};
 use mongodb::bson::Document;
 
-pub fn encode(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>> {
-    let schema = Schema::parse_str(raw_schema)?;
+pub fn encode(mongo_doc: Document, schema: Schema) -> anyhow::Result<Vec<u8>> {
     let mut record = Record::new(&schema).context("failed to create record")?;
 
     if let Schema::Record { ref fields, .. } = schema {
@@ -19,7 +18,10 @@ pub fn encode(mongo_doc: Document, raw_schema: &str) -> anyhow::Result<Vec<u8>> 
             record.put(field_name, avro_val);
         }
     } else {
-        bail!("expect a record raw schema. got: {}", raw_schema);
+        bail!(
+            "expect a record raw schema. got: {}",
+            schema.canonical_form()
+        );
     }
 
     Ok(to_avro_datum(&schema, record)?)
@@ -250,7 +252,8 @@ mod tests {
             "additional_field": "foobar",  // will be omitted
         };
 
-        let result = encode(mongodb_document, raw_schema)?;
+        let avro_schema = Schema::parse_str(raw_schema)?;
+        let result = encode(mongodb_document, avro_schema)?;
         validate_avro_encoded(result, raw_schema)
     }
 
@@ -264,7 +267,8 @@ mod tests {
             }
         "###;
         let mongodb_document = doc! {"name": "Jon Doe", "age": 32};
-        encode(mongodb_document, raw_schema).unwrap();
+        let avro_schema = Schema::parse_str(raw_schema).unwrap();
+        encode(mongodb_document, avro_schema).unwrap();
     }
 
     #[test]
@@ -281,7 +285,8 @@ mod tests {
             }
         "###;
         let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
-        encode(mongodb_document, raw_schema).unwrap();
+        let avro_schema = Schema::parse_str(raw_schema).unwrap();
+        encode(mongodb_document, avro_schema).unwrap();
     }
 
     fn validate_avro_encoded(avro_b: Vec<u8>, raw_schema: &str) -> anyhow::Result<()> {

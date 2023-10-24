@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tonic::service::Interceptor;
 
+use mstream::config::{SchemaCfg, SchemaProviderName};
 use mstream::pubsub::api::{AcknowledgeRequest, PullRequest};
 use mstream::pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
@@ -44,14 +45,16 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 db_connection: DB_CONNECTION.to_owned(),
                 db_name: DB_NAME.to_owned(),
                 db_collection: DB_COLLECTION.to_owned(),
-                schema: PUBSUB_SCHEMA.to_owned(),
+                schema: SchemaCfg {
+                    provider: SchemaProviderName::Gcp,
+                    id: PUBSUB_SCHEMA.to_owned(),
+                },
                 topic: PUBSUB_TOPIC.to_owned(),
             }],
             gcp_serv_acc_key_path: "service_account_key.json".to_owned(),
         };
 
-        let token_provider = AccessToken::init().unwrap();
-        listener::listen_streams(done_ch, config, token_provider).await;
+        listener::listen_streams(done_ch, config).await.unwrap();
     });
 }
 

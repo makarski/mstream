@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 
+use anyhow::anyhow;
+use apache_avro::Schema;
+use async_trait::async_trait;
+use tonic::service::Interceptor;
+
 use super::{tls_transport, Channel, InterceptedService};
 use crate::pubsub::api::publisher_client::PublisherClient;
 use crate::pubsub::api::schema_service_client::SchemaServiceClient;
-use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse, Schema};
-use anyhow::anyhow;
-use tonic::service::Interceptor;
+use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
+use crate::schema::SchemaProvider;
 
 pub type PublisherService<I> = PublisherClient<InterceptedService<Channel, I>>;
 
@@ -23,6 +27,7 @@ impl<I: Interceptor> SchemaService<I> {
     pub async fn with_interceptor(interceptor: I) -> anyhow::Result<Self> {
         let channel = tls_transport().await?;
         let client = SchemaServiceClient::with_interceptor(channel, interceptor);
+
         Ok(Self {
             client,
             cache: HashMap::new(),
@@ -40,24 +45,29 @@ impl<I: Interceptor> SchemaService<I> {
 
         Ok(schema_list_response.into_inner())
     }
+}
 
-    pub async fn get_schema(&mut self, name: String) -> anyhow::Result<&Schema> {
-        if !self.cache.contains_key(&name) {
+#[async_trait]
+impl<I: Interceptor + Send> SchemaProvider for SchemaService<I> {
+    async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
+        if !self.cache.contains_key(&id) {
             let schema_response = self.client.get_schema(GetSchemaRequest {
-                name: name.clone(),
+                name: id.clone(),
                 ..Default::default()
             });
 
-            self.cache
-                .insert(name.clone(), schema_response.await?.into_inner());
+            let pubsub_schema = schema_response.await?.into_inner();
+            let avro_schema = Schema::parse_str(&pubsub_schema.definition)?;
+            self.cache.insert(id.clone(), avro_schema);
 
-            log::info!("schema {} added to cache", name);
+            log::info!("schema {} added to cache", id);
         } else {
-            log::info!("schema {} found in cache", name);
+            log::info!("schema {} found in cache", id);
         }
 
         self.cache
-            .get(&name)
+            .get(&id)
+            .cloned()
             .ok_or_else(|| anyhow!("schema not found"))
     }
 }

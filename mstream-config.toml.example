@@ -5,7 +5,7 @@ name = "connector 1"
 db_connection = "mongodb://localhost:27017,localhost:27018,localhost:27019"
 db_name = "mydb"
 db_collection = "mycollecttion"
-schema = "projects/{project_name}/schemas/{schema_name}"
+schema = { provider = "gcp", id = "projects/{project_name}/schemas/{schema_name}" }
 topic = "projects/{project_name}/topics/{topic_name}"
 
 [[connectors]]
@@ -13,5 +13,5 @@ name = "connector 2"
 db_connection = "mongodb://localhost:27017,localhost:27018,localhost:27019"
 db_name = "mydb"
 db_collection = "mycollecttion"
-schema = "projects/{project_name}/schemas/{schema_name}"
+schema = { provider = "mongodb", id = "schema_id" }
 topic = "projects/{project_name}/topics/{topic_name}"

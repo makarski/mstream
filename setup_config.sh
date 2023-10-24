@@ -50,7 +50,8 @@ do
             read -p  "$(printf "> ${YELLOW}Enter db connection string":${NOCOLOR}) " db_connection
             read -p  "$(printf "> ${YELLOW}Enter db name":${NOCOLOR}) " db_name
             read -p  "$(printf "> ${YELLOW}Enter db collection":${NOCOLOR}) " db_collection
-            read -p  "$(printf "> ${YELLOW}Enter pubsub schema":${NOCOLOR}) " pubsub_schema
+            read -p  "$(printf "> ${YELLOW}Enter pubsub schema provider (gcp, mongodb)":${NOCOLOR}) " schema_provider_name
+            read -p  "$(printf "> ${YELLOW}Enter pubsub schema id":${NOCOLOR}) " schema_id
             read -p  "$(printf "> ${YELLOW}Enter pubsub topic":${NOCOLOR}) " pubsub_topic
 
             echo -e $(printf "${GREEN}Adding ${YELLOW}${connector_name}${GREEN} to ${YELLOW}${config_key}${GREEN}${NOCOLOR}")
@@ -59,7 +60,7 @@ do
             echo "db_connection = \"${db_connection}\"" >> ${config_key}
             echo "db_name = \"${db_name}\"" >> ${config_key}
             echo "db_collection = \"${db_collection}\"" >> ${config_key}
-            echo "schema = \"${pubsub_schema}\"" >> ${config_key}
+            echo "schema = { provider = \"${schema_provider_name}\", id = \"${schema_id}\" }" >> ${config_key}
             echo "topic = \"${pubsub_topic}\"" >> ${config_key}
 
             stream_count=$((stream_count+1))

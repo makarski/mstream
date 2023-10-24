@@ -1,38 +1,44 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail};
+use gauth::serv_account::ServiceAccount;
 use log::{debug, error, info};
 use mongodb::bson::{doc, Document};
 use mongodb::change_stream::event::{ChangeStreamEvent, OperationType, ResumeToken};
 use mongodb::change_stream::ChangeStream;
 use mongodb::options::{ChangeStreamOptions, FullDocumentBeforeChangeType, FullDocumentType};
-use mongodb::Client;
+use mongodb::Database;
 use tokio::sync::mpsc::Sender;
 
-use crate::config::{Config, Connector};
+use crate::config::{Config, Connector, SchemaProviderName};
 use crate::db::db_client;
 use crate::encoding::avro::encode;
 use crate::pubsub;
+use crate::schema::{MongoDbSchemaProvider, SchemaProvider};
 use pubsub::api::{PublishRequest, PubsubMessage};
 use pubsub::srvc::{publisher, PublisherService, SchemaService};
 use pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
 /// Listen to mongodb change streams and publish the events to a pubsub topic
-pub async fn listen_streams<P>(done_ch: Sender<String>, cfg: Config, token_provider: P)
-where
-    P: GCPTokenProvider + Clone + Send + Sync + 'static,
-{
+pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Result<()> {
+    let mut token_provider =
+        ServiceAccount::from_file(&cfg.gcp_serv_acc_key_path, pubsub::SCOPES.to_vec());
+
+    // token provider is lazily initialized - warm it up
+    let _ = token_provider.access_token()?;
+
     for connector_cfg in cfg.connectors {
         info!(
             "listening to: {}:{}",
             connector_cfg.db_name, connector_cfg.db_collection
         );
 
-        let token_provider = token_provider.clone();
+        // token_provider is Arc and can be cloned without performance penalty
+        let gcp_auth_inteceptor = ServiceAccountAuth::new(token_provider.clone());
         let done_ch = done_ch.clone();
         tokio::spawn(async move {
             let cnt_name = connector_cfg.name.clone();
-            let stream_listener = StreamListener::new(connector_cfg, token_provider).await;
+            let stream_listener = StreamListener::new(connector_cfg, gcp_auth_inteceptor).await;
 
             match stream_listener {
                 Ok(mut stream_listener) => {
@@ -52,47 +58,52 @@ where
             }
         });
     }
+
+    Ok(())
 }
 
 /// ChangeStream is a mongodb change stream
 type CStream = ChangeStream<ChangeStreamEvent<Document>>;
 
 /// StreamListener listens to a mongodb change stream and publishes the events to a pubsub topic
-struct StreamListener<P: GCPTokenProvider + Clone> {
+struct StreamListener<'a, P: GCPTokenProvider + Clone> {
     connector_name: String,
     schema_name: String,
     topic: String,
+    db: Database,
     db_name: String,
     db_collection: String,
-    schema_srvc: SchemaService<ServiceAccountAuth<P>>,
+    schema_srvc: Box<dyn SchemaProvider + 'a + Send + Sync>,
     publisher: PublisherService<ServiceAccountAuth<P>>,
-    db_client: Client,
     resume_token: Option<ResumeToken>,
 }
 
-impl<P> StreamListener<P>
+impl<'a, P> StreamListener<'a, P>
 where
-    P: GCPTokenProvider + Clone,
+    P: GCPTokenProvider + Clone + 'static + Send + Sync,
 {
-    async fn new(connector: Connector, mut token_provider: P) -> anyhow::Result<Self> {
-        // token provider is lazily initialized - warm it up
-        let _ = token_provider.access_token()?;
-        let auth_interceptor = ServiceAccountAuth::new(token_provider.clone());
+    async fn new(
+        connector: Connector,
+        auth_interceptor: ServiceAccountAuth<P>,
+    ) -> anyhow::Result<StreamListener<'a, P>> {
+        let publisher = publisher(auth_interceptor.clone()).await?;
+        let db = db_client(connector.name.clone(), &connector.db_connection)
+            .await?
+            .database(&connector.db_name);
 
-        let schema_srvc = SchemaService::with_interceptor(auth_interceptor.clone()).await?;
-        let publisher = publisher(auth_interceptor).await?;
-        let db_client = db_client(connector.name.clone(), &connector.db_connection).await?;
+        let schema_srvc =
+            get_schema_service(connector.schema.provider, auth_interceptor, db.clone()).await?;
 
-        Ok(Self {
+        Ok(StreamListener {
             connector_name: connector.name,
-            schema_name: connector.schema,
+            schema_name: connector.schema.id,
             topic: connector.topic,
             db_name: connector.db_name,
             db_collection: connector.db_collection,
-            schema_srvc,
             publisher,
-            db_client,
+            db,
             resume_token: None,
+            schema_srvc,
         })
     }
 
@@ -160,10 +171,7 @@ where
             .schema_srvc
             .get_schema(self.schema_name.clone())
             .await?;
-
-        // todo: check if routing can be done based on attributes on pubsub side
-
-        let avro_encoded = encode(mongo_doc, &schema.definition)?;
+        let avro_encoded = encode(mongo_doc, schema)?;
 
         let message = self
             .publisher
@@ -198,30 +206,29 @@ where
     }
 
     async fn change_stream(&self) -> anyhow::Result<CStream> {
-        let db = self.db_client.database(&self.db_name);
-
         // enable support for full document before and after change
         // used to obtain the document for delete events
         // https://docs.mongodb.com/manual/reference/command/collMod/#dbcmd.collMod
-        db.run_command(
-            doc! {
-                "collMod": self.db_collection.clone(),
-                "changeStreamPreAndPostImages": doc! {
-                    "enabled": true,
-                }
-            },
-            None,
-        )
-        .await
-        .map_err(|err| {
-            anyhow!(
-                "failed to enable full document support for stream: {}, {}",
-                &self.connector_name,
-                err
+        self.db
+            .run_command(
+                doc! {
+                    "collMod": self.db_collection.clone(),
+                    "changeStreamPreAndPostImages": doc! {
+                        "enabled": true,
+                    }
+                },
+                None,
             )
-        })?;
+            .await
+            .map_err(|err| {
+                anyhow!(
+                    "failed to enable full document support for stream: {}, {}",
+                    &self.connector_name,
+                    err
+                )
+            })?;
 
-        let coll = db.collection::<Document>(&self.db_collection);
+        let coll = self.db.collection::<Document>(&self.db_collection);
 
         let opts = ChangeStreamOptions::builder()
             .full_document(Some(FullDocumentType::UpdateLookup))
@@ -231,4 +238,20 @@ where
 
         Ok(coll.watch(None, Some(opts)).await?)
     }
+}
+
+async fn get_schema_service<P>(
+    provider_name: SchemaProviderName,
+    auth_interceptor: ServiceAccountAuth<P>,
+    db: Database,
+) -> anyhow::Result<Box<dyn SchemaProvider + Send + Sync>>
+where
+    P: GCPTokenProvider + Clone + 'static + Send + Sync,
+{
+    Ok(match provider_name {
+        SchemaProviderName::Gcp => {
+            Box::new(SchemaService::with_interceptor(auth_interceptor).await?)
+        }
+        SchemaProviderName::MongoDB => Box::new(MongoDbSchemaProvider::new(db).await),
+    })
 }

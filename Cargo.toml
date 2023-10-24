@@ -1,6 +1,6 @@
 [package]
 name = "mstream"
-version = "0.3.2"
+version = "0.4.2"
 edition = "2021"
 authors = ["Simon Makarski", "Daniyar Mussakulov"]
 
@@ -21,6 +21,7 @@ serde_derive = "1"
 log = "0.4"
 pretty_env_logger = "0.4"
 gauth = "0.4.0"
+async-trait = "0.1.74"
 
 [build-dependencies]
 tonic-build = "0.9"
