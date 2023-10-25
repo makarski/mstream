@@ -263,12 +263,10 @@ mod tests {
         let raw_schema = r###"
             {
                 "type" : "record",
-                "name" : "Employee",
+                "name" : "Employee"
             }
         "###;
-        let mongodb_document = doc! {"name": "Jon Doe", "age": 32};
-        let avro_schema = Schema::parse_str(raw_schema).unwrap();
-        encode(mongodb_document, avro_schema).unwrap();
+        Schema::parse_str(raw_schema).expect("Failed to parse schema from JSON");
     }
 
     #[test]
