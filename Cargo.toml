@@ -1,6 +1,6 @@
 [package]
 name = "mstream"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 authors = ["Simon Makarski", "Daniyar Mussakulov"]
 
@@ -11,20 +11,20 @@ mongodb = "2.6.1"
 apache-avro = "0.14"
 anyhow = "1"
 tonic = { version = "0.9", features = ["tls", "tls-roots"] }
-prost = "0.11"
-prost-derive = "0.11"
-prost-types = "0.11"
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "signal"] }
 toml = "0.5"
 serde = "1"
 serde_derive = "1"
 log = "0.4"
 pretty_env_logger = "0.4"
-gauth = "0.4.0"
+gauth = "0.4"
 async-trait = "0.1.74"
+prost = "0.11"
+prost-types = "0.11"
 
 [build-dependencies]
 tonic-build = "0.9"
+prost-derive = "0.11"
 
 [dev-dependencies]
-apache-avro = {version = "0.14", features = ["derive"]}
+apache-avro = { version = "0.14", features = ["derive"] }

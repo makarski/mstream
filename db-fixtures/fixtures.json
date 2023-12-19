@@ -1,0 +1,42 @@
+[
+    {
+        "id": 1,
+        "name": "User 1",
+        "age": 20,
+        "is_active": true,
+        "long_number": 123456789000,
+        "rating": 4.5
+    },
+    {
+        "id": 2,
+        "name": "User 2",
+        "age": 30,
+        "is_active": false,
+        "long_number": 987654321000,
+        "rating": 3.5
+    },
+    {
+        "id": 3,
+        "name": "User 3",
+        "age": 40,
+        "is_active": true,
+        "long_number": 123456789000,
+        "rating": 2.5
+    },
+    {
+        "id": 4,
+        "name": "User 4",
+        "age": 50,
+        "is_active": false,
+        "long_number": 987654321000,
+        "rating": 1.5
+    },
+    {
+        "id": 5,
+        "name": "User 5",
+        "age": 60,
+        "is_active": true,
+        "long_number": 123456789000,
+        "rating": 0.5
+    }
+]

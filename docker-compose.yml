@@ -1,55 +1,63 @@
 version: '3.8'
 
+x-common-variables:
+  MONGO_IMAGE: &mongo_image mongo:6
+  REPLICA_SET_NAME: &replica_set_name myReplSet
+
 services:
   mongo1:
     container_name: mongo1
     hostname: mongo1
-    image: mongo:6 
+    image: *mongo_image
     restart: always
     networks:
       - mongoCluster
     volumes:
       - mongovol1:/data/db
+      - ./db-fixtures:/opt/fixtures
     ports:
       - "27017:27017"
-    command: mongod --replSet myReplSet --bind_ip_all
+    command: mongod --replSet *replica_set_name --bind_ip_all
+
   mongo2:
     container_name: mongo2
     hostname: mongo2
-    image: mongo:6 
+    image: *mongo_image
     restart: always
     networks:
       - mongoCluster
     volumes:
       - mongovol2:/data/db
+      - ./db-fixtures:/opt/fixtures
     ports:
       - "27018:27017"
-    command: mongod --replSet myReplSet --bind_ip_all
+    command: mongod --replSet *replica_set_name --bind_ip_all
+
   mongo3:
     container_name: mongo3
     hostname: mongo3
-    image: mongo:6 
+    image: *mongo_image
     restart: always
     networks:
       - mongoCluster
     volumes:
       - mongovol3:/data/db
+      - ./db-fixtures:/opt/fixtures
     ports:
       - "27019:27017"
-    command: mongod --replSet myReplSet --bind_ip_all
+    command: mongod --replSet *replica_set_name --bind_ip_all
 
   mongoinit:
-    image: mongo:6
+    image: *mongo_image
     networks:
       - mongoCluster
-    restart: "no"
     depends_on:
       - mongo1
       - mongo2
       - mongo3
     command: >
       bash -c "sleep 10 && mongosh --host mongo1 --eval \"rs.initiate({
-        _id: 'myReplSet',
+        _id: '*replica_set_name',
         members: [
           {_id: 0, host: 'mongo1'},
           {_id: 1, host: 'mongo2'},
