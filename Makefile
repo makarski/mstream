@@ -9,9 +9,16 @@ help: ## Show this help.
 print-primary-host: ## Prints the primary mongo host
 	@echo $(PRIMARY_HOST)
 
+.PHONY: up
+up: db-up db-init-rpl-set ## Starts the mongo cluster and initializes the replica set
+
 .PHONY: db-up
 db-up: ## Starts the mongo cluster
 	@docker-compose up -d
+
+.PHONY: db-init-rpl-set
+db-init-rpl-set: ## Initializes the replica set
+	@docker exec mongo1 /bin/bash /opt/scripts/init_replica_set.sh
 
 .PHONY: db-stop
 db-stop: ## Stops the mongo cluster
