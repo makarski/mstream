@@ -13,11 +13,6 @@ use mstream::config::{SchemaCfg, SchemaProviderName};
 use mstream::pubsub::api::{AcknowledgeRequest, PullRequest};
 use mstream::pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
-// PUBSUB constants
-const PUBSUB_SCHEMA: &str = "projects/mgocdc/schemas/employee-integration-test";
-const PUBSUB_TOPIC: &str = "projects/mgocdc/topics/employee-test-poc";
-const PUBSUB_SUBSCRIPTION: &str = "projects/mgocdc/subscriptions/employee-test-sub";
-
 // DB constants
 const CONNECTOR_NAME: &str = "employee-stream-test";
 pub const DB_NAME: &str = "integration-tests";
@@ -47,14 +42,16 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 db_collection: DB_COLLECTION.to_owned(),
                 schema: SchemaCfg {
                     provider: SchemaProviderName::Gcp,
-                    id: PUBSUB_SCHEMA.to_owned(),
+                    id: env::var("PUBSUB_SCHEMA").unwrap(),
                 },
-                topic: PUBSUB_TOPIC.to_owned(),
+                topic: env::var("PUBSUB_TOPIC").unwrap(),
             }],
-            gcp_serv_acc_key_path: "service_account_key.json".to_owned(),
+            ..Default::default()
         };
 
-        listener::listen_streams(done_ch, config).await.unwrap();
+        let tp = AccessToken::init().unwrap();
+
+        listener::listen_streams(done_ch, config, tp).await.unwrap();
     });
 }
 
@@ -84,12 +81,13 @@ impl AccessToken {
     pub fn init() -> anyhow::Result<Self> {
         let access_token = env::var("AUTH_TOKEN")
             .map_err(|err| anyhow!("env var AUTH_TOKEN is not set: {}", err))?;
+
         Ok(Self(access_token))
     }
 }
 
 impl GCPTokenProvider for AccessToken {
-    fn access_token(&mut self) -> anyhow::Result<String> {
+    fn gcp_token(&mut self) -> anyhow::Result<String> {
         Ok(format!("Bearer {}", &self.0))
     }
 }
@@ -118,14 +116,16 @@ pub fn generate_pubsub_attributes(op_type: &str) -> HashMap<String, String> {
 pub async fn pull_from_pubsub(
     msg_number: i32,
 ) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
-    let auth_interceptor = ServiceAccountAuth::new(AccessToken::init()?);
+    let auth_interceptor = ServiceAccountAuth(AccessToken::init()?);
     let mut ps_subscriber = subscriber(auth_interceptor.clone()).await?;
 
     log::info!("pulling from pubsub...");
 
+    let subscription = env::var("PUBSUB_SUBSCRIPTION").unwrap();
+
     let response = ps_subscriber
         .pull(PullRequest {
-            subscription: PUBSUB_SUBSCRIPTION.to_owned(),
+            subscription: subscription.clone(),
             max_messages: msg_number,
             ..Default::default()
         })
@@ -148,7 +148,7 @@ pub async fn pull_from_pubsub(
 
         ps_subscriber
             .acknowledge(AcknowledgeRequest {
-                subscription: PUBSUB_SUBSCRIPTION.to_owned(),
+                subscription: subscription.clone(),
                 ack_ids: vec![message.ack_id],
             })
             .await

@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use gauth::serv_account::ServiceAccount;
+use gauth::token_provider::{AsyncTokenProvider, Watcher};
 use tonic::service::{interceptor::InterceptedService, Interceptor};
 use tonic::transport::{Channel, ClientTlsConfig};
 use tonic::{Code, Request, Status};
@@ -13,27 +13,21 @@ const ENDPOINT: &str = "https://pubsub.googleapis.com";
 pub const SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/pubsub"];
 
 #[derive(Clone, Debug)]
-pub struct ServiceAccountAuth<P: GCPTokenProvider + Clone>(P);
-
-impl<P: GCPTokenProvider + Clone> ServiceAccountAuth<P> {
-    pub fn new(token_provider: P) -> Self {
-        Self(token_provider)
-    }
-}
+pub struct ServiceAccountAuth<P: GCPTokenProvider + Clone>(pub P);
 
 pub trait GCPTokenProvider {
-    fn access_token(&mut self) -> anyhow::Result<String>;
+    fn gcp_token(&mut self) -> anyhow::Result<String>;
 }
 
-impl GCPTokenProvider for ServiceAccount {
-    fn access_token(&mut self) -> anyhow::Result<String> {
+impl<T: Watcher + Clone + Send + 'static> GCPTokenProvider for AsyncTokenProvider<T> {
+    fn gcp_token(&mut self) -> anyhow::Result<String> {
         Ok(self.access_token()?)
     }
 }
 
 impl<P: GCPTokenProvider + Clone> Interceptor for ServiceAccountAuth<P> {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        let access_token = self.0.access_token().map_err(|err| {
+        let access_token = self.0.gcp_token().map_err(|err| {
             Status::new(
                 Code::InvalidArgument,
                 format!("failed to retrieve access token: {}", err),

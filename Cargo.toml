@@ -1,6 +1,6 @@
 [package]
 name = "mstream"
-version = "0.4.4"
+version = "0.5.0"
 edition = "2021"
 authors = ["Simon Makarski", "Daniyar Mussakulov"]
 
@@ -17,7 +17,7 @@ serde = "1"
 serde_derive = "1"
 log = "0.4"
 pretty_env_logger = "0.4"
-gauth = "0.4"
+gauth = { version = "0.8", features = ["token-watcher"] }
 async-trait = "0.1.74"
 prost = "0.11"
 prost-types = "0.11"

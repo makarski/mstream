@@ -42,7 +42,7 @@ run-debug: setup-config ## Runs the server in debug mode
 
 .PHONY: print-token
 print-token: ## Prints the access token
-	gcloud auth print-access-token
+	@echo $(AUTH_TOKEN)
 
 .PHONY: db-fixtures
 db-fixtures: ## Loads the fixtures into the db
@@ -55,7 +55,9 @@ db-fixtures: ## Loads the fixtures into the db
 
 .PHONY: integration-tests
 integration-tests: ## Runs the integration tests
-	@RUST_LOG=debug AUTH_TOKEN=$(AUTH_TOKEN) cargo test -- --nocapture --ignored
+	@source .env.test && RUST_LOG=debug \
+	 AUTH_TOKEN=$(AUTH_TOKEN) \
+	 cargo test -- --nocapture --ignored
 
 .PHONY: unit-tests
 unit-tests: ## Runs the unit tests

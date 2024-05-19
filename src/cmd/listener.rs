@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail};
-use gauth::serv_account::ServiceAccount;
 use log::{debug, error, info};
 use mongodb::bson::{doc, Document};
 use mongodb::change_stream::event::{ChangeStreamEvent, OperationType, ResumeToken};
@@ -20,13 +19,10 @@ use pubsub::srvc::{publisher, PublisherService, SchemaService};
 use pubsub::{GCPTokenProvider, ServiceAccountAuth};
 
 /// Listen to mongodb change streams and publish the events to a pubsub topic
-pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Result<()> {
-    let mut token_provider =
-        ServiceAccount::from_file(&cfg.gcp_serv_acc_key_path, pubsub::SCOPES.to_vec());
-
-    // token provider is lazily initialized - warm it up
-    let _ = token_provider.access_token()?;
-
+pub async fn listen_streams<TP>(done_ch: Sender<String>, cfg: Config, tp: TP) -> anyhow::Result<()>
+where
+    TP: GCPTokenProvider + Clone + 'static + Send + Sync,
+{
     for connector_cfg in cfg.connectors {
         info!(
             "listening to: {}:{}",
@@ -34,8 +30,9 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
         );
 
         // token_provider is Arc and can be cloned without performance penalty
-        let gcp_auth_inteceptor = ServiceAccountAuth::new(token_provider.clone());
+        let gcp_auth_inteceptor = ServiceAccountAuth(tp.clone());
         let done_ch = done_ch.clone();
+
         tokio::spawn(async move {
             let cnt_name = connector_cfg.name.clone();
             let stream_listener = StreamListener::new(connector_cfg, gcp_auth_inteceptor).await;
@@ -112,7 +109,9 @@ where
         let mut cs = self.change_stream().await?;
 
         while cs.is_alive() {
-            let Some(event) = cs.next_if_any().await? else { continue };
+            let Some(event) = cs.next_if_any().await? else {
+                continue;
+            };
             let attributes = self.event_metadata(&event);
             // self.resume_token = cs.resume_token();
 
