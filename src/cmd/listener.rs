@@ -12,11 +12,12 @@ use tokio::sync::mpsc::Sender;
 use crate::config::{Config, Connector, SchemaProviderName};
 use crate::db::db_client;
 use crate::encoding::avro::encode;
-use crate::pubsub;
+use crate::pubsub::{
+    srvc::{PubSubPublisher, SchemaService},
+    GCPTokenProvider, ServiceAccountAuth,
+};
 use crate::schema::{MongoDbSchemaProvider, SchemaProvider};
-use pubsub::api::{PublishRequest, PubsubMessage};
-use pubsub::srvc::{publisher, PublisherService, SchemaService};
-use pubsub::{GCPTokenProvider, ServiceAccountAuth};
+use crate::sink::EventSink;
 
 /// Listen to mongodb change streams and publish the events to a pubsub topic
 pub async fn listen_streams<TP>(done_ch: Sender<String>, cfg: Config, tp: TP) -> anyhow::Result<()>
@@ -63,7 +64,7 @@ where
 type CStream = ChangeStream<ChangeStreamEvent<Document>>;
 
 /// StreamListener listens to a mongodb change stream and publishes the events to a pubsub topic
-struct StreamListener<'a, P: GCPTokenProvider + Clone> {
+struct StreamListener<'a> {
     connector_name: String,
     schema_name: String,
     topic: String,
@@ -71,19 +72,19 @@ struct StreamListener<'a, P: GCPTokenProvider + Clone> {
     db_name: String,
     db_collection: String,
     schema_srvc: Box<dyn SchemaProvider + 'a + Send + Sync>,
-    publisher: PublisherService<ServiceAccountAuth<P>>,
+    publisher: Box<dyn EventSink + 'a + Send + Sync>,
     resume_token: Option<ResumeToken>,
 }
 
-impl<'a, P> StreamListener<'a, P>
-where
-    P: GCPTokenProvider + Clone + 'static + Send + Sync,
-{
-    async fn new(
+impl<'a> StreamListener<'a> {
+    async fn new<P>(
         connector: Connector,
         auth_interceptor: ServiceAccountAuth<P>,
-    ) -> anyhow::Result<StreamListener<'a, P>> {
-        let publisher = publisher(auth_interceptor.clone()).await?;
+    ) -> anyhow::Result<StreamListener<'a>>
+    where
+        P: GCPTokenProvider + Clone + 'static + Send + Sync,
+    {
+        let publisher = get_publisher_service(auth_interceptor.clone()).await?;
         let db = db_client(connector.name.clone(), &connector.db_connection)
             .await?
             .database(&connector.db_name);
@@ -174,31 +175,12 @@ where
 
         let message = self
             .publisher
-            .publish(PublishRequest {
-                topic: self.topic.clone(),
-                messages: vec![PubsubMessage {
-                    data: avro_encoded,
-                    attributes,
-                    ..Default::default()
-                }],
-            })
-            .await
-            .map_err(|err| {
-                anyhow!(
-                    "{}. stream: {}. schema: {}. topic: {}",
-                    err.message(),
-                    &self.connector_name,
-                    &self.schema_name,
-                    &self.topic
-                )
-            })?;
+            .publish(self.topic.clone(), avro_encoded, attributes)
+            .await?;
 
         info!(
             "successfully published a message: {:?}. stream: {}. schema: {}. topic: {}",
-            message.into_inner(),
-            &self.connector_name,
-            &self.schema_name,
-            &self.topic,
+            message, &self.connector_name, &self.schema_name, &self.topic,
         );
 
         Ok(())
@@ -253,4 +235,15 @@ where
         }
         SchemaProviderName::MongoDB => Box::new(MongoDbSchemaProvider::new(db).await),
     })
+}
+
+async fn get_publisher_service<P>(
+    auth_interceptor: ServiceAccountAuth<P>,
+) -> anyhow::Result<Box<dyn EventSink + Send + Sync>>
+where
+    P: GCPTokenProvider + Clone + 'static + Send + Sync,
+{
+    Ok(Box::new(
+        PubSubPublisher::with_interceptor(auth_interceptor).await?,
+    ))
 }

@@ -1,5 +1,3 @@
-version: '3.8'
-
 x-common-variables:
   MONGO_IMAGE: &mongo_image mongo:6
 

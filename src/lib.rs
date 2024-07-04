@@ -2,10 +2,12 @@ use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use log::{debug, warn};
 use tokio::sync::mpsc;
 
-pub mod cmd;
-pub mod config;
 mod db;
 mod encoding;
+mod sink;
+
+pub mod cmd;
+pub mod config;
 pub mod pubsub;
 pub mod schema;
 

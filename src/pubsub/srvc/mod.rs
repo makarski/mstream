@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Ok};
 use apache_avro::Schema;
 use async_trait::async_trait;
 use tonic::service::Interceptor;
@@ -9,13 +9,49 @@ use super::{tls_transport, Channel, InterceptedService};
 use crate::pubsub::api::publisher_client::PublisherClient;
 use crate::pubsub::api::schema_service_client::SchemaServiceClient;
 use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
+use crate::pubsub::api::{PublishRequest, PubsubMessage};
 use crate::schema::SchemaProvider;
+use crate::sink::EventSink;
 
-pub type PublisherService<I> = PublisherClient<InterceptedService<Channel, I>>;
+pub struct PubSubPublisher<I> {
+    client: PublisherClient<InterceptedService<Channel, I>>,
+}
 
-pub async fn publisher<I: Interceptor>(interceptor: I) -> anyhow::Result<PublisherService<I>> {
-    let channel = tls_transport().await?;
-    Ok(PublisherClient::with_interceptor(channel, interceptor))
+impl<I: Interceptor> PubSubPublisher<I> {
+    pub async fn with_interceptor(interceptor: I) -> anyhow::Result<Self> {
+        let channel = tls_transport().await?;
+        Ok(Self {
+            client: PublisherClient::with_interceptor(channel, interceptor),
+        })
+    }
+}
+
+#[async_trait]
+impl<I: Interceptor + Send> EventSink for PubSubPublisher<I> {
+    async fn publish(
+        &mut self,
+        topic: String,
+        b: Vec<u8>,
+        attributes: HashMap<String, String>,
+    ) -> anyhow::Result<String> {
+        let req = PublishRequest {
+            topic: topic.clone(),
+            messages: vec![PubsubMessage {
+                data: b,
+                attributes,
+                ..Default::default()
+            }],
+        };
+
+        let msg = self
+            .client
+            .publish(req)
+            .await
+            .map_err(|err| anyhow!("{}. topic: {}", err.message(), &topic))?;
+
+        let msg = msg.into_inner().message_ids[0].clone();
+        Ok(msg)
+    }
 }
 
 pub struct SchemaService<I> {
