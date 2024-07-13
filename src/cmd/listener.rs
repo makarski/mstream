@@ -62,25 +62,27 @@ where
 
 /// ChangeStream is a mongodb change stream
 type CStream = ChangeStream<ChangeStreamEvent<Document>>;
+type Publisher = Box<dyn EventSink + Send + Sync>;
+type SchemaRegistry = Box<dyn SchemaProvider + Send + Sync>;
 
 /// StreamListener listens to a mongodb change stream and publishes the events to a pubsub topic
-struct StreamListener<'a> {
+struct StreamListener {
     connector_name: String,
     schema_name: String,
     topic: String,
     db: Database,
     db_name: String,
     db_collection: String,
-    schema_srvc: Box<dyn SchemaProvider + 'a + Send + Sync>,
-    publisher: Box<dyn EventSink + 'a + Send + Sync>,
+    schema_srvc: SchemaRegistry,
+    publisher: Publisher,
     resume_token: Option<ResumeToken>,
 }
 
-impl<'a> StreamListener<'a> {
+impl StreamListener {
     async fn new<P>(
         connector: Connector,
         auth_interceptor: ServiceAccountAuth<P>,
-    ) -> anyhow::Result<StreamListener<'a>>
+    ) -> anyhow::Result<StreamListener>
     where
         P: GCPTokenProvider + Clone + 'static + Send + Sync,
     {
