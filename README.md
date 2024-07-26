@@ -2,29 +2,40 @@ mstream
 ===
 
 The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) for collections specified in config.
-Create and update events are picked up and sent as avro binary-encoded entities to respective GCP PubSub Topics.
+Create and update events are picked up and sent as avro binary-encoded entities to GCP PubSub and/or Kafka.
+One mongo source connector can be configured to publish to multiple topics from various providers.
 
 `Minimum tested MongoDB version: 6.0`
 
 ```mermaid
-sequenceDiagram
-    participant mstream
-    participant mgo as MongoDB
-    participant gcp_schema as GCP PubSub Schema
-    participant gcp_topic as GCP PubSub Topic
+graph TB
+    subgraph mstream[mstream]
+        handler[Change Stream Handler]
+        schema_cache[Schema Cache]
+        encoder[Avro Encoder]
+    end
 
-    autonumber
-    mstream->mgo: subscribe to change stream
-    activate mstream
-    mgo-->>mstream: get change stream event
-    mstream->>gcp_schema: get avro schema request
-    activate gcp_schema
-    gcp_schema->>mstream: avro schema
-    deactivate gcp_schema
-    Note right of mstream: validate schema: convert bson doc to avro
-    Note right of mstream: cache schema
-    mstream->>gcp_topic: publish avro encoded document
-    deactivate mstream
+    subgraph gcp[GCP Pub/Sub]
+        schema_registry[Schema Registry]
+        pubsub_topic[Topics]
+    end
+
+    mongodb[(MongoDB)] --> handler
+    schema_registry --> schema_cache
+
+    handler --> encoder
+    schema_cache --> encoder
+
+    encoder --> pubsub_topic
+    encoder --> kafka[Kafka]
+
+    classDef primary fill:,stroke:#333,stroke-width:1px
+    classDef secondary fill:#bbf,stroke:#333,stroke-width:1px
+    classDef gcp fill:#aef,stroke:#333,stroke-width:1px
+
+    class mstream primary
+    class mongodb,kafka,pubsub_topic,schema_registry secondary
+    class gcp gcp
 ```
 
 ### Event Processing

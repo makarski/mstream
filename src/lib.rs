@@ -1,9 +1,10 @@
-use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
+use anyhow::Context;
 use log::{debug, warn};
 use tokio::sync::mpsc;
 
 mod db;
 mod encoding;
+mod kafka;
 mod sink;
 
 pub mod cmd;
@@ -12,19 +13,13 @@ pub mod pubsub;
 pub mod schema;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
-    let config = config::Config::load(config_path)?;
+    let config = config::Config::load(config_path).with_context(|| "failed to load config")?;
     debug!("config: {:?}", config);
 
     let worker_count = config.connectors.len();
     let (tx, mut rx) = mpsc::channel::<String>(worker_count);
 
-    let service_account =
-        ServiceAccount::from_file(&config.gcp_serv_acc_key_path, pubsub::SCOPES.to_vec());
-
-    let tp = AsyncTokenProvider::new(service_account).with_interval(600);
-    tp.watch_updates().await;
-
-    cmd::listener::listen_streams(tx, config, tp).await?;
+    cmd::listen_streams(tx, config).await?;
     for _ in 0..worker_count {
         match rx.recv().await {
             Some(cnt_name) => warn!("stream listener exited: {}", cnt_name),

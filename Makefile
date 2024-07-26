@@ -56,9 +56,28 @@ db-fixtures: ## Loads the fixtures into the db
 .PHONY: integration-tests
 integration-tests: ## Runs the integration tests
 	@source .env.test && RUST_LOG=debug \
-	 AUTH_TOKEN=$(AUTH_TOKEN) \
+	 MSTREAM_TEST_AUTH_TOKEN=$(AUTH_TOKEN) \
 	 cargo test -- --nocapture --ignored
 
 .PHONY: unit-tests
 unit-tests: ## Runs the unit tests
 	RUST_LOG=info cargo test -- --nocapture
+
+.PHONY: kafka-topics
+kafka-topics: ## Lists the kafka topics
+	@docker exec -it kafka /opt/bitnami/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+
+	# @docker exec kafka kafka-topics --create --topic employees --partitions 1 --replication-factor 1 --if-not-exists --bootstrap-server localhost:9092
+
+.PHONY: kafka-publish
+kafka-publish: ## Publishes a message to the kafka topic
+	@for i in $(shell seq 1 5); do \
+		echo "$$i: Hello, World!" | docker exec -i kafka /opt/bitnami/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic test; \
+	done
+
+.PHONY: kafka-consume
+kafka-consume: ## Consumes messages from the kafka topic
+	@docker exec -it kafka /opt/bitnami/kafka/bin/kafka-console-consumer.sh --consumer.config /opt/bitnami/kafka/config/consumer.properties --bootstrap-server localhost:9092 --topic test --from-beginning
+
+kafka-create-topic:
+	@docker exec kafka /opt/bitnami/kafka/bin/kafka-topics.sh --create --topic test --partitions 1 --replication-factor 1 --if-not-exists --bootstrap-server localhost:9092

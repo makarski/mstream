@@ -1,8 +1,8 @@
 [package]
 name = "mstream"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
-authors = ["Simon Makarski", "Daniyar Mussakulov"]
+authors = ["Simon Makarski"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,7 +12,7 @@ apache-avro = "0.14"
 anyhow = "1"
 tonic = { version = "0.9", features = ["tls", "tls-roots"] }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "signal"] }
-toml = "0.5"
+toml = "0.8.20"
 serde = "1"
 serde_derive = "1"
 log = "0.4"
@@ -21,6 +21,7 @@ gauth = { version = "0.8", features = ["token-watcher"] }
 async-trait = "0.1.74"
 prost = "0.11"
 prost-types = "0.11"
+rdkafka = { version = "0.36.2", features = ["ssl"] }
 
 [build-dependencies]
 tonic-build = "0.9"
