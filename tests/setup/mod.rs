@@ -5,13 +5,13 @@ use anyhow::anyhow;
 use apache_avro::AvroSchema;
 use mongodb::bson::{doc, Document};
 use mongodb::Collection;
+use mstream::config::{GcpAuthConfig, Service, ServiceConfigReference};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tonic::service::Interceptor;
 
-use mstream::config::{SchemaCfg, SchemaProviderName};
 use mstream::pubsub::api::{AcknowledgeRequest, PullRequest};
-use mstream::pubsub::{GCPTokenProvider, ServiceAccountAuth};
+use mstream::pubsub::{ServiceAccountAuth, StaticAccessToken};
 
 // DB constants
 const CONNECTOR_NAME: &str = "employee-stream-test";
@@ -30,28 +30,43 @@ pub struct Employee {
 }
 
 pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
-    use mstream::cmd::listener;
+    use mstream::cmd;
     use mstream::config::{Config, Connector};
 
     tokio::spawn(async move {
         let config = Config {
+            services: vec![
+                Service::PubSub {
+                    name: "pubsub".to_owned(),
+                    auth: GcpAuthConfig::StaticToken {
+                        env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
+                    },
+                },
+                Service::MongoDb {
+                    name: "mongodb".to_owned(),
+                    connection_string: DB_CONNECTION.to_owned(),
+                    db_name: DB_NAME.to_owned(),
+                },
+            ],
             connectors: vec![Connector {
                 name: CONNECTOR_NAME.to_owned(),
-                db_connection: DB_CONNECTION.to_owned(),
-                db_name: DB_NAME.to_owned(),
-                db_collection: DB_COLLECTION.to_owned(),
-                schema: SchemaCfg {
-                    provider: SchemaProviderName::Gcp,
+                source: ServiceConfigReference {
+                    service_name: "mongodb".to_owned(),
+                    id: DB_COLLECTION.to_owned(),
+                },
+                schema: ServiceConfigReference {
+                    service_name: "pubsub".to_owned(),
                     id: env::var("PUBSUB_SCHEMA").unwrap(),
                 },
-                topic: env::var("PUBSUB_TOPIC").unwrap(),
+                sinks: vec![ServiceConfigReference {
+                    service_name: "pubsub".to_owned(),
+                    id: env::var("PUBSUB_TOPIC").unwrap(),
+                }],
             }],
             ..Default::default()
         };
 
-        let tp = AccessToken::init().unwrap();
-
-        listener::listen_streams(done_ch, config, tp).await.unwrap();
+        cmd::listen_streams(done_ch, config).await.unwrap();
     });
 }
 
@@ -72,24 +87,6 @@ pub async fn setup_db(
             (attributes, item)
         })
         .collect::<Vec<_>>())
-}
-
-#[derive(Clone, Debug)]
-pub struct AccessToken(String);
-
-impl AccessToken {
-    pub fn init() -> anyhow::Result<Self> {
-        let access_token = env::var("AUTH_TOKEN")
-            .map_err(|err| anyhow!("env var AUTH_TOKEN is not set: {}", err))?;
-
-        Ok(Self(access_token))
-    }
-}
-
-impl GCPTokenProvider for AccessToken {
-    fn gcp_token(&mut self) -> anyhow::Result<String> {
-        Ok(format!("Bearer {}", &self.0))
-    }
 }
 
 use mstream::pubsub::api::subscriber_client::SubscriberClient;
@@ -116,7 +113,12 @@ pub fn generate_pubsub_attributes(op_type: &str) -> HashMap<String, String> {
 pub async fn pull_from_pubsub(
     msg_number: i32,
 ) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
-    let auth_interceptor = ServiceAccountAuth(AccessToken::init()?);
+    let static_token = StaticAccessToken(
+        env::var("MSTREAM_TEST_AUTH_TOKEN")
+            .map_err(|err| anyhow!("env var MSTREAM_TEST_AUTH_TOKEN is not set: {}", err))?,
+    );
+
+    let auth_interceptor = ServiceAccountAuth::new(static_token);
     let mut ps_subscriber = subscriber(auth_interceptor.clone()).await?;
 
     log::info!("pulling from pubsub...");

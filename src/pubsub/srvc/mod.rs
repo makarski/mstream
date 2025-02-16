@@ -10,7 +10,7 @@ use crate::pubsub::api::publisher_client::PublisherClient;
 use crate::pubsub::api::schema_service_client::SchemaServiceClient;
 use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
 use crate::pubsub::api::{PublishRequest, PubsubMessage};
-use crate::schema::SchemaProvider;
+use crate::schema::SchemaRegistry;
 use crate::sink::EventSink;
 
 pub struct PubSubPublisher<I> {
@@ -32,15 +32,25 @@ impl<I: Interceptor + Send> EventSink for PubSubPublisher<I> {
         &mut self,
         topic: String,
         b: Vec<u8>,
-        attributes: HashMap<String, String>,
+        key: Option<&str>,
+        attributes: Option<HashMap<String, String>>,
     ) -> anyhow::Result<String> {
+        let mut msg = PubsubMessage {
+            data: b,
+            ..Default::default()
+        };
+
+        if let Some(k) = key {
+            k.clone_into(&mut msg.ordering_key)
+        }
+
+        if let Some(attr) = attributes {
+            msg.attributes = attr;
+        }
+
         let req = PublishRequest {
             topic: topic.clone(),
-            messages: vec![PubsubMessage {
-                data: b,
-                attributes,
-                ..Default::default()
-            }],
+            messages: vec![msg],
         };
 
         let msg = self
@@ -84,7 +94,7 @@ impl<I: Interceptor> SchemaService<I> {
 }
 
 #[async_trait]
-impl<I: Interceptor + Send> SchemaProvider for SchemaService<I> {
+impl<I: Interceptor + Send> SchemaRegistry for SchemaService<I> {
     async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
         if !self.cache.contains_key(&id) {
             let schema_response = self.client.get_schema(GetSchemaRequest {

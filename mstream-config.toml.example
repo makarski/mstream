@@ -1,17 +1,48 @@
-gcp_service_account_key_path = "service_account_key_path.json"
+# --- Google Cloud Pub/Sub with Service Account Authentication ---
+[[services]]
+provider = "pubsub"
+name = "pubsub-example"
+auth = { kind = "service_account", account_key_path = "/path/to/service-account.json" }
 
-[[connectors]]
-name = "connector 1"
-db_connection = "mongodb://localhost:27017,localhost:27018,localhost:27019"
-db_name = "mydb"
-db_collection = "mycollecttion"
-schema = { provider = "gcp", id = "projects/{project_name}/schemas/{schema_name}" }
-topic = "projects/{project_name}/topics/{topic_name}"
+# --- Google Cloud Pub/Sub with Static Token Authentication ---
+[[services]]
+provider = "pubsub"
+name = "pubsub-static-token"
+auth = { kind = "static_token", env_token_name = "PUBSUB_TOKEN" }
 
+# --- Local Kafka Instance ---
+[[services]]
+provider = "kafka"
+name = "kafka-local"
+"bootstrap.servers" = "localhost:9092"
+
+# --- Cloud-hosted Kafka ---
+[[services]]
+provider = "kafka"
+name = "kafka-cloud"
+"bootstrap.servers" = "your-kafka-broker:9092"
+"security.protocol" = "SASL_SSL"
+"sasl.mechanism" = "PLAIN"
+"sasl.username" = "env:MSTREAM_KAFKA_USERNAME"
+"sasl.password" = "env:MSTREAM_KAFKA_PASSWORD"
+"client.id" = "mstream-client"
+
+# --- MongoDB Source Database ---
+[[services]]
+provider = "mongodb"
+name = "mongodb-source"
+connection_string = "mongodb://localhost:27017"
+db_name = "example_db"
+
+# Connector Configurations
 [[connectors]]
-name = "connector 2"
-db_connection = "mongodb://localhost:27017,localhost:27018,localhost:27019"
-db_name = "mydb"
-db_collection = "mycollecttion"
-schema = { provider = "mongodb", id = "schema_id" }
-topic = "projects/{project_name}/topics/{topic_name}"
+name = "example-connector"
+# Configure the source MongoDB collection to watch for changes
+source = { service_name = "mongodb-source", id = "example_collection" }
+schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/example-schema" }
+# Configure multiple sink destinations
+sinks = [
+    { service_name = "kafka-local", id = "local_topic" },
+    { service_name = "kafka-cloud", id = "cloud_topic" },
+    { service_name = "pubsub-example", id = "projects/your-project/topics/example-topic" },
+]
