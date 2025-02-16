@@ -1,22 +1,18 @@
-# --- Google Cloud Pub/Sub with Service Account Authentication ---
 [[services]]
 provider = "pubsub"
 name = "pubsub-example"
 auth = { kind = "service_account", account_key_path = "/path/to/service-account.json" }
 
-# --- Google Cloud Pub/Sub with Static Token Authentication ---
 [[services]]
 provider = "pubsub"
 name = "pubsub-static-token"
 auth = { kind = "static_token", env_token_name = "PUBSUB_TOKEN" }
 
-# --- Local Kafka Instance ---
 [[services]]
 provider = "kafka"
 name = "kafka-local"
 "bootstrap.servers" = "localhost:9092"
 
-# --- Cloud-hosted Kafka ---
 [[services]]
 provider = "kafka"
 name = "kafka-cloud"
@@ -27,7 +23,6 @@ name = "kafka-cloud"
 "sasl.password" = "env:MSTREAM_KAFKA_PASSWORD"
 "client.id" = "mstream-client"
 
-# --- MongoDB Source Database ---
 [[services]]
 provider = "mongodb"
 name = "mongodb-source"
