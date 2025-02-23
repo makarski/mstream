@@ -4,19 +4,20 @@ use anyhow::Context;
 use anyhow::Ok;
 use gauth::serv_account::ServiceAccount;
 use gauth::token_provider::AsyncTokenProvider;
-use log::info;
-use mongodb::Database;
 
 use crate::config::Config;
 use crate::config::GcpAuthConfig;
 use crate::config::Service;
 use crate::config::ServiceConfigReference;
-use crate::db::db_client;
+use crate::kafka::consumer::KafkaConsumer;
+use crate::mongodb::db_client;
+use crate::mongodb::MongoDbChangeStreamListener;
 use crate::pubsub::SCOPES;
 use crate::schema::mongo::MongoDbSchemaProvider;
 use crate::sink::SinkProvider;
+use crate::source::SourceProvider;
 use crate::{
-    kafka::KafkaProducer,
+    kafka::producer::KafkaProducer,
     pubsub::{
         srvc::{PubSubPublisher, SchemaService},
         ServiceAccountAuth, StaticAccessToken,
@@ -67,31 +68,6 @@ impl<'a> ServiceFactory<'a> {
         }
     }
 
-    pub async fn mongo_db(&self, source_cfg: &ServiceConfigReference) -> anyhow::Result<Database> {
-        let service_config = self
-            .service_definition(&source_cfg.service_name)
-            .context("mongo_db")?;
-
-        match service_config {
-            Service::MongoDb {
-                connection_string,
-                db_name,
-                ..
-            } => {
-                info!("adding source: {}", connection_string);
-                Ok(
-                    db_client(source_cfg.service_name.to_owned(), &connection_string)
-                        .await?
-                        .database(&db_name),
-                )
-            }
-            _ => bail!(
-                "mongo_db service: unsupported service: {}",
-                service_config.name()
-            ),
-        }
-    }
-
     pub async fn publisher_service(
         &self,
         topic_cfg: &ServiceConfigReference,
@@ -112,6 +88,41 @@ impl<'a> ServiceFactory<'a> {
             }
             _ => Err(anyhow!(
                 "publisher_service: unsupported service: {:?}",
+                service_config.name()
+            )),
+        }
+    }
+
+    pub async fn source_provider(
+        &self,
+        sink_cfg: &ServiceConfigReference,
+    ) -> anyhow::Result<SourceProvider> {
+        let service_config = self
+            .service_definition(&sink_cfg.service_name)
+            .context("sink_service")?;
+
+        match service_config {
+            Service::MongoDb {
+                name,
+                connection_string,
+                db_name,
+            } => {
+                let db = db_client(name.clone(), &connection_string)
+                    .await?
+                    .database(&db_name);
+
+                Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
+                    db,
+                    db_name,
+                    sink_cfg.id.clone(),
+                )))
+            }
+            Service::Kafka { config, .. } => {
+                let consumer = KafkaConsumer::new(&config, sink_cfg.id.clone())?;
+                Ok(SourceProvider::Kafka(consumer))
+            }
+            _ => Err(anyhow!(
+                "sink_service: unsupported service: {:?}",
                 service_config.name()
             )),
         }

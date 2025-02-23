@@ -1,21 +1,21 @@
+mod event_handler;
 mod services;
-mod stream_listener;
 
-use log::error;
+use anyhow::bail;
+use log::{error, info};
 use services::ServiceFactory;
 use tokio::sync::mpsc::Sender;
 
-use crate::cmd::stream_listener::StreamListener;
-use crate::config::Config;
+use crate::cmd::event_handler::EventHandler;
+use crate::config::{Config, ServiceConfigReference};
+use crate::source::{EventSource, SourceEvent};
 
-/// Listen to mongodb change streams and publish the events to a pubsub or a kafka topic
+/// Initializes and starts the event listeners for all the connectors
 pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Result<()> {
     let service_container = ServiceFactory::new(&cfg);
 
     for connector_cfg in cfg.connectors.iter().cloned() {
         let done_ch = done_ch.clone();
-
-        let db = service_container.mongo_db(&connector_cfg.source).await?;
 
         // todo: avoid passing db, as it is only needed for mongo schema provider
         let mut schema_service = service_container
@@ -28,22 +28,30 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
             publishers.push((topic_cfg, publisher));
         }
 
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+        if let Err(err) = spawn_source_listener(
+            connector_cfg.name.clone(),
+            &service_container,
+            &connector_cfg.source,
+            events_tx,
+        )
+        .await
+        {
+            bail!("failed to spawn source listener: {}", err);
+        }
+
         tokio::spawn(async move {
             let cnt_name = connector_cfg.name.clone();
             // todo: change singnature to future?
 
-            let mut stream_listener = StreamListener {
+            let mut event_handler = EventHandler {
                 connector_name: connector_cfg.name.clone(),
                 schema_name: connector_cfg.schema.id.clone(),
-                db_name: db.name().to_owned(),
-                db_collection: connector_cfg.source.id.clone(),
                 publishers,
-                db,
-                resume_token: None,
                 schema_provider: &mut schema_service,
             };
 
-            if let Err(err) = stream_listener.listen().await {
+            if let Err(err) = event_handler.listen(events_rx).await {
                 error!("{err}")
             }
 
@@ -57,5 +65,22 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
         });
     }
 
+    Ok(())
+}
+
+async fn spawn_source_listener(
+    cnt_name: String,
+    service_container: &ServiceFactory<'_>,
+    source_cfg: &ServiceConfigReference,
+    events_tx: Sender<SourceEvent>,
+) -> anyhow::Result<()> {
+    let mut source_provider = service_container.source_provider(source_cfg).await?;
+
+    tokio::spawn(async move {
+        info!("spawning a listener for connector: {}", cnt_name);
+        if let Err(err) = source_provider.listen(events_tx).await {
+            error!("source listener failed. connector: {}:{}", cnt_name, err)
+        }
+    });
     Ok(())
 }

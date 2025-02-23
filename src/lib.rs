@@ -2,10 +2,11 @@ use anyhow::Context;
 use log::{debug, warn};
 use tokio::sync::mpsc;
 
-mod db;
 mod encoding;
 mod kafka;
+mod mongodb;
 mod sink;
+mod source;
 
 pub mod cmd;
 pub mod config;

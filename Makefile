@@ -32,12 +32,8 @@ db-check: ## Checks the status of the mongo cluster
 auth: ## Authenticates with gcloud
 	gcloud auth login
 
-.PHONY: setup-config
-setup-config: ## Sets up the config file
-	@./setup_config.sh
-
 .PHONY: run-debug
-run-debug: setup-config ## Runs the server in debug mode
+run-debug: ## Runs the server in debug mode
 	RUST_LOG=debug cargo run
 
 .PHONY: print-token
