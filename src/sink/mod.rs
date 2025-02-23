@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 
 use crate::{
-    kafka::KafkaProducer,
+    kafka::producer::KafkaProducer,
     pubsub::{srvc::PubSubPublisher, ServiceAccountAuth},
 };
 

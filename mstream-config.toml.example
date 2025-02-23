@@ -31,13 +31,22 @@ db_name = "example_db"
 
 # Connector Configurations
 [[connectors]]
-name = "example-connector"
+name = "mongodb-source-connector"
 # Configure the source MongoDB collection to watch for changes
 source = { service_name = "mongodb-source", id = "example_collection" }
 schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/example-schema" }
-# Configure multiple sink destinations
 sinks = [
     { service_name = "kafka-local", id = "local_topic" },
     { service_name = "kafka-cloud", id = "cloud_topic" },
     { service_name = "pubsub-example", id = "projects/your-project/topics/example-topic" },
+]
+
+[[connectors]]
+name = "kafka-source-connector"
+# Configure Kafka as a source
+source = { service_name = "kafka-cloud", id = "source_topic" }
+schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/kafka-source-schema" }
+sinks = [
+    { service_name = "kafka-local", id = "processed_topic" },
+    { service_name = "pubsub-example", id = "projects/your-project/topics/processed-topic" },
 ]

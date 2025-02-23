@@ -1,9 +1,9 @@
 mstream
 ===
 
-The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) for collections specified in config.
-Create and update events are picked up and sent as avro binary-encoded entities to GCP PubSub and/or Kafka.
-One mongo source connector can be configured to publish to multiple topics from various providers.
+The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) and Kafka topics specified in config.
+MongoDB create and update events, as well as **JSON encoded** Kafka messages, are picked up and sent as avro binary-encoded entities to GCP PubSub and/or Kafka.
+One connector can be configured to publish to multiple topics from various providers.
 
 `Minimum tested MongoDB version: 6.0`
 
@@ -11,6 +11,7 @@ One mongo source connector can be configured to publish to multiple topics from 
 graph TB
     subgraph mstream[mstream]
         handler[Change Stream Handler]
+        kafka_consumer[Kafka Consumer]
         schema_cache[Schema Cache]
         encoder[Avro Encoder]
     end
@@ -21,31 +22,35 @@ graph TB
     end
 
     mongodb[(MongoDB)] --> handler
+    kafka_source[Kafka Source /JSON/] --> kafka_consumer
     schema_registry --> schema_cache
 
     handler --> encoder
+    kafka_consumer --> encoder
     schema_cache --> encoder
 
     encoder --> pubsub_topic
-    encoder --> kafka[Kafka]
+    encoder --> kafka_sink[Kafka Sink]
 
     classDef primary fill:,stroke:#333,stroke-width:1px
     classDef secondary fill:#bbf,stroke:#333,stroke-width:1px
     classDef gcp fill:#aef,stroke:#333,stroke-width:1px
 
     class mstream primary
-    class mongodb,kafka,pubsub_topic,schema_registry secondary
+    class mongodb,kafka_source,kafka_sink,pubsub_topic,schema_registry secondary
     class gcp gcp
 ```
 
 ### Event Processing
 
-**[Supported MongoDB events](https://www.mongodb.com/docs/v6.0/reference/change-events/)**
-* Insert document
-* Update document
-* Delete document
+**Supported Sources**
+* [MongoDB Change Stream Events](https://www.mongodb.com/docs/v6.0/reference/change-events/)
+  * Insert document
+  * Update document
+  * Delete document
+* Kafka Messages
 
-**The worker will report an error and stop execution for events**
+**The worker will report an error and stop execution for MongoDB events**
 * Invalidate stream
 * Drop collection
 * Drop database

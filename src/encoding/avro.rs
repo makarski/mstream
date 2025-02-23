@@ -56,7 +56,7 @@ impl TryFrom<BsonWithSchema> for Wrap {
     /// Additional supported avro types:
     ///     * union https://avro.apache.org/docs/1.11.1/specification/#unions
     ///     * enum  https://avro.apache.org/docs/1.11.1/specification/#enums
-    ///     
+    ///
     fn try_from(val: BsonWithSchema) -> Result<Self, Self::Error> {
         let bson_val = val.0;
         let avro_schema = val.1;
@@ -105,9 +105,16 @@ impl TryFrom<BsonWithSchema> for Wrap {
                 Ok(Wrap(AvroVal::Boolean(bool_val)))
             }
             Schema::Int => {
-                Ok(Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
-                    anyhow!("failed to convert bson to int: {}", bson_val)
-                })?)))
+                // Ok(Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
+                //     anyhow!("failed to convert bson to int: {}", bson_val)
+                // })?)))
+
+                let res = bson_val
+                    .as_i32()
+                    .or_else(|| bson_val.as_i64().map(|v| v as i32))
+                    .ok_or_else(|| anyhow!("failed to convert bson to int: {}", bson_val))?;
+
+                Ok(Wrap(AvroVal::Int(res)))
             }
             Schema::Long => {
                 Ok(Wrap(AvroVal::Long(bson_val.as_i64().ok_or_else(|| {
@@ -198,7 +205,7 @@ impl TryFrom<BsonWithSchema> for Wrap {
 
 #[cfg(test)]
 mod tests {
-    use crate::encoding::avro::encode;
+    use crate::encoding::{avro::encode, json_to_bson_doc};
     use anyhow::{bail, Context};
     use apache_avro::{from_avro_datum, Schema};
     use mongodb::bson::{doc, Decimal128};
@@ -285,6 +292,33 @@ mod tests {
         let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
         let avro_schema = Schema::parse_str(raw_schema).unwrap();
         encode(mongodb_document, avro_schema).unwrap();
+    }
+
+    #[test]
+    fn encode_from_raw_json_format() {
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "Employee",
+                "fields" : [
+                    { "name" : "name" , "type" : "string" },
+                    { "name" : "age" , "type" : "int" }
+                ]
+            }
+        "###;
+
+        let json_payload = br###"
+            {
+                "name": "Jon Doe",
+                "age": 32
+            }
+        "###;
+
+        let document = json_to_bson_doc(json_payload).unwrap();
+        let avro_schema = Schema::parse_str(raw_schema).unwrap();
+
+        let b = encode(document, avro_schema).unwrap();
+        validate_avro_encoded(b, raw_schema).unwrap();
     }
 
     fn validate_avro_encoded(avro_b: Vec<u8>, raw_schema: &str) -> anyhow::Result<()> {
