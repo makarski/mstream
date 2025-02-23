@@ -3,7 +3,7 @@ mstream
 
 The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) and Kafka topics specified in config.
 MongoDB create and update events, as well as **JSON encoded** Kafka messages, are picked up and sent as avro binary-encoded entities to GCP PubSub and/or Kafka.
-One connector can be configured to publish to multiple topics from various providers.
+One connector can be configured to consume from **one source** and publish to **multiple sink topics** from various providers.
 
 `Minimum tested MongoDB version: 6.0`
 
