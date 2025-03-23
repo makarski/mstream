@@ -1,22 +1,28 @@
-// possible conversions
-//
-//
-// source: Bson, sink: Avro
-// source: Bson, sink: Json
-// source: Bson, sink: Bson --> only for mongodb persister use Document - does mongo support persisting bytes directly?
-
-// source: Avro, sink: Avro
-// source: Avro, sink: Json
-// source: Avro, sink: Bson
-//
-//
-// for source json use same process as with bson - first convert to bson and then the rest of logic if target is not Json
-// source: Json, sink: Json
-// source: Json, sink: Avro
-// source: Json, sink: Bson
-//
-//
-
+//! # Document Encoding Module
+//!
+//! This module handles format conversion between different data representations.
+//! It provides a comprehensive set of transformations between BSON, JSON, and Avro formats.
+//!
+//! ## Supported Conversion Paths
+//!
+//! ### BSON Source
+//! - BSON → Avro: Converts MongoDB BSON documents to Avro records
+//! - BSON → JSON: Serializes BSON documents to JSON format
+//! - BSON → BSON: Passthrough for MongoDB persistence (using Document type)
+//!
+//! ### Avro Source
+//! - Avro → Avro: Passthrough or schema validation
+//! - Avro → JSON: Deserializes Avro records to JSON format
+//! - Avro → BSON: Converts Avro records to MongoDB BSON documents
+//!
+//! ### JSON Source
+//! - JSON → JSON: Passthrough or format validation
+//! - JSON → Avro: Parses JSON and encodes as Avro records
+//! - JSON → BSON: Parses JSON and converts to BSON documents
+//!
+//! All JSON source operations are processed by first converting to BSON and then
+//! applying the same transformation logic as BSON sources, unless the target
+//! format is JSON itself.
 use std::collections::HashMap;
 
 use anyhow::bail;
