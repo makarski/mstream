@@ -2,15 +2,12 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use async_trait::async_trait;
 use log::debug;
 use rdkafka::{
     message::{Header, OwnedHeaders},
     producer::{FutureProducer, FutureRecord},
     ClientConfig,
 };
-
-use crate::sink::EventSink;
 
 pub struct KafkaProducer {
     producer: FutureProducer,
@@ -29,9 +26,8 @@ impl KafkaProducer {
     }
 }
 
-#[async_trait]
-impl EventSink for KafkaProducer {
-    async fn publish(
+impl KafkaProducer {
+    pub async fn publish(
         &mut self,
         topic: String,
         b: Vec<u8>,

@@ -11,7 +11,6 @@ use crate::pubsub::api::schema_service_client::SchemaServiceClient;
 use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
 use crate::pubsub::api::{PublishRequest, PubsubMessage};
 use crate::schema::SchemaRegistry;
-use crate::sink::EventSink;
 
 pub struct PubSubPublisher<I> {
     client: PublisherClient<InterceptedService<Channel, I>>,
@@ -24,11 +23,8 @@ impl<I: Interceptor> PubSubPublisher<I> {
             client: PublisherClient::with_interceptor(channel, interceptor),
         })
     }
-}
 
-#[async_trait]
-impl<I: Interceptor + Send> EventSink for PubSubPublisher<I> {
-    async fn publish(
+    pub async fn publish(
         &mut self,
         topic: String,
         b: Vec<u8>,

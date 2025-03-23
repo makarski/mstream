@@ -14,7 +14,10 @@ use mongodb::{
 };
 use tokio::sync::mpsc::Sender;
 
+use crate::config::Encoding;
 use crate::source::{EventSource, SourceEvent};
+
+pub mod persister;
 
 pub async fn db_client(name: String, conn_str: &str) -> anyhow::Result<Client> {
     let mut opts = ClientOptions::parse(conn_str).await?;
@@ -76,15 +79,18 @@ impl MongoDbChangeStreamListener {
         Ok(coll.watch(None, Some(opts)).await?)
     }
 
-    fn event_metadata(&self, event: &ChangeStreamEvent<Document>) -> HashMap<String, String> {
-        HashMap::from([
+    fn event_metadata(
+        &self,
+        event: &ChangeStreamEvent<Document>,
+    ) -> Option<HashMap<String, String>> {
+        Some(HashMap::from([
             (
                 "operation_type".to_owned(),
                 format!("{:?}", event.operation_type).to_lowercase(),
             ),
             ("database".to_owned(), self.db_name.clone()),
             ("collection".to_owned(), self.db_collection.clone()),
-        ])
+        ]))
     }
 }
 
@@ -126,8 +132,10 @@ impl EventSource for MongoDbChangeStreamListener {
             if let Some(document) = bson_doc {
                 events
                     .send(SourceEvent {
-                        document,
+                        raw_bytes: None,
+                        document: Some(document),
                         attributes,
+                        encoding: Encoding::Bson,
                     })
                     .await?;
             }

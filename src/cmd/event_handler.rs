@@ -1,14 +1,10 @@
-use std::collections::HashMap;
-
 use log::{debug, error, info};
-use mongodb::bson::Document;
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
     config::ServiceConfigReference,
-    encoding::avro::encode,
     schema::{SchemaProvider, SchemaRegistry},
-    sink::{EventSink, SinkProvider},
+    sink::{encoding::SinkEvent, EventSink, SinkProvider},
     source::SourceEvent,
 };
 
@@ -26,9 +22,9 @@ impl EventHandler<'_> {
         loop {
             match events_rx.recv().await {
                 Some(event) => {
-                    debug!("processing event: {}", event.document);
+                    debug!("processing event: {:?}", event);
 
-                    if let Err(err) = self.process_event(event.document, event.attributes).await {
+                    if let Err(err) = self.process_event(event).await {
                         error!("failed to process event: {}", err)
                     }
                 }
@@ -42,25 +38,17 @@ impl EventHandler<'_> {
         Ok(())
     }
 
-    async fn process_event(
-        &mut self,
-        mongo_doc: Document,
-        attributes: HashMap<String, String>,
-    ) -> anyhow::Result<()> {
+    async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
         let schema = self
             .schema_provider
             .get_schema(self.schema_name.clone())
             .await?;
-        let avro_encoded = encode(mongo_doc, schema)?;
 
         for (sink_cfg, publisher) in self.publishers.iter_mut() {
+            let sink_event = SinkEvent::from_source_event(source_event.clone(), sink_cfg, &schema)?;
+
             let message = publisher
-                .publish(
-                    sink_cfg.id.clone(),
-                    avro_encoded.clone(),
-                    None,
-                    Some(attributes.clone()),
-                )
+                .publish(sink_event, sink_cfg.id.clone(), None)
                 .await?;
 
             info!(

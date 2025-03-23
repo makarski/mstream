@@ -1,8 +1,12 @@
-use anyhow::{anyhow, bail, Context, Ok};
-use apache_avro::{schema::SchemaKind, to_avro_datum, types::Record, Decimal, Schema};
-use mongodb::bson::Document;
+use std::str::{from_utf8, FromStr};
 
-pub fn encode(mongo_doc: Document, schema: Schema) -> anyhow::Result<Vec<u8>> {
+use anyhow::{anyhow, bail, Context, Ok};
+use apache_avro::{
+    from_avro_datum, schema::SchemaKind, to_avro_datum, types::Record, Decimal, Schema,
+};
+use mongodb::bson::{Decimal128, Document};
+
+pub fn encode(mongo_doc: Document, schema: &Schema) -> anyhow::Result<Vec<u8>> {
     let mut record = Record::new(&schema).context("failed to create record")?;
 
     if let Schema::Record { ref fields, .. } = schema {
@@ -27,11 +31,82 @@ pub fn encode(mongo_doc: Document, schema: Schema) -> anyhow::Result<Vec<u8>> {
     Ok(to_avro_datum(&schema, record)?)
 }
 
+pub fn decode(avro_bytes: &[u8], schema: &Schema) -> anyhow::Result<Document> {
+    let mut reader = avro_bytes;
+    let avro_value =
+        from_avro_datum(&schema, &mut reader, None).context("failed to parse avro datum")?;
+
+    if let Schema::Record { .. } = &schema {
+        let mut doc = Document::new();
+
+        match &avro_value {
+            AvroVal::Record(fields_with_values) => {
+                for (field_name, avro_val) in fields_with_values {
+                    let bson_val = avro_to_bson(avro_val, field_name)?;
+                    doc.insert(field_name, bson_val);
+                }
+                Ok(doc)
+            }
+            _ => bail!("expect a record avro value. got: {:?}", avro_value),
+        }
+    } else {
+        bail!("expect a record schema. got: {}", schema.canonical_form());
+    }
+}
+
+fn avro_to_bson(avro_val: &AvroVal, field_name: &str) -> anyhow::Result<Bson> {
+    match avro_val {
+        AvroVal::Null => Ok(Bson::Null),
+        AvroVal::Boolean(b) => Ok(Bson::Boolean(*b)),
+        AvroVal::Int(i) => Ok(Bson::Int32(*i)),
+        AvroVal::Long(l) => Ok(Bson::Int64(*l)),
+        AvroVal::Float(f) => Ok(Bson::Double(f64::from(*f))),
+        AvroVal::Double(d) => Ok(Bson::Double(*d)),
+        AvroVal::String(s) => Ok(Bson::String(s.clone())),
+        AvroVal::Decimal(d) => {
+            let b = <Vec<u8>>::try_from(d)?;
+            let dec_string = from_utf8(b.as_slice())?;
+            Ok(Decimal128::from_str(dec_string)
+                .context("failed to convert to decimal")?
+                .into())
+        }
+        AvroVal::Array(arr) => {
+            let mut bson_arr = Vec::new();
+            for avro_v in arr.iter() {
+                bson_arr.push(avro_to_bson(avro_v, field_name)?);
+            }
+            Ok(Bson::Array(bson_arr))
+        }
+        AvroVal::Record(fields) => {
+            let mut doc = Document::new();
+            for (field_name, avro_v) in fields.iter() {
+                doc.insert(field_name.clone(), avro_to_bson(avro_v, field_name)?);
+            }
+            Ok(Bson::Document(doc))
+        }
+        AvroVal::Enum(_, symbol) => Ok(Bson::String(symbol.clone())),
+        AvroVal::Union(_, inner) => avro_to_bson(inner, field_name),
+        AvroVal::Bytes(_)
+        | AvroVal::Fixed(_, _)
+        | AvroVal::Date(_)
+        | AvroVal::TimeMillis(_)
+        | AvroVal::TimeMicros(_)
+        | AvroVal::TimestampMillis(_)
+        | AvroVal::TimestampMicros(_)
+        | AvroVal::Duration(_)
+        | AvroVal::Uuid(_)
+        | AvroVal::Map(_) => bail!(
+            "unsupported avro type for field '{}': {:?}",
+            field_name,
+            avro_val
+        ),
+    }
+}
+
 use apache_avro::types::Value as AvroVal;
 use mongodb::bson::Bson;
 
 struct BsonWithSchema(Bson, Schema);
-
 struct Wrap(AvroVal);
 
 impl TryFrom<BsonWithSchema> for Wrap {
@@ -105,10 +180,6 @@ impl TryFrom<BsonWithSchema> for Wrap {
                 Ok(Wrap(AvroVal::Boolean(bool_val)))
             }
             Schema::Int => {
-                // Ok(Wrap(AvroVal::Int(bson_val.as_i32().ok_or_else(|| {
-                //     anyhow!("failed to convert bson to int: {}", bson_val)
-                // })?)))
-
                 let res = bson_val
                     .as_i32()
                     .or_else(|| bson_val.as_i64().map(|v| v as i32))
@@ -205,7 +276,10 @@ impl TryFrom<BsonWithSchema> for Wrap {
 
 #[cfg(test)]
 mod tests {
-    use crate::encoding::{avro::encode, json_to_bson_doc};
+    use crate::encoding::{
+        avro::{decode, encode},
+        json_to_bson_doc,
+    };
     use anyhow::{bail, Context};
     use apache_avro::{from_avro_datum, Schema};
     use mongodb::bson::{doc, Decimal128};
@@ -260,7 +334,7 @@ mod tests {
         };
 
         let avro_schema = Schema::parse_str(raw_schema)?;
-        let result = encode(mongodb_document, avro_schema)?;
+        let result = encode(mongodb_document, &avro_schema)?;
         validate_avro_encoded(result, raw_schema)
     }
 
@@ -291,7 +365,7 @@ mod tests {
         "###;
         let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
         let avro_schema = Schema::parse_str(raw_schema).unwrap();
-        encode(mongodb_document, avro_schema).unwrap();
+        encode(mongodb_document, &avro_schema).unwrap();
     }
 
     #[test]
@@ -317,7 +391,7 @@ mod tests {
         let document = json_to_bson_doc(json_payload).unwrap();
         let avro_schema = Schema::parse_str(raw_schema).unwrap();
 
-        let b = encode(document, avro_schema).unwrap();
+        let b = encode(document, &avro_schema).unwrap();
         validate_avro_encoded(b, raw_schema).unwrap();
     }
 
@@ -330,6 +404,77 @@ mod tests {
         if !avro_value.validate(&compiled_schema) {
             bail!("failed to validate schema");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_decode_roundtrip() -> anyhow::Result<()> {
+        let raw_schema = r###"
+        {
+            "type" : "record",
+            "name" : "Employee",
+            "fields" : [
+                    { "name": "nickname", "type": ["null", "string"], "default": null },
+                    { "name": "name" , "type" : "string" },
+                    { "name": "age" , "type" : "int" },
+                    { "name": "gender", "type": "enum", "symbols": ["MALE", "FEMALE", "OTHER"]},
+                    { "name": "teams", "type": "array", "items": "string" },
+                    { "name": "project", "type": {
+                        "type": "record",
+                        "name": "EmployeeProject",
+                        "fields": [
+                            { "name": "title", "type": "string" },
+                            { "name": "rating", "type": "double" }
+                        ]
+                    }},
+                    { "name": "is_active", "type": "boolean" },
+                    { "name": "long_number", "type": "long" }
+                ]
+            }
+        "###;
+
+        let mongodb_document = doc! {
+            "name": "Jon Doe",
+            "age": 32,
+            "gender": "OTHER",
+            "teams": ["team A", "team B", "team C"],
+            "project": doc! {
+                "title": "Awesome Project",
+                "rating": 92.5_f64
+            },
+            "nickname": null,
+            "is_active": true,
+            "long_number": 100500_i64,
+        };
+
+        let avro_schema = Schema::parse_str(raw_schema)?;
+
+        // Encode BSON to Avro
+        let avro_bytes = encode(mongodb_document.clone(), &avro_schema)?;
+
+        // Decode Avro back to BSON
+        let decoded_doc = decode(&avro_bytes, &avro_schema)?;
+
+        // Compare original and decoded documents
+        assert_eq!(mongodb_document.get("name"), decoded_doc.get("name"));
+        assert_eq!(mongodb_document.get("age"), decoded_doc.get("age"));
+        assert_eq!(mongodb_document.get("gender"), decoded_doc.get("gender"));
+        assert_eq!(mongodb_document.get("teams"), decoded_doc.get("teams"));
+        assert_eq!(
+            mongodb_document.get("is_active"),
+            decoded_doc.get("is_active")
+        );
+        assert_eq!(
+            mongodb_document.get("long_number"),
+            decoded_doc.get("long_number")
+        );
+
+        // For nested documents, compare fields
+        let orig_project = mongodb_document.get_document("project")?;
+        let decoded_project = decoded_doc.get_document("project")?;
+        assert_eq!(orig_project.get("title"), decoded_project.get("title"));
+        assert_eq!(orig_project.get("rating"), decoded_project.get("rating"));
 
         Ok(())
     }

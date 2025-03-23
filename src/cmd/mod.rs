@@ -12,7 +12,7 @@ use crate::source::{EventSource, SourceEvent};
 
 /// Initializes and starts the event listeners for all the connectors
 pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Result<()> {
-    let service_container = ServiceFactory::new(&cfg);
+    let service_container = ServiceFactory::new(&cfg).await?;
 
     for connector_cfg in cfg.connectors.iter().cloned() {
         let done_ch = done_ch.clone();
