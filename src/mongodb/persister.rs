@@ -11,7 +11,8 @@ impl MongoDbPersister {
 
     pub async fn persist(&self, doc: Document, coll_name: &str) -> Result<String, Error> {
         let coll = self.db.collection(coll_name);
-        coll.insert_one(doc, None).await?;
-        Ok("".to_owned())
+        let result = coll.insert_one(doc, None).await?;
+
+        Ok(result.inserted_id.to_string())
     }
 }

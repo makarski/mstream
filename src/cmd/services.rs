@@ -78,9 +78,9 @@ impl<'a> ServiceFactory<'a> {
                     SchemaService::with_interceptor(tp).await?,
                 ))
             }
-            Service::MongoDb { name, .. } => match self.mongo_clients.get(&name) {
+            Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
                 Some(client) => Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(
-                    client.database(&name),
+                    client.database(&db_name),
                 ))),
                 None => bail!(
                     "initializing schema provider: mongo client not found for: {}",
