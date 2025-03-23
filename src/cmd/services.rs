@@ -1,9 +1,12 @@
+use std::collections::HashMap;
+
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use anyhow::Ok;
 use gauth::serv_account::ServiceAccount;
 use gauth::token_provider::AsyncTokenProvider;
+use mongodb::Client;
 
 use crate::config::Config;
 use crate::config::GcpAuthConfig;
@@ -11,6 +14,7 @@ use crate::config::Service;
 use crate::config::ServiceConfigReference;
 use crate::kafka::consumer::KafkaConsumer;
 use crate::mongodb::db_client;
+use crate::mongodb::persister::MongoDbPersister;
 use crate::mongodb::MongoDbChangeStreamListener;
 use crate::pubsub::SCOPES;
 use crate::schema::mongo::MongoDbSchemaProvider;
@@ -27,11 +31,35 @@ use crate::{
 
 pub(crate) struct ServiceFactory<'a> {
     config: &'a Config,
+    mongo_clients: HashMap<String, Client>,
 }
 
 impl<'a> ServiceFactory<'a> {
-    pub fn new(config: &'a Config) -> ServiceFactory<'a> {
-        Self { config }
+    pub async fn new(config: &'a Config) -> anyhow::Result<ServiceFactory<'a>> {
+        if config.has_mongo_db() {
+            let mut mongo_clients = HashMap::new();
+            for service in config.services.iter() {
+                if let Service::MongoDb {
+                    name,
+                    connection_string,
+                    ..
+                } = service
+                {
+                    let client = db_client(name.to_owned(), connection_string).await?;
+                    mongo_clients.insert(name.clone(), client);
+                }
+            }
+
+            Ok(ServiceFactory {
+                config,
+                mongo_clients,
+            })
+        } else {
+            Ok(ServiceFactory {
+                config,
+                mongo_clients: HashMap::new(),
+            })
+        }
     }
 
     pub async fn schema_provider(
@@ -50,17 +78,15 @@ impl<'a> ServiceFactory<'a> {
                     SchemaService::with_interceptor(tp).await?,
                 ))
             }
-            Service::MongoDb {
-                name,
-                connection_string,
-                db_name,
-            } => {
-                let db = db_client(name.clone(), &connection_string)
-                    .await?
-                    .database(&db_name);
-
-                Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(db)))
-            }
+            Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
+                Some(client) => Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(
+                    client.database(&db_name),
+                ))),
+                None => bail!(
+                    "initializing schema provider: mongo client not found for: {}",
+                    name
+                ),
+            },
             _ => bail!(
                 "schema_provider: unsupported service: {}",
                 service_config.name()
@@ -86,10 +112,16 @@ impl<'a> ServiceFactory<'a> {
                     PubSubPublisher::with_interceptor(tp).await?,
                 ))
             }
-            _ => Err(anyhow!(
-                "publisher_service: unsupported service: {:?}",
-                service_config.name()
-            )),
+            Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
+                Some(db) => {
+                    let db = db.database(&db_name);
+                    Ok(SinkProvider::MongoDb(MongoDbPersister::new(db)))
+                }
+                None => bail!(
+                    "initializing publisher service: mongo client not found for: {}",
+                    name
+                ),
+            },
         }
     }
 
@@ -102,21 +134,20 @@ impl<'a> ServiceFactory<'a> {
             .context("sink_service")?;
 
         match service_config {
-            Service::MongoDb {
-                name,
-                connection_string,
-                db_name,
-            } => {
-                let db = db_client(name.clone(), &connection_string)
-                    .await?
-                    .database(&db_name);
-
-                Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
-                    db,
-                    db_name,
-                    sink_cfg.id.clone(),
-                )))
-            }
+            Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
+                Some(db) => {
+                    let db = db.database(&db_name);
+                    Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
+                        db,
+                        db_name,
+                        sink_cfg.id.clone(),
+                    )))
+                }
+                None => bail!(
+                    "initializing source provider: mongo client not found for: {}",
+                    name
+                ),
+            },
             Service::Kafka { config, .. } => {
                 let consumer = KafkaConsumer::new(&config, sink_cfg.id.clone())?;
                 Ok(SourceProvider::Kafka(consumer))

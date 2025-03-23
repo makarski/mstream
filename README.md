@@ -2,7 +2,7 @@ mstream
 ===
 
 The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) and Kafka topics specified in config.
-MongoDB create and update events, as well as **JSON encoded** Kafka messages, are picked up and sent as avro binary-encoded entities to GCP PubSub and/or Kafka.
+MongoDB create and update events, as well as messages from Kafka, are picked up and can be encoded in various formats (Avro, JSON, BSON) before being sent to GCP PubSub, Kafka, or MongoDB.
 One connector can be configured to consume from **one source** and publish to **multiple sink topics** from various providers.
 
 `Minimum tested MongoDB version: 6.0`
@@ -10,36 +10,66 @@ One connector can be configured to consume from **one source** and publish to **
 ```mermaid
 graph TB
     subgraph mstream[mstream]
-        handler[Change Stream Handler]
-        kafka_consumer[Kafka Consumer]
+        handler@{ shape: procs, label: "Listeners"}
+        %% kafka_consumer[Kafka Consumer]
         schema_cache[Schema Cache]
-        encoder[Avro Encoder]
+        encoder[["`Format Encoder
+        (Json, Avro, Bson)`"]]
     end
 
-    subgraph gcp[GCP Pub/Sub]
-        schema_registry[Schema Registry]
-        pubsub_topic[Topics]
+    subgraph sources[Sources]
+        kafka_source@{ shape: das, label: "Kafka Source Topic" }
+        pubsub_source_topic@{ shape: das, label: "PubSub Source Topic" }
+        mongodb_source@{shape: database, label: "MongoDB Change Stream" }
     end
 
-    mongodb[(MongoDB)] --> handler
-    kafka_source[Kafka Source /JSON/] --> kafka_consumer
+
+    subgraph sinks[Sinks]
+        kafka_sink@{ shape: das, label: "Kafka Sink Topic" }
+        mongodb_target[(MongoDB Sink)]
+        pubsub_sink_topic@{ shape: das, label: "PubSub Topic" }
+    end
+
+
+    subgraph schemas[Schemas]
+        schema_registry@{label: "PubSub Schema Registry (Avro)" }
+    end
+
+
+    mongodb_source -.-> handler
+    kafka_source -..-> handler
+    pubsub_source_topic -.-> handler
     schema_registry --> schema_cache
 
     handler --> encoder
-    kafka_consumer --> encoder
-    schema_cache --> encoder
+    schema_cache <-->handler
 
-    encoder --> pubsub_topic
-    encoder --> kafka_sink[Kafka Sink]
-
-    classDef primary fill:,stroke:#333,stroke-width:1px
-    classDef secondary fill:#bbf,stroke:#333,stroke-width:1px
-    classDef gcp fill:#aef,stroke:#333,stroke-width:1px
-
-    class mstream primary
-    class mongodb,kafka_source,kafka_sink,pubsub_topic,schema_registry secondary
-    class gcp gcp
+    encoder -.-> mongodb_target
+    encoder -.-> pubsub_sink_topic
+    encoder -.-> kafka_sink
 ```
+
+### Supported Format Conversions
+
+mstream supports multiple encoding formats for both sources and sinks:
+
+#### BSON Source:
+- BSON → Avro: Converts MongoDB BSON documents to Avro records
+- BSON → JSON: Serializes BSON documents to JSON format
+- BSON → BSON: Direct passthrough (for MongoDB to MongoDB replication)
+
+#### Avro Source:
+- Avro → Avro: Passthrough or schema validation
+- Avro → JSON: Deserializes Avro records to JSON format
+- Avro → BSON: Converts Avro records to MongoDB BSON documents
+
+#### JSON Source:
+- JSON → JSON: Passthrough or format validation
+- JSON → Avro: Parses JSON and encodes as Avro records
+- JSON → BSON: Parses JSON and converts to BSON documents
+
+JSON source operations are processed by first converting to BSON internally and then
+applying the same transformation logic as BSON sources, unless the target is JSON.
 
 ### Event Processing
 
@@ -63,7 +93,6 @@ A processed change stream is transformed into a pubsub message with the followin
 
 attribute name | attribute value
 ---------------| ----------------
-stream_name    | connector name provided in config
 operation_type | event type: `insert`, `update`, `delete`
 database       | mongodb database name
 collection     | mongodb collection name

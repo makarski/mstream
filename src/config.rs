@@ -17,6 +17,12 @@ impl Config {
     pub fn service_by_name(&self, name: &str) -> Option<&Service> {
         self.services.iter().find(|s| s.name() == name)
     }
+
+    pub fn has_mongo_db(&self) -> bool {
+        self.services
+            .iter()
+            .any(|s| matches!(s, Service::MongoDb { .. }))
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -102,4 +108,13 @@ pub struct Connector {
 pub struct ServiceConfigReference {
     pub service_name: String,
     pub id: String,
+    pub encoding: Encoding,
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Encoding {
+    Avro,
+    Json,
+    Bson,
 }

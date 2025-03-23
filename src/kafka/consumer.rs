@@ -8,7 +8,7 @@ use rdkafka::consumer::Consumer;
 use rdkafka::{ClientConfig, Message};
 use tokio::sync::mpsc::Sender;
 
-use crate::encoding::json_to_bson_doc;
+use crate::config::Encoding;
 use crate::source::{EventSource, SourceEvent};
 
 pub struct KafkaConsumer {
@@ -40,12 +40,13 @@ impl EventSource for KafkaConsumer {
             let msg = self.consumer.recv().await?;
             info!("received message from kafka topic: {}", msg.topic());
             let payload = msg.payload().context("failed to get payload")?;
-            let doc = json_to_bson_doc(payload)?;
 
             events
                 .send(SourceEvent {
-                    document: doc,
-                    attributes: HashMap::new(),
+                    raw_bytes: Some(payload.to_vec()),
+                    document: None,
+                    attributes: None,
+                    encoding: Encoding::Json,
                 })
                 .await?;
         }

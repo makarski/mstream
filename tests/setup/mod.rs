@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use apache_avro::AvroSchema;
 use mongodb::bson::{doc, Document};
 use mongodb::Collection;
-use mstream::config::{GcpAuthConfig, Service, ServiceConfigReference};
+use mstream::config::{Encoding, GcpAuthConfig, Service, ServiceConfigReference};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tonic::service::Interceptor;
@@ -53,14 +53,17 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 source: ServiceConfigReference {
                     service_name: "mongodb".to_owned(),
                     id: DB_COLLECTION.to_owned(),
+                    encoding: Encoding::Bson,
                 },
                 schema: ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
                     id: env::var("PUBSUB_SCHEMA").unwrap(),
+                    encoding: Encoding::Avro,
                 },
                 sinks: vec![ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
                     id: env::var("PUBSUB_TOPIC").unwrap(),
+                    encoding: Encoding::Avro,
                 }],
             }],
             ..Default::default()
