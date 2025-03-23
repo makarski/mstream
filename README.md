@@ -36,24 +36,17 @@ graph TB
     end
 
 
-    mongodb_source e1@-.-> handler
-    kafka_source e2@-..-> handler
-    pubsub_source_topic e3@-.-> handler
+    mongodb_source -.-> handler
+    kafka_source -..-> handler
+    pubsub_source_topic -.-> handler
     schema_registry --> schema_cache
 
     handler --> encoder
     schema_cache <-->handler
 
-    encoder e4@-.-> mongodb_target
-    encoder e5@-.-> pubsub_sink_topic
-    encoder e6@-.-> kafka_sink
-
-    e1@{animate: true}
-    e2@{animate: true}
-    e3@{animate: true}
-    e4@{animate: true}
-    e5@{animate: true}
-    e6@{animate: true}
+    encoder -.-> mongodb_target
+    encoder -.-> pubsub_sink_topic
+    encoder -.-> kafka_sink
 ```
 
 ### Supported Format Conversions
