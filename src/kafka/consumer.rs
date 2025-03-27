@@ -14,10 +14,15 @@ use crate::source::{EventSource, SourceEvent};
 pub struct KafkaConsumer {
     consumer: StreamConsumer,
     topic: String,
+    encoding: Encoding,
 }
 
 impl KafkaConsumer {
-    pub fn new(configs: &HashMap<String, String>, topic: String) -> anyhow::Result<Self> {
+    pub fn new(
+        configs: &HashMap<String, String>,
+        topic: String,
+        encoding: Encoding,
+    ) -> anyhow::Result<Self> {
         debug!("kafka consumer configs: {:?}", configs);
         let mut cfg = ClientConfig::new();
 
@@ -26,7 +31,11 @@ impl KafkaConsumer {
         });
 
         let consumer: StreamConsumer = cfg.create().context("kafka consumer creation failed")?;
-        Ok(Self { consumer, topic })
+        Ok(Self {
+            consumer,
+            topic,
+            encoding,
+        })
     }
 }
 
@@ -46,7 +55,7 @@ impl EventSource for KafkaConsumer {
                     raw_bytes: Some(payload.to_vec()),
                     document: None,
                     attributes: None,
-                    encoding: Encoding::Json,
+                    encoding: self.encoding.clone(),
                 })
                 .await?;
         }

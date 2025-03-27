@@ -4,7 +4,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .build_server(false)
         .out_dir("src/pubsub/api")
-        .compile(
+        .compile_protos(
             &[
                 "./protos/google/pubsub/v1/schema.proto",
                 "./protos/google/pubsub/v1/pubsub.proto",
