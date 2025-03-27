@@ -22,6 +22,7 @@ name = "kafka-cloud"
 "sasl.username" = "env:MSTREAM_KAFKA_USERNAME"
 "sasl.password" = "env:MSTREAM_KAFKA_PASSWORD"
 "client.id" = "mstream-client"
+"group.id" = "mstream-group"
 
 [[services]]
 provider = "mongodb"
@@ -33,20 +34,31 @@ db_name = "example_db"
 [[connectors]]
 name = "mongodb-source-connector"
 # Configure the source MongoDB collection to watch for changes
-source = { service_name = "mongodb-source", id = "example_collection" }
-schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/example-schema" }
+source = { service_name = "mongodb-source", id = "example_collection", encoding = "bson" }
+schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/example-schema", encoding = "avro" }
 sinks = [
-    { service_name = "kafka-local", id = "local_topic" },
-    { service_name = "kafka-cloud", id = "cloud_topic" },
-    { service_name = "pubsub-example", id = "projects/your-project/topics/example-topic" },
+    { service_name = "kafka-local", id = "local_topic", encoding = "json" },
+    { service_name = "kafka-cloud", id = "cloud_topic", encoding = "avro" },
+    { service_name = "pubsub-example", id = "projects/your-project/topics/example-topic", encoding = "avro" },
+    { service_name = "mongodb-source", id = "example_collection_copy", encoding = "bson" },
 ]
 
 [[connectors]]
 name = "kafka-source-connector"
 # Configure Kafka as a source
-source = { service_name = "kafka-cloud", id = "source_topic" }
-schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/kafka-source-schema" }
+source = { service_name = "kafka-cloud", id = "source_topic", encoding = "avro" }
+schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/kafka-source-schema", encoding = "avro" }
 sinks = [
-    { service_name = "kafka-local", id = "processed_topic" },
-    { service_name = "pubsub-example", id = "projects/your-project/topics/processed-topic" },
+    { service_name = "kafka-local", id = "processed_topic", encoding = "json" },
+    { service_name = "pubsub-example", id = "projects/your-project/topics/processed-topic", encoding = "avro" },
+]
+
+[[connectors]]
+name = "pubsub-source-connector"
+# Configure PubSub as a source
+source = { service_name = "pubsub-example", id = "projects/your-project/subscriptions/example-subscription", encoding = "avro" }
+schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/pubsub-source-schema", encoding = "avro" }
+sinks = [
+    { service_name = "kafka-cloud", id = "pubsub_data_topic", encoding = "avro" },
+    { service_name = "kafka-local", id = "pubsub_data_local", encoding = "json" },
 ]
