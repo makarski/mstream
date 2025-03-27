@@ -5,6 +5,8 @@ use mongodb::bson::Document;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::Encoding;
+use crate::pubsub::srvc::PubSubSubscriber;
+use crate::pubsub::ServiceAccountAuth;
 use crate::{kafka::consumer::KafkaConsumer, mongodb::MongoDbChangeStreamListener};
 
 #[async_trait]
@@ -23,6 +25,7 @@ pub struct SourceEvent {
 pub enum SourceProvider {
     MongoDb(MongoDbChangeStreamListener),
     Kafka(KafkaConsumer),
+    PubSub(PubSubSubscriber<ServiceAccountAuth>),
 }
 
 #[async_trait]
@@ -31,6 +34,7 @@ impl EventSource for SourceProvider {
         match self {
             SourceProvider::MongoDb(cs_listener) => cs_listener.listen(events).await,
             SourceProvider::Kafka(consumer) => consumer.listen(events).await,
+            SourceProvider::PubSub(subscriber) => subscriber.subscribe(events).await,
         }
     }
 }

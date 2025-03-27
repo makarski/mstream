@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::sync::{Arc, RwLock};
 
 use anyhow::anyhow;
@@ -77,13 +78,21 @@ impl GCPTokenProvider for StaticAccessToken {
 }
 
 pub async fn tls_transport() -> anyhow::Result<Channel> {
-    let tls_config = ClientTlsConfig::new();
+    let tls_config = ClientTlsConfig::new().with_native_roots();
 
-    let channel = Channel::from_static(ENDPOINT)
+    match Channel::from_static(ENDPOINT)
         .tls_config(tls_config)?
         .connect()
         .await
-        .map_err(|err| anyhow!("failed to initiate tls_transport: {}", err))?;
+    {
+        Ok(channel) => Ok(channel),
+        Err(err) => {
+            // Check if this is a transport error and extract more details
+            if let Some(source) = err.source() {
+                log::error!("Error source: {:?}", source);
+            }
 
-    Ok(channel)
+            return Err(anyhow!("failed to initiate tls_transport: {}", err));
+        }
+    }
 }

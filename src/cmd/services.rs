@@ -16,6 +16,7 @@ use crate::kafka::consumer::KafkaConsumer;
 use crate::mongodb::db_client;
 use crate::mongodb::persister::MongoDbPersister;
 use crate::mongodb::MongoDbChangeStreamListener;
+use crate::pubsub::srvc::PubSubSubscriber;
 use crate::pubsub::SCOPES;
 use crate::schema::mongo::MongoDbSchemaProvider;
 use crate::sink::SinkProvider;
@@ -149,13 +150,18 @@ impl<'a> ServiceFactory<'a> {
                 ),
             },
             Service::Kafka { config, .. } => {
-                let consumer = KafkaConsumer::new(&config, sink_cfg.id.clone())?;
+                let consumer =
+                    KafkaConsumer::new(&config, sink_cfg.id.clone(), sink_cfg.encoding.clone())?;
                 Ok(SourceProvider::Kafka(consumer))
             }
-            _ => Err(anyhow!(
-                "sink_service: unsupported service: {:?}",
-                service_config.name()
-            )),
+            Service::PubSub { auth, .. } => {
+                let tp = self.create_gcp_token_provider(auth).await?;
+                let subscription = sink_cfg.id.clone();
+                let subscriber =
+                    PubSubSubscriber::new(tp, subscription, sink_cfg.encoding.clone()).await?;
+
+                Ok(SourceProvider::PubSub(subscriber))
+            }
         }
     }
 
