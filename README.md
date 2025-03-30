@@ -53,25 +53,73 @@ graph TB
 
 mstream supports multiple encoding formats for both sources and sinks:
 
-#### BSON Source:
+#### BSON Source
+
 - BSON → Avro: Converts MongoDB BSON documents to Avro records
 - BSON → JSON: Serializes BSON documents to JSON format
 - BSON → BSON: Direct passthrough (for MongoDB to MongoDB replication)
 
-#### Avro Source:
-- Avro → Avro: Passthrough or schema validation
+#### Avro Source
+
+- Avro → Avro: Passthrough, no schema validation
 - Avro → JSON: Deserializes Avro records to JSON format
 - Avro → BSON: Converts Avro records to MongoDB BSON documents
 
-#### JSON Source:
-- JSON → JSON: Passthrough or format validation
+#### JSON Source
+
+- JSON → JSON: Passthrough
 - JSON → Avro: Parses JSON and encodes as Avro records
 - JSON → BSON: Parses JSON and converts to BSON documents
 
 JSON source operations are processed by first converting to BSON internally and then
 applying the same transformation logic as BSON sources, unless the target is JSON.
 
-### Event Processing
+### Schema Filtering
+
+A schema can be used as a mask to filter out unwanted fields from the source document, allowing you to selectively extract only the data you need.
+
+#### How Schema Filtering Works
+
+When a schema is applied to a source document, only fields defined in the schema will be included in the resulting document. Any fields in the source document that aren't specified in the schema will be excluded.
+
+#### Example
+
+**Schema definition:**
+```json
+{
+  "type": "record",
+  "name": "User",
+  "fields": [
+    { "name": "name", "type": "string" }
+  ]
+}
+```
+
+**Source document:**
+```json
+{
+  "name": "John",
+  "age": 30,
+  "last_name": "Doe"
+}
+```
+
+**Result after filtering:**
+```json
+{
+  "name": "John"
+}
+```
+
+In this example, only the "name" field was included in the result because it was the only field defined in the schema. The "age" and "last_name" fields were filtered out.
+
+#### Schema Resolution
+
+The schema resolution process works by matching the encoding specified in either the source or sink configuration. This determines which schema is used for filtering and how fields are mapped between different schema versions.
+
+You can configure schema resolution in your source or sink settings to control exactly how documents are filtered during processing.
+
+### Mongo Event Processing
 
 **Supported Sources**
 * [MongoDB Change Stream Events](https://www.mongodb.com/docs/v6.0/reference/change-events/)

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct Config {
@@ -23,6 +23,12 @@ impl Config {
             .iter()
             .any(|s| matches!(s, Service::MongoDb { .. }))
     }
+
+    pub fn has_pubsub(&self) -> bool {
+        self.services
+            .iter()
+            .any(|s| matches!(s, Service::PubSub { .. }))
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -42,6 +48,7 @@ pub enum Service {
         name: String,
         connection_string: String,
         db_name: String,
+        schema_collection: Option<String>,
     },
 }
 
@@ -111,7 +118,7 @@ pub struct ServiceConfigReference {
     pub encoding: Encoding,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoding {
     Avro,

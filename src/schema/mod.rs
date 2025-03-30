@@ -1,8 +1,11 @@
-use apache_avro::Schema;
+use apache_avro::Schema as AvroSchema;
 use async_trait::async_trait;
 use mongo::MongoDbSchemaProvider;
 
-use crate::pubsub::{srvc::SchemaService, ServiceAccountAuth};
+use crate::{
+    config::Encoding,
+    pubsub::{srvc::SchemaService, ServiceAccountAuth},
+};
 pub mod mongo;
 
 pub enum SchemaProvider {
@@ -16,6 +19,32 @@ impl SchemaRegistry for SchemaProvider {
         match self {
             SchemaProvider::PubSub(sp) => sp.get_schema(id).await,
             SchemaProvider::MongoDb(sp) => sp.get_schema(id).await,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Schema {
+    Undefined,
+    Avro(AvroSchema),
+    // Json(String),
+}
+
+impl Schema {
+    pub fn parse(defintion: &str, encoding: Encoding) -> anyhow::Result<Self> {
+        let parsed = match encoding {
+            Encoding::Avro => Self::Avro(AvroSchema::parse_str(defintion)?),
+            // Encoding::Json => Self::Json(defintion.to_string()),
+            _ => Self::Undefined,
+        };
+
+        Ok(parsed)
+    }
+
+    pub fn as_avro(&self) -> Option<&AvroSchema> {
+        match self {
+            Self::Avro(schema) => Some(schema),
+            _ => None,
         }
     }
 }

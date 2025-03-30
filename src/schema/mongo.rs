@@ -1,48 +1,45 @@
 use anyhow::anyhow;
-use apache_avro::Schema;
 use mongodb::bson::doc;
 use serde::{Deserialize, Serialize};
-use tonic::async_trait;
 
-use super::SchemaRegistry;
+use crate::config::Encoding;
 
-const SCHEMA_REGISTRY_COLLECTION: &str = "mstream_schemas";
+use super::Schema;
+
+pub const SCHEMA_REGISTRY_COLLECTION: &str = "mstream_schemas";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SchemaEntry {
     schema_id: String,
-    schema_encoding: SchemaEncoding,
+    schema_encoding: Encoding,
     schema_definition: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum SchemaEncoding {
-    Avro,
 }
 
 pub struct MongoDbSchemaProvider {
     db: mongodb::Database,
+    collection_name: String,
 }
 
 impl MongoDbSchemaProvider {
-    pub fn new(db: mongodb::Database) -> Self {
-        Self { db }
+    pub fn new(db: mongodb::Database, collection_name: String) -> Self {
+        Self {
+            db,
+            collection_name,
+        }
     }
 }
 
-#[async_trait]
-impl SchemaRegistry for MongoDbSchemaProvider {
-    async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
+impl MongoDbSchemaProvider {
+    pub async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
         let collection = self
             .db
-            .collection::<SchemaEntry>(SCHEMA_REGISTRY_COLLECTION);
+            .collection::<SchemaEntry>(self.collection_name.as_str());
 
         let schema = collection
             .find_one(doc! {"schema_id": &id}, None)
             .await?
             .ok_or_else(|| anyhow!("schema not found: {}", id))?;
 
-        Ok(Schema::parse_str(&schema.schema_definition)?)
+        Schema::parse(&schema.schema_definition, schema.schema_encoding)
     }
 }

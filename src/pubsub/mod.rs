@@ -12,7 +12,7 @@ pub mod api {
 }
 pub mod srvc;
 
-const ENDPOINT: &str = "https://pubsub.googleapis.com";
+const ENDPOINT: &str = "https://pubsub.googleapis.com:443";
 pub const SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/pubsub"];
 
 #[derive(Clone)]
@@ -78,7 +78,9 @@ impl GCPTokenProvider for StaticAccessToken {
 }
 
 pub async fn tls_transport() -> anyhow::Result<Channel> {
-    let tls_config = ClientTlsConfig::new().with_native_roots();
+    let tls_config = ClientTlsConfig::new()
+        .with_enabled_roots()
+        .domain_name("pubsub.googleapis.com");
 
     match Channel::from_static(ENDPOINT)
         .tls_config(tls_config)?
