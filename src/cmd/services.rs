@@ -19,6 +19,7 @@ use crate::mongodb::MongoDbChangeStreamListener;
 use crate::pubsub::srvc::PubSubSubscriber;
 use crate::pubsub::SCOPES;
 use crate::schema::mongo::MongoDbSchemaProvider;
+use crate::schema::mongo::SCHEMA_REGISTRY_COLLECTION;
 use crate::sink::SinkProvider;
 use crate::source::SourceProvider;
 use crate::{
@@ -33,12 +34,13 @@ use crate::{
 pub(crate) struct ServiceFactory<'a> {
     config: &'a Config,
     mongo_clients: HashMap<String, Client>,
+    gcp_token_providers: HashMap<String, ServiceAccountAuth>,
 }
 
 impl<'a> ServiceFactory<'a> {
     pub async fn new(config: &'a Config) -> anyhow::Result<ServiceFactory<'a>> {
+        let mut mongo_clients = HashMap::new();
         if config.has_mongo_db() {
-            let mut mongo_clients = HashMap::new();
             for service in config.services.iter() {
                 if let Service::MongoDb {
                     name,
@@ -50,17 +52,23 @@ impl<'a> ServiceFactory<'a> {
                     mongo_clients.insert(name.clone(), client);
                 }
             }
-
-            Ok(ServiceFactory {
-                config,
-                mongo_clients,
-            })
-        } else {
-            Ok(ServiceFactory {
-                config,
-                mongo_clients: HashMap::new(),
-            })
         }
+
+        let mut gcp_token_providers = HashMap::new();
+        if config.has_pubsub() {
+            for service in config.services.iter() {
+                if let Service::PubSub { name, auth } = service {
+                    let tp = Self::create_gcp_token_provider(auth).await?;
+                    gcp_token_providers.insert(name.clone(), tp);
+                }
+            }
+        }
+
+        Ok(ServiceFactory {
+            config,
+            mongo_clients,
+            gcp_token_providers,
+        })
     }
 
     pub async fn schema_provider(
@@ -72,17 +80,32 @@ impl<'a> ServiceFactory<'a> {
             .context("schema_provider")?;
 
         match service_config {
-            Service::PubSub { auth, .. } => {
-                let tp = self.create_gcp_token_provider(auth).await?;
+            Service::PubSub { name, .. } => match self.gcp_token_providers.get(&name) {
+                Some(tp) => Ok(SchemaProvider::PubSub(
+                    SchemaService::with_interceptor(tp.clone()).await?,
+                )),
+                None => bail!(
+                    "initializing schema provider: gcp token provider not found for: {}",
+                    name
+                ),
+            },
+            Service::MongoDb {
+                name,
+                db_name,
+                schema_collection,
+                ..
+            } => match self.mongo_clients.get(&name) {
+                Some(client) => {
+                    let schema_collection = match schema_collection {
+                        Some(collection) => collection,
+                        None => SCHEMA_REGISTRY_COLLECTION.to_owned(),
+                    };
 
-                Ok(SchemaProvider::PubSub(
-                    SchemaService::with_interceptor(tp).await?,
-                ))
-            }
-            Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
-                Some(client) => Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(
-                    client.database(&db_name),
-                ))),
+                    Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(
+                        client.database(&db_name),
+                        schema_collection,
+                    )))
+                }
                 None => bail!(
                     "initializing schema provider: mongo client not found for: {}",
                     name
@@ -105,14 +128,15 @@ impl<'a> ServiceFactory<'a> {
 
         match service_config {
             Service::Kafka { config, .. } => Ok(SinkProvider::Kafka(KafkaProducer::new(&config)?)),
-            Service::PubSub { auth, .. } => {
-                let tp = self.create_gcp_token_provider(auth).await?;
-                // todo: thing about preloading the token providers
-                // in a different place
-                Ok(SinkProvider::PubSub(
-                    PubSubPublisher::with_interceptor(tp).await?,
-                ))
-            }
+            Service::PubSub { name, .. } => match self.gcp_token_providers.get(&name) {
+                Some(tp) => Ok(SinkProvider::PubSub(
+                    PubSubPublisher::with_interceptor(tp.clone()).await?,
+                )),
+                None => bail!(
+                    "initializing publisher service: gcp token provider not found for: {}",
+                    name
+                ),
+            },
             Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
                 Some(db) => {
                     let db = db.database(&db_name);
@@ -154,21 +178,25 @@ impl<'a> ServiceFactory<'a> {
                     KafkaConsumer::new(&config, sink_cfg.id.clone(), sink_cfg.encoding.clone())?;
                 Ok(SourceProvider::Kafka(consumer))
             }
-            Service::PubSub { auth, .. } => {
-                let tp = self.create_gcp_token_provider(auth).await?;
-                let subscription = sink_cfg.id.clone();
-                let subscriber =
-                    PubSubSubscriber::new(tp, subscription, sink_cfg.encoding.clone()).await?;
-
-                Ok(SourceProvider::PubSub(subscriber))
-            }
+            Service::PubSub { name, .. } => match self.gcp_token_providers.get(&name) {
+                Some(tp) => {
+                    let subscriber = PubSubSubscriber::new(
+                        tp.clone(),
+                        sink_cfg.id.clone(),
+                        sink_cfg.encoding.clone(),
+                    )
+                    .await?;
+                    Ok(SourceProvider::PubSub(subscriber))
+                }
+                None => bail!(
+                    "initializing source provider: gcp token provider not found for: {}",
+                    name
+                ),
+            },
         }
     }
 
-    async fn create_gcp_token_provider(
-        &self,
-        auth: GcpAuthConfig,
-    ) -> anyhow::Result<ServiceAccountAuth> {
+    async fn create_gcp_token_provider(auth: &GcpAuthConfig) -> anyhow::Result<ServiceAccountAuth> {
         match auth {
             GcpAuthConfig::ServiceAccount { account_key_path } => {
                 let service_account = ServiceAccount::from_file(&account_key_path, SCOPES.to_vec());

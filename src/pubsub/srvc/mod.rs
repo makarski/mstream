@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Context};
-use apache_avro::Schema;
-use async_trait::async_trait;
+use anyhow::{anyhow, bail, Context};
 use log::debug;
 use tokio::sync::mpsc::Sender;
 use tonic::service::Interceptor;
 
+use super::api::schema::Type as PubSubSchemaType;
 use super::api::subscriber_client::SubscriberClient;
 use super::api::StreamingPullRequest;
 use super::{tls_transport, Channel, InterceptedService};
@@ -15,7 +14,7 @@ use crate::pubsub::api::publisher_client::PublisherClient;
 use crate::pubsub::api::schema_service_client::SchemaServiceClient;
 use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
 use crate::pubsub::api::{PublishRequest, PubsubMessage};
-use crate::schema::SchemaRegistry;
+use crate::schema::Schema;
 use crate::source::SourceEvent;
 
 pub struct PubSubPublisher<I> {
@@ -98,11 +97,8 @@ impl<I: Interceptor> SchemaService<I> {
 
         Ok(schema_list_response.into_inner())
     }
-}
 
-#[async_trait]
-impl<I: Interceptor + Send> SchemaRegistry for SchemaService<I> {
-    async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
+    pub async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
         if !self.cache.contains_key(&id) {
             let schema_response = self.client.get_schema(GetSchemaRequest {
                 name: id.clone(),
@@ -110,10 +106,21 @@ impl<I: Interceptor + Send> SchemaRegistry for SchemaService<I> {
             });
 
             let pubsub_schema = schema_response.await?.into_inner();
-            let avro_schema = Schema::parse_str(&pubsub_schema.definition)?;
-            self.cache.insert(id.clone(), avro_schema);
+            let internal_schema_encoding = match PubSubSchemaType::try_from(pubsub_schema.r#type)? {
+                PubSubSchemaType::Avro => Encoding::Avro,
+                PubSubSchemaType::ProtocolBuffer => {
+                    bail!("unsupported pubsub schema type: protobuf")
+                }
+                PubSubSchemaType::Unspecified => {
+                    bail!("unsupported pubsub schema type: unspecified")
+                }
+            };
 
+            let schema = Schema::parse(&pubsub_schema.definition, internal_schema_encoding)?;
+            self.cache.insert(id.clone(), schema.clone());
             log::info!("schema {} added to cache", id);
+
+            return Ok(schema);
         } else {
             log::info!("schema {} found in cache", id);
         }

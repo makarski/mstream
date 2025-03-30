@@ -29,6 +29,7 @@ provider = "mongodb"
 name = "mongodb-source"
 connection_string = "mongodb://localhost:27017"
 db_name = "example_db"
+schema_collection = "test_schemas" # Optional: collection to store Avro schemas
 
 # Connector Configurations
 [[connectors]]
@@ -57,7 +58,7 @@ sinks = [
 name = "pubsub-source-connector"
 # Configure PubSub as a source
 source = { service_name = "pubsub-example", id = "projects/your-project/subscriptions/example-subscription", encoding = "avro" }
-schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/pubsub-source-schema", encoding = "avro" }
+schema = { service_name = "mongodb-source", id = "example-id", encoding = "avro" }
 sinks = [
     { service_name = "kafka-cloud", id = "pubsub_data_topic", encoding = "avro" },
     { service_name = "kafka-local", id = "pubsub_data_local", encoding = "json" },
