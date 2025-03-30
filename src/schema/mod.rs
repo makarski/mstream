@@ -31,9 +31,9 @@ pub enum Schema {
 }
 
 impl Schema {
-    pub fn parse(defintion: &str, encoding: Encoding) -> anyhow::Result<Self> {
+    pub fn parse(definition: &str, encoding: Encoding) -> anyhow::Result<Self> {
         let parsed = match encoding {
-            Encoding::Avro => Self::Avro(AvroSchema::parse_str(defintion)?),
+            Encoding::Avro => Self::Avro(AvroSchema::parse_str(definition)?),
             // Encoding::Json => Self::Json(defintion.to_string()),
             _ => Self::Undefined,
         };
