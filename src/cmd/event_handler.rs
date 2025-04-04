@@ -1,22 +1,22 @@
+use anyhow::Ok;
 use log::{debug, error, info};
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
     config::ServiceConfigReference,
-    schema::{SchemaProvider, SchemaRegistry},
+    schema::{Schema, SchemaProvider, SchemaRegistry},
     sink::{encoding::SinkEvent, EventSink, SinkProvider},
     source::SourceEvent,
 };
 
 // rename to event handler - do event processing here
-pub struct EventHandler<'a> {
+pub struct EventHandler {
     pub connector_name: String,
-    pub schema_name: String,
-    pub schema_provider: &'a mut SchemaProvider,
+    pub schema_provider: Option<(String, SchemaProvider)>,
     pub publishers: Vec<(ServiceConfigReference, SinkProvider)>,
 }
 
-impl EventHandler<'_> {
+impl EventHandler {
     /// Listen to a mongodb change stream and publish the events to the configured sinks
     pub async fn listen(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
         loop {
@@ -38,11 +38,16 @@ impl EventHandler<'_> {
         Ok(())
     }
 
+    async fn get_schema(&mut self) -> anyhow::Result<Schema> {
+        if let Some((name, schema_provider)) = self.schema_provider.as_mut() {
+            schema_provider.get_schema(name.clone()).await
+        } else {
+            Ok(Schema::Undefined)
+        }
+    }
+
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
-        let schema = self
-            .schema_provider
-            .get_schema(self.schema_name.clone())
-            .await?;
+        let schema = self.get_schema().await?;
 
         for (sink_cfg, publisher) in self.publishers.iter_mut() {
             let sink_event = SinkEvent::from_source_event(source_event.clone(), sink_cfg, &schema)?;
@@ -52,8 +57,8 @@ impl EventHandler<'_> {
                 .await?;
 
             info!(
-                "successfully published a message: {:?}. stream: {}. schema: {}. id: {}",
-                message, &self.connector_name, &self.schema_name, sink_cfg.id,
+                "successfully published a message: {:?}. stream: {}. id: {}",
+                message, &self.connector_name, sink_cfg.id,
             );
         }
 

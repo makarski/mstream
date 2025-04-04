@@ -14,6 +14,8 @@ services:
     ports:
       - "27017:27017"
     command: mongod --replSet mstream_db_replica_set --bind_ip_all
+    networks:
+      - mongoCluster
 
   mongo2:
     container_name: mongo2
@@ -26,6 +28,8 @@ services:
     ports:
       - "27018:27017"
     command: mongod --replSet mstream_db_replica_set --bind_ip_all
+    networks:
+      - mongoCluster
 
   mongo3:
     container_name: mongo3
@@ -38,6 +42,8 @@ services:
     ports:
       - "27019:27017"
     command: mongod --replSet mstream_db_replica_set --bind_ip_all
+    networks:
+      - mongoCluster
 
   kafka:
     container_name: kafka
@@ -52,6 +58,8 @@ services:
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+    networks:
+      - mongoCluster
 
 networks:
   mongoCluster:

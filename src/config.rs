@@ -107,7 +107,7 @@ pub enum GcpAuthConfig {
 pub struct Connector {
     pub name: String,
     pub source: ServiceConfigReference,
-    pub schema: ServiceConfigReference,
+    pub schema: Option<ServiceConfigReference>,
     pub sinks: Vec<ServiceConfigReference>,
 }
 
