@@ -74,9 +74,9 @@ mstream supports multiple encoding formats for both sources and sinks:
 JSON source operations are processed by first converting to BSON internally and then
 applying the same transformation logic as BSON sources, unless the target is JSON.
 
-### Schema Filtering
+### Schema Filtering (Optional)
 
-A schema can be used as a mask to filter out unwanted fields from the source document, allowing you to selectively extract only the data you need.
+A schema can optionally be used as a mask to filter out unwanted fields from the source document, allowing you to selectively extract only the data you need. If no schema is specified, all fields from the source document will be passed through to the sink.
 
 #### How Schema Filtering Works
 
@@ -113,11 +113,31 @@ When a schema is applied to a source document, only fields defined in the schema
 
 In this example, only the "name" field was included in the result because it was the only field defined in the schema. The "age" and "last_name" fields were filtered out.
 
-#### Schema Resolution
+#### Connector Configuration
 
-The schema resolution process works by matching the encoding specified in either the source or sink configuration. This determines which schema is used for filtering and how fields are mapped between different schema versions.
+In your connector configuration, the `schema` field is optional:
 
-You can configure schema resolution in your source or sink settings to control exactly how documents are filtered during processing.
+1. **With schema filtering:**
+   ```toml
+   [[connectors]]
+   name = "filtered-connector"
+   source = { service_name = "mongodb-source", id = "users", encoding = "bson" }
+   schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/user-schema", encoding = "avro" }
+   sinks = [
+       { service_name = "kafka-local", id = "filtered_users", encoding = "json" }
+   ]
+   ```
+
+2. **Without schema filtering (all fields pass through):**
+   ```toml
+   [[connectors]]
+   name = "unfiltered-connector"
+   source = { service_name = "mongodb-source", id = "users", encoding = "bson" }
+   # No schema defined - all fields will be passed through
+   sinks = [
+       { service_name = "kafka-local", id = "all_user_data", encoding = "json" }
+   ]
+   ```
 
 ### Mongo Event Processing
 
