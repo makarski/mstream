@@ -17,10 +17,13 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
     for connector_cfg in cfg.connectors.iter().cloned() {
         let done_ch = done_ch.clone();
 
-        // todo: avoid passing db, as it is only needed for mongo schema provider
-        let mut schema_service = service_container
-            .schema_provider(&connector_cfg.schema)
-            .await?;
+        let schema_provider = match connector_cfg.schema {
+            Some(cfg) => {
+                let schema_service = service_container.schema_provider(&cfg).await?;
+                Some((cfg.id, schema_service))
+            }
+            None => None,
+        };
 
         let mut publishers = Vec::new();
         for topic_cfg in connector_cfg.sinks.into_iter() {
@@ -46,9 +49,8 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
 
             let mut event_handler = EventHandler {
                 connector_name: connector_cfg.name.clone(),
-                schema_name: connector_cfg.schema.id.clone(),
                 publishers,
-                schema_provider: &mut schema_service,
+                schema_provider,
             };
 
             if let Err(err) = event_handler.listen(events_rx).await {
