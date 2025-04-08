@@ -173,9 +173,18 @@ impl<'a> ServiceFactory<'a> {
                     name
                 ),
             },
-            Service::Kafka { config, .. } => {
-                let consumer =
-                    KafkaConsumer::new(&config, sink_cfg.id.clone(), sink_cfg.encoding.clone())?;
+            Service::Kafka {
+                config,
+                offset_seek_back_seconds,
+                ..
+            } => {
+                let consumer = KafkaConsumer::new(
+                    &config,
+                    sink_cfg.id.clone(),
+                    sink_cfg.encoding.clone(),
+                    offset_seek_back_seconds,
+                )?;
+
                 Ok(SourceProvider::Kafka(consumer))
             }
             Service::PubSub { name, .. } => match self.gcp_token_providers.get(&name) {
