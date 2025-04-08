@@ -39,6 +39,7 @@ pub enum Service {
     #[serde(rename = "kafka")]
     Kafka {
         name: String,
+        offset_seek_back_seconds: Option<u64>,
         #[serde(flatten)]
         #[serde(deserialize_with = "deserialize_hasmap_with_env_vals")]
         config: HashMap<String, String>,

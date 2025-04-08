@@ -16,6 +16,7 @@ name = "kafka-local"
 [[services]]
 provider = "kafka"
 name = "kafka-cloud"
+offset_seek_back_seconds = 3600 # Optional: Seek back 1h in time for Kafka source
 "bootstrap.servers" = "your-kafka-broker:9092"
 "security.protocol" = "SASL_SSL"
 "sasl.mechanism" = "PLAIN"
