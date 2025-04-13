@@ -32,6 +32,16 @@ connection_string = "mongodb://localhost:27017"
 db_name = "example_db"
 schema_collection = "test_schemas" # Optional: collection to store Avro schemas
 
+[[services]]
+provider = "http"
+name = "http-local"
+url = "http://localhost:8000/rustest"
+max_retries = 5 # Optional: default is 5
+base_backoff_ms = 1000 # Optional: default is 1000ms
+connection_timeout_sec = 30
+timeout_sec = 30 # Optional: default is 30 seconds
+tcp_keepalive_sec = 300 # Optional: default is 300 seconds
+
 # Connector Configurations
 [[connectors]]
 name = "mongodb-source-connector"
@@ -44,6 +54,7 @@ sinks = [
     { service_name = "kafka-cloud", id = "cloud_topic", encoding = "avro" },
     { service_name = "pubsub-example", id = "projects/your-project/topics/example-topic", encoding = "avro" },
     { service_name = "mongodb-source", id = "example_collection_copy", encoding = "bson" },
+    { service_name = "http-local", id = "http_sink", encoding = "json" }
 ]
 
 [[connectors]]

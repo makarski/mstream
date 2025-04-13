@@ -3,6 +3,7 @@ use log::{debug, warn};
 use tokio::sync::mpsc;
 
 mod encoding;
+mod http;
 mod kafka;
 mod mongodb;
 mod sink;

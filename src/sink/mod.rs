@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use encoding::SinkEvent;
 
 use crate::{
+    http::HttpService,
     kafka::producer::KafkaProducer,
     mongodb::persister::MongoDbPersister,
     pubsub::{srvc::PubSubPublisher, ServiceAccountAuth},
@@ -24,6 +25,7 @@ pub enum SinkProvider {
     Kafka(KafkaProducer),
     PubSub(PubSubPublisher<ServiceAccountAuth>),
     MongoDb(MongoDbPersister),
+    Http(HttpService),
 }
 
 #[async_trait]
@@ -59,6 +61,7 @@ impl EventSink for SinkProvider {
                     topic
                 )),
             },
+            SinkProvider::Http(p) => p.publish(sink_event).await,
         }
     }
 }
