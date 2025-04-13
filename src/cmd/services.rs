@@ -12,6 +12,7 @@ use crate::config::Config;
 use crate::config::GcpAuthConfig;
 use crate::config::Service;
 use crate::config::ServiceConfigReference;
+use crate::http;
 use crate::kafka::consumer::KafkaConsumer;
 use crate::mongodb::db_client;
 use crate::mongodb::persister::MongoDbPersister;
@@ -147,6 +148,27 @@ impl<'a> ServiceFactory<'a> {
                     name
                 ),
             },
+            Service::Http {
+                name,
+                url,
+                max_retries,
+                base_backoff_ms,
+                connection_timeout_sec,
+                timeout_sec,
+                tcp_keepalive_sec,
+            } => {
+                let http_service = http::HttpService::new(
+                    url.clone(),
+                    max_retries,
+                    base_backoff_ms,
+                    connection_timeout_sec,
+                    timeout_sec,
+                    tcp_keepalive_sec,
+                )
+                .with_context(|| anyhow!("failed to initialize http service for: {}", name))?;
+
+                Ok(SinkProvider::Http(http_service))
+            }
         }
     }
 
@@ -202,6 +224,10 @@ impl<'a> ServiceFactory<'a> {
                     name
                 ),
             },
+            _ => bail!(
+                "source_provider: unsupported service: {}",
+                service_config.name()
+            ),
         }
     }
 

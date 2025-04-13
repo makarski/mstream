@@ -51,6 +51,16 @@ pub enum Service {
         db_name: String,
         schema_collection: Option<String>,
     },
+    #[serde(rename = "http")]
+    Http {
+        name: String,
+        url: String,
+        max_retries: Option<u32>,
+        base_backoff_ms: Option<u64>,
+        connection_timeout_sec: Option<u64>,
+        timeout_sec: Option<u64>,
+        tcp_keepalive_sec: Option<u64>,
+    },
 }
 
 fn deserialize_hasmap_with_env_vals<'de, D>(
@@ -89,6 +99,7 @@ impl Service {
             Service::PubSub { name, .. } => name.as_str(),
             Service::Kafka { name, .. } => name.as_str(),
             Service::MongoDb { name, .. } => name.as_str(),
+            Service::Http { name, .. } => name.as_str(),
         }
     }
 }

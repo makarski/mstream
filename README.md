@@ -1,11 +1,28 @@
 mstream
 ===
 
-The application subscribes to [mongodb change streams](https://www.mongodb.com/docs/manual/changeStreams/) and Kafka topics specified in config.
-MongoDB create and update events, as well as messages from Kafka, are picked up and can be encoded in various formats (Avro, JSON, BSON) before being sent to GCP PubSub, Kafka, or MongoDB.
-One connector can be configured to consume from **one source** and publish to **multiple sink topics** from various providers.
+The application creates connectors to move data between various sources and sinks.
 
-`Minimum tested MongoDB version: 6.0`
+Supported sources:
+  * [MongoDB Change Streams](https://www.mongodb.com/docs/manual/changeStreams/) - `minimum tested version: 6.0`
+  * Kafka topics
+  * PubSub topics
+
+Supported sinks:
+  * MongoDB
+  * Kafka topics
+  * PubSub topics
+  * HTTP POST
+
+One connector can be configured to consume from **one source** and publish to **multiple sinks**.
+Connector can be configured to use an AVRO schema to validate the data being sent to sinks and/or filter
+out unwanted fields from the source document.
+
+For detail connector configuration see example configuration [here](./mstream-config.toml.example).
+
+_The production configuration file should be named `mstream-config.toml` and placed in the same directory as the binary._
+
+### Components
 
 ```mermaid
 graph TB
@@ -28,18 +45,21 @@ graph TB
         kafka_sink@{ shape: das, label: "Kafka Sink Topic" }
         mongodb_target[(MongoDB Sink)]
         pubsub_sink_topic@{ shape: das, label: "PubSub Topic" }
+        http_sink["Web Server"]
     end
 
 
     subgraph schemas[Schemas]
-        schema_registry@{label: "PubSub Schema Registry (Avro)" }
+        pubsub_schema_registry@{label: "PubSub Schema Registry (Avro)" }
+        mongodb_schema_storage@{label: "Schema definition stored in Mongo"}
     end
 
 
     mongodb_source -.-> handler
-    kafka_source -..-> handler
+    kafka_source -...-> handler
     pubsub_source_topic -.-> handler
-    schema_registry --> schema_cache
+    pubsub_schema_registry --> schema_cache
+    mongodb_schema_storage --> schema_cache
 
     handler --> encoder
     schema_cache <-->handler
@@ -47,6 +67,7 @@ graph TB
     encoder -.-> mongodb_target
     encoder -.-> pubsub_sink_topic
     encoder -.-> kafka_sink
+    encoder --> |HTTP POST| http_sink
 ```
 
 ### Supported Format Conversions
@@ -166,10 +187,6 @@ database       | mongodb database name
 collection     | mongodb collection name
 
 Attributes can be used to configure fine-grained subscriptions. For more details see [documentation](https://cloud.google.com/pubsub/docs/subscription-message-filter#filtering_syntax)
-
-**Payload**
-
-Payload represents a mongo db document encoded in avro format
 
 ### Running
 

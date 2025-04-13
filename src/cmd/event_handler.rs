@@ -9,7 +9,6 @@ use crate::{
     source::SourceEvent,
 };
 
-// rename to event handler - do event processing here
 pub struct EventHandler {
     pub connector_name: String,
     pub schema_provider: Option<(String, SchemaProvider)>,
@@ -17,7 +16,7 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    /// Listen to a mongodb change stream and publish the events to the configured sinks
+    /// Listen to source streams and publish the events to the configured sinks
     pub async fn listen(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
         loop {
             match events_rx.recv().await {
@@ -57,8 +56,8 @@ impl EventHandler {
                 .await?;
 
             info!(
-                "successfully published a message: {:?}. stream: {}. id: {}",
-                message, &self.connector_name, sink_cfg.id,
+                "published a message to: {}:{:?}. stream: {}. id: {}",
+                sink_cfg.service_name, message, &self.connector_name, sink_cfg.id,
             );
         }
 

@@ -39,7 +39,7 @@ pub struct SinkEvent {
     pub bson_doc: Option<Document>,
     pub raw_bytes: Option<Vec<u8>>,
     pub attributes: Option<HashMap<String, String>>,
-    encoding: Encoding,
+    pub encoding: Encoding,
 }
 
 impl SinkEvent {
