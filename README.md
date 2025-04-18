@@ -1,26 +1,40 @@
 mstream
 ===
 
-The application creates connectors to move data between various sources and sinks.
+A lightweight, configurable data streaming bridge that connects sources to sinks with powerful transformation capabilities.
 
-Supported sources:
-  * [MongoDB Change Streams](https://www.mongodb.com/docs/manual/changeStreams/) - `minimum tested version: 6.0`
-  * Kafka topics
-  * PubSub topics
+## Overview
 
-Supported sinks:
-  * MongoDB
-  * Kafka topics
-  * PubSub topics
-  * HTTP POST
+mstream creates connectors that move data between various systems with flexible transformation options:
 
-One connector can be configured to consume from **one source** and publish to **multiple sinks**.
-Connector can be configured to use an AVRO schema to validate the data being sent to sinks and/or filter
-out unwanted fields from the source document.
+1. **Source → Sink Streaming**: Connect data from [MongoDB change streams](https://www.mongodb.com/docs/manual/changeStreams/), Kafka, or PubSub to multiple destinations
+2. **Format Conversion**: Seamlessly convert between BSON, JSON, and Avro formats
+3. **Schema Filtering**: Apply schema-based field filtering to extract only needed data
+4. **Transformation Pipeline**: Process data through configurable middleware chains before delivery
 
-For detail connector configuration see example configuration [here](./mstream-config.toml.example).
+## Key Features
 
-_The production configuration file should be named `mstream-config.toml` and placed in the same directory as the binary._
+- **Multiple Destination Support**: Stream from one source to multiple sinks simultaneously
+- **Middleware Processing**: Transform data through HTTP services before delivery
+- **Schema Validation**: Use AVRO schemas to validate and filter document fields
+- **Format Flexibility**: Convert between common data formats (BSON, JSON, Avro)
+
+## Supported Integrations
+
+**Sources:**
+- MongoDB Change Streams (v6.0+)
+- Kafka topics
+- Google Cloud PubSub topics
+
+**Sinks:**
+- MongoDB collections
+- Kafka topics
+- Google Cloud PubSub topics
+- HTTP endpoints
+
+Configuration is managed through a simple TOML file. See the [example configuration](./mstream-config.toml.example).
+
+_Note: The production configuration file should be named `mstream-config.toml` and placed in the same directory as the binary._
 
 ### Components
 
