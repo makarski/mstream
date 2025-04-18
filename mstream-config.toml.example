@@ -35,12 +35,20 @@ schema_collection = "test_schemas" # Optional: collection to store Avro schemas
 [[services]]
 provider = "http"
 name = "http-local"
-url = "http://localhost:8000/rustest"
+host = "http://localhost:8000"
 max_retries = 5 # Optional: default is 5
 base_backoff_ms = 1000 # Optional: default is 1000ms
 connection_timeout_sec = 30
 timeout_sec = 30 # Optional: default is 30 seconds
 tcp_keepalive_sec = 300 # Optional: default is 300 seconds
+
+[[services]]
+provider = "http"
+name = "transform-service"
+host = "http://transform-api:8080"
+max_retries = 3
+connection_timeout_sec = 15
+timeout_sec = 20
 
 # Connector Configurations
 [[connectors]]
@@ -86,4 +94,36 @@ source = { service_name = "pubsub-example", id = "projects/your-project/subscrip
 sinks = [
     { service_name = "kafka-cloud", id = "pubsub_data_topic", encoding = "avro" },
     { service_name = "kafka-local", id = "pubsub_data_local", encoding = "json" },
+]
+
+[[connectors]]
+name = "middleware-example-connector"
+source = { service_name = "mongodb-source", id = "users", encoding = "bson" }
+# Define middleware chain for transformations
+middlewares = [
+    # First middleware transforms the data (e.g., normalize fields)
+    # The 'id' field now specifies just the path without the host
+    { service_name = "transform-service", id = "normalize", encoding = "json" },
+    # Second middleware enriches the data
+    { service_name = "http-local", id = "enrich", encoding = "json" },
+    # Third middleware filters or validates the data
+    { service_name = "transform-service", id = "validate", encoding = "json" },
+]
+sinks = [
+    { service_name = "kafka-local", id = "transformed_users", encoding = "json" },
+    { service_name = "mongodb-source", id = "processed_users", encoding = "bson" },
+]
+
+[[connectors]]
+name = "avro-middleware-connector"
+source = { service_name = "kafka-cloud", id = "source_events", encoding = "avro" }
+# Middleware with different encoding transformations
+middlewares = [
+    # The 'id' field is now just the path that will be appended to the host URL
+    { service_name = "transform-service", id = "process", encoding = "json" },
+    # Result is sent as JSON to the next middleware
+    { service_name = "http-local", id = "analyze", encoding = "json" },
+]
+sinks = [
+    { service_name = "pubsub-example", id = "projects/your-project/topics/processed-events", encoding = "avro" },
 ]

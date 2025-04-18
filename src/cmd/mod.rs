@@ -31,6 +31,20 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
             publishers.push((topic_cfg, publisher));
         }
 
+        let middlewares = match connector_cfg.middlewares {
+            Some(middlewares) => {
+                let mut result = Vec::new();
+                for middleware_cfg in middlewares.into_iter() {
+                    let middleware = service_container
+                        .middleware_service(&middleware_cfg)
+                        .await?;
+                    result.push((middleware_cfg, middleware));
+                }
+                Some(result)
+            }
+            None => None,
+        };
+
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
         if let Err(err) = spawn_source_listener(
             connector_cfg.name.clone(),
@@ -51,6 +65,7 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
                 connector_name: connector_cfg.name.clone(),
                 publishers,
                 schema_provider,
+                middlewares,
             };
 
             if let Err(err) = event_handler.listen(events_rx).await {

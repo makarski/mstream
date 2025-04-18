@@ -56,6 +56,7 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                     id: DB_COLLECTION.to_owned(),
                     encoding: Encoding::Bson,
                 },
+                middlewares: None,
                 schema: Some(ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
                     id: env::var("PUBSUB_SCHEMA").unwrap(),

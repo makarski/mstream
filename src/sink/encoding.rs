@@ -35,6 +35,7 @@ use crate::{
     source::SourceEvent,
 };
 
+#[derive(Debug, Clone)]
 pub struct SinkEvent {
     pub bson_doc: Option<Document>,
     pub raw_bytes: Option<Vec<u8>>,
@@ -49,6 +50,18 @@ impl SinkEvent {
         schema: &Schema,
     ) -> anyhow::Result<Self> {
         match (se.encoding.clone(), sink_cfg.encoding.clone()) {
+            (Encoding::Other, Encoding::Other) => Ok(Self {
+                bson_doc: se.document,
+                raw_bytes: se.raw_bytes,
+                attributes: se.attributes,
+                encoding: Encoding::Other,
+            }),
+            (Encoding::Other, Encoding::Avro | Encoding::Bson | Encoding::Json) => {
+                bail!("conversion from Other to Avro/Bson/Json is not supported")
+            }
+            (Encoding::Bson | Encoding::Avro | Encoding::Json, Encoding::Other) => {
+                bail!("conversion from Avro/Bson/Json to Other is not supported")
+            }
             (Encoding::Bson, Encoding::Bson) => Ok(Self {
                 bson_doc: se.document,
                 raw_bytes: se.raw_bytes,
@@ -158,7 +171,7 @@ impl SinkEvent {
                     let decoded = json_to_bson_doc(&b)?;
                     Ok(Self {
                         bson_doc: Some(decoded),
-                        raw_bytes: None,
+                        raw_bytes: Some(b.clone()),
                         attributes: se.attributes,
                         encoding: Encoding::Bson,
                     })

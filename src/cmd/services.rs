@@ -13,7 +13,9 @@ use crate::config::GcpAuthConfig;
 use crate::config::Service;
 use crate::config::ServiceConfigReference;
 use crate::http;
+use crate::http::middleware::HttpMiddleware;
 use crate::kafka::consumer::KafkaConsumer;
+use crate::middleware::MiddlewareProvider;
 use crate::mongodb::db_client;
 use crate::mongodb::persister::MongoDbPersister;
 use crate::mongodb::MongoDbChangeStreamListener;
@@ -36,6 +38,7 @@ pub(crate) struct ServiceFactory<'a> {
     config: &'a Config,
     mongo_clients: HashMap<String, Client>,
     gcp_token_providers: HashMap<String, ServiceAccountAuth>,
+    http_services: HashMap<String, http::HttpService>,
 }
 
 impl<'a> ServiceFactory<'a> {
@@ -65,11 +68,66 @@ impl<'a> ServiceFactory<'a> {
             }
         }
 
+        let mut http_services = HashMap::new();
+        if config.has_http() {
+            for service in config.services.iter() {
+                if let Service::Http {
+                    name,
+                    host,
+                    max_retries,
+                    base_backoff_ms,
+                    connection_timeout_sec,
+                    timeout_sec,
+                    tcp_keepalive_sec,
+                } = service
+                {
+                    let http_service = http::HttpService::new(
+                        host.clone(),
+                        *max_retries,
+                        *base_backoff_ms,
+                        *connection_timeout_sec,
+                        *timeout_sec,
+                        *tcp_keepalive_sec,
+                    )
+                    .with_context(|| anyhow!("failed to initialize http service for: {}", name))?;
+                    http_services.insert(name.clone(), http_service);
+                }
+            }
+        }
+
         Ok(ServiceFactory {
             config,
             mongo_clients,
             gcp_token_providers,
+            http_services,
         })
+    }
+
+    pub async fn middleware_service(
+        &self,
+        midware_config: &ServiceConfigReference,
+    ) -> anyhow::Result<MiddlewareProvider> {
+        let service_config = self
+            .service_definition(&midware_config.service_name)
+            .context("middleware config")?;
+
+        match service_config {
+            Service::Http { name, .. } => match self.http_services.get(&name) {
+                Some(http_service) => Ok(MiddlewareProvider::Http(HttpMiddleware::new(
+                    midware_config.id.clone(),
+                    midware_config.encoding.clone(),
+                    http_service.clone(),
+                ))),
+                None => bail!(
+                    "initializing middleware: http service not found for: {}",
+                    name
+                ),
+            },
+            _ => bail!(
+                "initializing middleware: unsupported service: {}",
+                service_config.name()
+            ),
+        }
     }
 
     pub async fn schema_provider(
@@ -150,7 +208,7 @@ impl<'a> ServiceFactory<'a> {
             },
             Service::Http {
                 name,
-                url,
+                host,
                 max_retries,
                 base_backoff_ms,
                 connection_timeout_sec,
@@ -158,7 +216,7 @@ impl<'a> ServiceFactory<'a> {
                 tcp_keepalive_sec,
             } => {
                 let http_service = http::HttpService::new(
-                    url.clone(),
+                    host.clone(),
                     max_retries,
                     base_backoff_ms,
                     connection_timeout_sec,
