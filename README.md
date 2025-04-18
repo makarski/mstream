@@ -32,6 +32,8 @@ graph TB
         schema_cache[Schema Cache]
         encoder[["`Format Encoder
         (Json, Avro, Bson)`"]]
+        middleware[["`Middlewares
+        (HTTP Transform)`"]]
     end
 
     subgraph sources[Sources]
@@ -61,7 +63,8 @@ graph TB
     pubsub_schema_registry --> schema_cache
     mongodb_schema_storage --> schema_cache
 
-    handler --> encoder
+    handler --> middleware
+    middleware --> encoder
     schema_cache <-->handler
 
     encoder -.-> mongodb_target
@@ -159,6 +162,74 @@ In your connector configuration, the `schema` field is optional:
        { service_name = "kafka-local", id = "all_user_data", encoding = "json" }
    ]
    ```
+
+### Middleware Support
+
+The mstream application supports middleware processing for data transformation before sending to sinks. This powerful feature allows you to modify, enrich, or transform data as it passes through the pipeline.
+
+#### Middleware Functionality
+
+Middleware components sit between the source and sink, allowing for data transformation or enrichment. Each middleware:
+
+- Receives a source event with its payload
+- Processes the data (via HTTP POST to external services)
+- Returns a modified version of the event for further processing
+
+Multiple middlewares can be chained together to create complex transformation pipelines.
+
+```mermaid
+graph LR
+    Source --> Middleware1
+    Middleware1 --> Middleware2
+    Middleware2 --> Middleware3
+    Middleware3 --> Sink1
+    Middleware3 --> Sink2
+    Middleware3 --> Sink3
+```
+
+#### Configuring Middlewares
+
+In your connector configuration, you can specify one or more middlewares:
+
+```toml
+[[connectors]]
+name = "employee-connector"
+source = { service_name = "mongodb-local", id = "employees", encoding = "bson" }
+# Add middleware transformations
+middlewares = [
+    # id = "transform" means that the middleware will execute a http post request to /transform endpoint
+    { service_name = "http-local", id = "transform", encoding = "json" },
+    { service_name = "http-local", id = "enrich", encoding = "json" },
+]
+sinks = [
+    { service_name = "kafka-local", id = "test", encoding = "json" },
+    { service_name = "mongodb-local", id = "employees-copy", encoding = "bson" },
+]
+```
+
+#### HTTP Middleware
+
+The currently implemented middleware type is HTTP, which:
+
+1. Sends the event data to an external HTTP endpoint
+2. Receives the transformed data as the response
+3. Passes the transformed data to the next middleware or sink
+
+Each middleware can specify its own encoding format, allowing for flexible transformation chains that convert between different data formats as needed.
+
+#### Data Flow with Middleware
+
+1. Source produces an event
+2. Event optionally passes through schema filtering
+3. Event sequentially passes through each configured middleware
+4. The final transformed event is sent to all configured sinks
+
+This middleware capability is especially useful for:
+- Data enrichment from external services
+- Complex transformations beyond simple field filtering
+- Normalization of data across different sources
+- Custom business logic implementation
+- Encoding conversions that are not natively supported by mstream, i.e. **protobuf to json**
 
 ### Mongo Event Processing
 

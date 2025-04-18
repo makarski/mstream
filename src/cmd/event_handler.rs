@@ -4,6 +4,7 @@ use tokio::sync::mpsc::Receiver;
 
 use crate::{
     config::ServiceConfigReference,
+    middleware::MiddlewareProvider,
     schema::{Schema, SchemaProvider, SchemaRegistry},
     sink::{encoding::SinkEvent, EventSink, SinkProvider},
     source::SourceEvent,
@@ -13,11 +14,15 @@ pub struct EventHandler {
     pub connector_name: String,
     pub schema_provider: Option<(String, SchemaProvider)>,
     pub publishers: Vec<(ServiceConfigReference, SinkProvider)>,
+    pub middlewares: Option<Vec<(ServiceConfigReference, MiddlewareProvider)>>,
 }
 
 impl EventHandler {
     /// Listen to source streams and publish the events to the configured sinks
-    pub async fn listen(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
+    pub(super) async fn listen(
+        &mut self,
+        mut events_rx: Receiver<SourceEvent>,
+    ) -> anyhow::Result<()> {
         loop {
             match events_rx.recv().await {
                 Some(event) => {
@@ -47,9 +52,17 @@ impl EventHandler {
 
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
         let schema = self.get_schema().await?;
+        let mut modified_source_event = source_event;
+
+        if let Some(middlewares) = &mut self.middlewares {
+            for (_, middleware) in middlewares.iter_mut() {
+                modified_source_event = middleware.transform(modified_source_event).await?;
+            }
+        }
 
         for (sink_cfg, publisher) in self.publishers.iter_mut() {
-            let sink_event = SinkEvent::from_source_event(source_event.clone(), sink_cfg, &schema)?;
+            let sink_event =
+                SinkEvent::from_source_event(modified_source_event.clone(), sink_cfg, &schema)?;
 
             let message = publisher
                 .publish(sink_event, sink_cfg.id.clone(), None)

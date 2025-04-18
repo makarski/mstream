@@ -61,7 +61,15 @@ impl EventSink for SinkProvider {
                     topic
                 )),
             },
-            SinkProvider::Http(p) => p.publish(sink_event).await,
+            SinkProvider::Http(p) => {
+                let payload = match sink_event.raw_bytes {
+                    Some(b) => b,
+                    None => return Err(anyhow::anyhow!("raw_bytes is missing for http sink")),
+                };
+
+                p.post(&topic, payload, sink_event.encoding, sink_event.attributes)
+                    .await
+            }
         }
     }
 }

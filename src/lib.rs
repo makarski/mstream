@@ -11,6 +11,7 @@ mod source;
 
 pub mod cmd;
 pub mod config;
+pub mod middleware;
 pub mod pubsub;
 pub mod schema;
 

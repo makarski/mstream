@@ -29,6 +29,12 @@ impl Config {
             .iter()
             .any(|s| matches!(s, Service::PubSub { .. }))
     }
+
+    pub fn has_http(&self) -> bool {
+        self.services
+            .iter()
+            .any(|s| matches!(s, Service::Http { .. }))
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -54,7 +60,7 @@ pub enum Service {
     #[serde(rename = "http")]
     Http {
         name: String,
-        url: String,
+        host: String,
         max_retries: Option<u32>,
         base_backoff_ms: Option<u64>,
         connection_timeout_sec: Option<u64>,
@@ -119,6 +125,7 @@ pub enum GcpAuthConfig {
 pub struct Connector {
     pub name: String,
     pub source: ServiceConfigReference,
+    pub middlewares: Option<Vec<ServiceConfigReference>>,
     pub schema: Option<ServiceConfigReference>,
     pub sinks: Vec<ServiceConfigReference>,
 }
@@ -136,4 +143,9 @@ pub enum Encoding {
     Avro,
     Json,
     Bson,
+    // Other can be used for any other encoding
+    // e.g. Protobuf, MsgPack, etc.
+    // This can be used for pathtrough or in
+    // combination with middlewares
+    Other,
 }

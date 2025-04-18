@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 
-use anyhow::bail;
+use anyhow::{anyhow, bail, Context};
 use log::warn;
 use rand::Rng;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use thiserror::Error;
 use tokio::time::{sleep, Duration};
+use url::Url;
 
-use crate::{config::Encoding, sink::encoding::SinkEvent};
+use crate::config::Encoding;
 
+pub mod middleware;
+
+#[derive(Debug, Clone)]
 pub struct HttpService {
-    url: String,
+    host_url: Url,
     client: reqwest::Client,
     max_retries: u32,
     base_backoff_ms: u64,
@@ -25,7 +29,7 @@ struct ResponseError {
 
 impl HttpService {
     pub fn new(
-        url: String,
+        host: String,
         max_retries: Option<u32>,
         base_backoff_ms: Option<u64>,
         connection_timeout_sec: Option<u64>,
@@ -53,39 +57,47 @@ impl HttpService {
             .timeout(timeout)
             .build()?;
 
+        let host_url = Url::parse(&host)
+            .with_context(|| anyhow!("failed to construct the url for host: {}", host))?;
+
         Ok(HttpService {
-            url,
+            host_url,
             client,
             max_retries,
             base_backoff_ms,
         })
     }
 
-    pub async fn publish(&mut self, event: SinkEvent) -> anyhow::Result<String> {
-        let payload = match event.raw_bytes {
-            Some(b) => b,
-            None => {
-                bail!(
-                    "raw_bytes is missing for http sink. url: {}. encoding: {:?}",
-                    self.url,
-                    event.encoding
-                )
-            }
-        };
+    pub async fn post(
+        &mut self,
+        path: &str,
+        payload: Vec<u8>,
+        encoding: Encoding,
+        attrs: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<String> {
+        let full_url = self
+            .host_url
+            .join(path)
+            .with_context(|| anyhow!("failed to construct the url for path: {}", path))?;
 
-        let headers = self.headers_from_attrs(event.attributes, event.encoding)?;
-
+        let headers = self.headers_from_attrs(attrs, encoding)?;
         let mut attempt = 0;
         let mut last_error = None;
+
         while attempt < self.max_retries {
             attempt += 1;
-            match self.execute_req(payload.clone(), headers.clone()).await {
+            match self
+                .execute_post_req(full_url.as_str(), payload.clone(), headers.clone())
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(err) => {
                     let should_retry = err.should_retry;
                     warn!(
-                        "http sink: failed to publish event. url: {}. attempt: {}. error: {}",
-                        self.url, attempt, err
+                        "http: failed to post. url: {}. attempt: {}. error: {}",
+                        full_url.as_str(),
+                        attempt,
+                        err
                     );
                     last_error = Some(err);
                     if !should_retry {
@@ -107,20 +119,21 @@ impl HttpService {
         };
 
         bail!(
-            "failed to publish event after {} attempts: {}",
+            "failed to post event after {} attempts: {}",
             attempt,
             err_msg
         )
     }
 
-    async fn execute_req(
+    async fn execute_post_req(
         &self,
+        url: &str,
         payload: Vec<u8>,
         headers: HeaderMap,
     ) -> Result<String, ResponseError> {
         let response = self
             .client
-            .post(&self.url)
+            .post(url)
             .headers(headers)
             .body(payload)
             .send()
@@ -196,7 +209,14 @@ impl HttpService {
                 HeaderName::from_static("content-type"),
                 HeaderValue::from_str("application/json")?,
             ),
-            _ => bail!("unsupported encoding: {:?}", encoding),
+            Encoding::Other => hmap.insert(
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_str("application/octet-stream")?,
+            ),
+            Encoding::Bson => hmap.insert(
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_str("application/bson")?,
+            ),
         };
 
         if let Some(attr) = attr {
@@ -249,7 +269,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(service.url, "https://example.com");
+        assert_eq!(service.host_url.as_str(), "https://example.com/");
         assert_eq!(service.max_retries, 5);
         assert_eq!(service.base_backoff_ms, 1000);
     }
@@ -267,7 +287,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(service.url, "https://example.com");
+        assert_eq!(service.host_url.as_str(), "https://example.com/");
         assert_eq!(service.max_retries, 10);
         assert_eq!(service.base_backoff_ms, 500);
     }
@@ -276,8 +296,10 @@ mod tests {
     async fn test_custom_headers_from_attributes() {
         // Setup mock to verify custom headers
         let mut server = Server::new_async().await;
+        let resource = "/webhook";
+
         let mock_server = server
-            .mock("POST", "/webhook")
+            .mock("POST", resource)
             .match_header("X-CustomHeader", "custom-value")
             .match_header("X-ApiKey", "secret-key")
             .with_status(200)
@@ -285,15 +307,7 @@ mod tests {
             .create();
 
         // Create HttpSink
-        let mut sink = HttpService::new(
-            format!("{}/webhook", server.url()),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let mut sink = HttpService::new(server.url(), None, None, None, None, None).unwrap();
 
         // Create test event with custom headers
         let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
@@ -302,8 +316,17 @@ mod tests {
         attributes.insert("ApiKey".to_string(), "secret-key".to_string());
         let event = create_test_event(Some(payload), Some(attributes), Encoding::Json);
 
-        // Call publish
-        let _ = sink.publish(event).await;
+        // Call post
+        let res = sink
+            .post(
+                &resource,
+                event.raw_bytes.unwrap(),
+                event.encoding,
+                event.attributes,
+            )
+            .await;
+
+        assert!(res.is_ok(), "Failed to post event: {:?}", res);
 
         // Verify headers were sent correctly
         mock_server.assert();
@@ -312,35 +335,36 @@ mod tests {
     #[tokio::test]
     async fn test_retry_for_specific_status_codes() {
         let mut server = Server::new_async().await;
+        let resource = "/webhook";
 
         // Test retry behavior for specific status codes
         for status in [429, 408, 423, 425, 500, 502, 503, 504] {
             // Setup mocks: first attempt fails with status code, second succeeds
-            let _mock_fail = server.mock("POST", "/webhook").with_status(status).create();
+            let _mock_fail = server.mock("POST", resource).with_status(status).create();
 
             let mock_success = server
-                .mock("POST", "/webhook")
+                .mock("POST", resource)
                 .with_status(200)
                 .with_body("ok")
                 .create();
 
             // Create HttpSink with fast retries for testing
-            let mut sink = HttpService::new(
-                format!("{}/webhook", server.url()),
-                Some(3),
-                Some(10),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+            let mut sink =
+                HttpService::new(server.url(), Some(3), Some(10), None, None, None).unwrap();
 
             // Create test event
             let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
             let event = create_test_event(Some(payload), None, Encoding::Json);
 
             // Call publish method
-            let result = sink.publish(event).await;
+            let result = sink
+                .post(
+                    resource,
+                    event.raw_bytes.unwrap(),
+                    event.encoding,
+                    event.attributes,
+                )
+                .await;
 
             // Verify success after retry
             assert!(result.is_ok());
@@ -351,66 +375,39 @@ mod tests {
     #[tokio::test]
     async fn test_no_retry_for_client_errors() {
         let mut server = Server::new_async().await;
+        let resource = "/webhook";
 
         // Test no retry for most client errors (except specific ones like 429)
         for status in [400, 401, 403, 404, 405, 409, 422] {
             // Setup mock with client error - should only be called once
             let mock_error = server
-                .mock("POST", "/webhook")
+                .mock("POST", resource)
                 .with_status(status)
                 .expect(1)
                 .create();
 
             // Create HttpSink with multiple retries that shouldn't be used
-            let mut sink = HttpService::new(
-                format!("{}/webhook", server.url()),
-                Some(3),
-                Some(10),
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+            let mut sink =
+                HttpService::new(server.url(), Some(3), Some(10), None, None, None).unwrap();
 
             // Create test event
             let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
             let event = create_test_event(Some(payload), None, Encoding::Json);
 
             // Call publish method
-            let result = sink.publish(event).await;
+            let result = sink
+                .post(
+                    resource,
+                    event.raw_bytes.unwrap(),
+                    event.encoding,
+                    event.attributes,
+                )
+                .await;
 
             // Verify failure without retry
             assert!(result.is_err());
             mock_error.assert();
         }
-    }
-
-    #[tokio::test]
-    async fn test_unsupported_encoding() {
-        // Create HttpSink
-        let mut sink = HttpService::new(
-            "https://example.com/webhook".to_string(),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-
-        // Use an unsupported encoding (BSON)
-        let payload = vec![1, 2, 3, 4];
-        let event = create_test_event(Some(payload), None, Encoding::Bson);
-
-        // Call publish
-        let result = sink.publish(event).await;
-
-        // Verify error for unsupported encoding
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported encoding"));
     }
 
     #[tokio::test]
@@ -449,7 +446,7 @@ mod tests {
     async fn test_headers_with_invalid_values() {
         // Create HttpSink
         let mut sink = HttpService::new(
-            "https://example.com/webhook".to_string(),
+            "https://example.com".to_string(),
             None,
             None,
             None,
@@ -468,7 +465,14 @@ mod tests {
         let event = create_test_event(Some(payload), Some(attributes), Encoding::Json);
 
         // Call publish
-        let result = sink.publish(event).await;
+        let result = sink
+            .post(
+                "/webhook",
+                event.raw_bytes.unwrap(),
+                event.encoding,
+                event.attributes,
+            )
+            .await;
 
         // Should fail due to invalid header value
         assert!(result.is_err());
@@ -477,23 +481,16 @@ mod tests {
     #[tokio::test]
     async fn test_gradually_increasing_retry_delays() {
         let mut server = Server::new_async().await;
+        let resource = "/webhook";
         // Setup mock to fail multiple times
         let _mock = server
-            .mock("POST", "/webhook")
+            .mock("POST", resource)
             .with_status(500)
             .expect(3)
             .create();
 
         // Create HttpSink with small base backoff for testing
-        let mut sink = HttpService::new(
-            format!("{}/webhook", server.url()),
-            Some(3),
-            Some(20),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let mut sink = HttpService::new(server.url(), Some(3), Some(20), None, None, None).unwrap();
 
         // Create test event
         let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
@@ -501,7 +498,14 @@ mod tests {
 
         // Capture timing of each attempt
         let start = Instant::now();
-        let _ = sink.publish(event).await;
+        let _ = sink
+            .post(
+                resource,
+                event.raw_bytes.unwrap(),
+                event.encoding,
+                event.attributes,
+            )
+            .await;
         let total_time = start.elapsed();
 
         // With exponential backoff, total should be at least ~20ms + ~40ms = ~60ms
@@ -528,7 +532,15 @@ mod tests {
 
         // Time the operation to verify retries
         let start = Instant::now();
-        let result = sink.publish(event).await;
+        let result = sink
+            .post(
+                "/webhook",
+                event.raw_bytes.unwrap(),
+                event.encoding,
+                event.attributes,
+            )
+            .await;
+
         let elapsed = start.elapsed();
 
         // Request should fail after retries

@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use log::debug;
 use mongodb::{
-    bson::{doc, Document},
+    bson::{doc, ser, Document},
     change_stream::{
         event::{ChangeStreamEvent, OperationType, ResumeToken},
         ChangeStream,
@@ -130,9 +130,18 @@ impl EventSource for MongoDbChangeStreamListener {
             };
 
             if let Some(document) = bson_doc {
+                let bson_raw_bytes = ser::to_vec(&document).map_err(|err| {
+                    anyhow!(
+                        "failed to serialize document: {}:{}, {}",
+                        self.db_collection,
+                        self.db_name,
+                        err
+                    )
+                })?;
+
                 events
                     .send(SourceEvent {
-                        raw_bytes: None,
+                        raw_bytes: Some(bson_raw_bytes),
                         document: Some(document),
                         attributes,
                         encoding: Encoding::Bson,
