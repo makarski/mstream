@@ -84,7 +84,7 @@ impl SinkEvent {
                 let avro_schema = schema.as_avro().ok_or_else(|| {
                     anyhow!(
                         "failed to retrieve underlying avro schema while converting into avro: {}",
-                        sink_cfg.id
+                        sink_cfg.resource
                     )
                 })?;
 
@@ -133,7 +133,7 @@ impl SinkEvent {
                 let avro_schema = schema.as_avro().ok_or_else(|| {
                     anyhow!(
                         "failed to retrieve underlying avro schema while converting from avro: {}",
-                        sink_cfg.id
+                        sink_cfg.resource
                     )
                 })?;
 

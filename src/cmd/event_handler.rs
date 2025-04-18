@@ -65,12 +65,12 @@ impl EventHandler {
                 SinkEvent::from_source_event(modified_source_event.clone(), sink_cfg, &schema)?;
 
             let message = publisher
-                .publish(sink_event, sink_cfg.id.clone(), None)
+                .publish(sink_event, sink_cfg.resource.clone(), None)
                 .await?;
 
             info!(
                 "published a message to: {}:{:?}. stream: {}. id: {}",
-                sink_cfg.service_name, message, &self.connector_name, sink_cfg.id,
+                sink_cfg.service_name, message, &self.connector_name, sink_cfg.resource,
             );
         }
 

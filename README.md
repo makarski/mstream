@@ -145,10 +145,10 @@ In your connector configuration, the `schema` field is optional:
    ```toml
    [[connectors]]
    name = "filtered-connector"
-   source = { service_name = "mongodb-source", id = "users", encoding = "bson" }
-   schema = { service_name = "pubsub-example", id = "projects/your-project/schemas/user-schema", encoding = "avro" }
+   source = { service_name = "mongodb-source", resource = "users", encoding = "bson" }
+   schema = { service_name = "pubsub-example", resource = "projects/your-project/schemas/user-schema", encoding = "avro" }
    sinks = [
-       { service_name = "kafka-local", id = "filtered_users", encoding = "json" }
+       { service_name = "kafka-local", resource = "filtered_users", encoding = "json" }
    ]
    ```
 
@@ -156,10 +156,10 @@ In your connector configuration, the `schema` field is optional:
    ```toml
    [[connectors]]
    name = "unfiltered-connector"
-   source = { service_name = "mongodb-source", id = "users", encoding = "bson" }
+   source = { service_name = "mongodb-source", resource = "users", encoding = "bson" }
    # No schema defined - all fields will be passed through
    sinks = [
-       { service_name = "kafka-local", id = "all_user_data", encoding = "json" }
+       { service_name = "kafka-local", resource = "all_user_data", encoding = "json" }
    ]
    ```
 
@@ -194,16 +194,16 @@ In your connector configuration, you can specify one or more middlewares:
 ```toml
 [[connectors]]
 name = "employee-connector"
-source = { service_name = "mongodb-local", id = "employees", encoding = "bson" }
+source = { service_name = "mongodb-local", resource = "employees", encoding = "bson" }
 # Add middleware transformations
 middlewares = [
-    # id = "transform" means that the middleware will execute a http post request to /transform endpoint
-    { service_name = "http-local", id = "transform", encoding = "json" },
-    { service_name = "http-local", id = "enrich", encoding = "json" },
+    # resource = "transform" means that the middleware will execute a http post request to /transform endpoint
+    { service_name = "http-local", resource = "transform", encoding = "json" },
+    { service_name = "http-local", resource = "enrich", encoding = "json" },
 ]
 sinks = [
-    { service_name = "kafka-local", id = "test", encoding = "json" },
-    { service_name = "mongodb-local", id = "employees-copy", encoding = "bson" },
+    { service_name = "kafka-local", resource = "test", encoding = "json" },
+    { service_name = "mongodb-local", resource = "employees-copy", encoding = "bson" },
 ]
 ```
 

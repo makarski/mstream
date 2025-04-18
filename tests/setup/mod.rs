@@ -53,18 +53,18 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 name: CONNECTOR_NAME.to_owned(),
                 source: ServiceConfigReference {
                     service_name: "mongodb".to_owned(),
-                    id: DB_COLLECTION.to_owned(),
+                    resource: DB_COLLECTION.to_owned(),
                     encoding: Encoding::Bson,
                 },
                 middlewares: None,
                 schema: Some(ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
-                    id: env::var("PUBSUB_SCHEMA").unwrap(),
+                    resource: env::var("PUBSUB_SCHEMA").unwrap(),
                     encoding: Encoding::Avro,
                 }),
                 sinks: vec![ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
-                    id: env::var("PUBSUB_TOPIC").unwrap(),
+                    resource: env::var("PUBSUB_TOPIC").unwrap(),
                     encoding: Encoding::Avro,
                 }],
             }],

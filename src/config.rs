@@ -133,7 +133,7 @@ pub struct Connector {
 #[derive(Deserialize, Debug, Clone)]
 pub struct ServiceConfigReference {
     pub service_name: String,
-    pub id: String,
+    pub resource: String,
     pub encoding: Encoding,
 }
 

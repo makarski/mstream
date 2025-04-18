@@ -20,7 +20,7 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
         let schema_provider = match connector_cfg.schema {
             Some(cfg) => {
                 let schema_service = service_container.schema_provider(&cfg).await?;
-                Some((cfg.id, schema_service))
+                Some((cfg.resource, schema_service))
             }
             None => None,
         };
