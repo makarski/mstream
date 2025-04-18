@@ -114,7 +114,7 @@ impl<'a> ServiceFactory<'a> {
         match service_config {
             Service::Http { name, .. } => match self.http_services.get(&name) {
                 Some(http_service) => Ok(MiddlewareProvider::Http(HttpMiddleware::new(
-                    midware_config.id.clone(),
+                    midware_config.resource.clone(),
                     midware_config.encoding.clone(),
                     http_service.clone(),
                 ))),
@@ -245,7 +245,7 @@ impl<'a> ServiceFactory<'a> {
                     Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
                         db,
                         db_name,
-                        sink_cfg.id.clone(),
+                        sink_cfg.resource.clone(),
                     )))
                 }
                 None => bail!(
@@ -260,7 +260,7 @@ impl<'a> ServiceFactory<'a> {
             } => {
                 let consumer = KafkaConsumer::new(
                     &config,
-                    sink_cfg.id.clone(),
+                    sink_cfg.resource.clone(),
                     sink_cfg.encoding.clone(),
                     offset_seek_back_seconds,
                 )?;
@@ -271,7 +271,7 @@ impl<'a> ServiceFactory<'a> {
                 Some(tp) => {
                     let subscriber = PubSubSubscriber::new(
                         tp.clone(),
-                        sink_cfg.id.clone(),
+                        sink_cfg.resource.clone(),
                         sink_cfg.encoding.clone(),
                     )
                     .await?;
