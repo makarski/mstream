@@ -30,7 +30,6 @@ provider = "mongodb"
 name = "mongodb-source"
 connection_string = "mongodb://localhost:27017"
 db_name = "example_db"
-schema_collection = "test_schemas" # Optional: collection to store Avro schemas
 
 [[services]]
 provider = "http"

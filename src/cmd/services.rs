@@ -8,31 +8,18 @@ use gauth::serv_account::ServiceAccount;
 use gauth::token_provider::AsyncTokenProvider;
 use mongodb::Client;
 
-use crate::config::Config;
-use crate::config::GcpAuthConfig;
-use crate::config::Service;
-use crate::config::ServiceConfigReference;
-use crate::http;
-use crate::http::middleware::HttpMiddleware;
-use crate::kafka::consumer::KafkaConsumer;
+use crate::config::{Config, GcpAuthConfig, Service, ServiceConfigReference};
+use crate::http::{self, middleware::HttpMiddleware};
+use crate::kafka::{consumer::KafkaConsumer, producer::KafkaProducer};
 use crate::middleware::MiddlewareProvider;
-use crate::mongodb::db_client;
-use crate::mongodb::persister::MongoDbPersister;
-use crate::mongodb::MongoDbChangeStreamListener;
-use crate::pubsub::srvc::PubSubSubscriber;
-use crate::pubsub::SCOPES;
-use crate::schema::mongo::MongoDbSchemaProvider;
-use crate::schema::mongo::SCHEMA_REGISTRY_COLLECTION;
+use crate::mongodb::{db_client, persister::MongoDbPersister, MongoDbChangeStreamListener};
+use crate::pubsub::{
+    srvc::{PubSubPublisher, PubSubSubscriber, SchemaService},
+    ServiceAccountAuth, StaticAccessToken, SCOPES,
+};
+use crate::schema::{mongo::MongoDbSchemaProvider, SchemaProvider};
 use crate::sink::SinkProvider;
 use crate::source::SourceProvider;
-use crate::{
-    kafka::producer::KafkaProducer,
-    pubsub::{
-        srvc::{PubSubPublisher, SchemaService},
-        ServiceAccountAuth, StaticAccessToken,
-    },
-    schema::SchemaProvider,
-};
 
 pub(crate) struct ServiceFactory<'a> {
     config: &'a Config,
@@ -148,17 +135,9 @@ impl<'a> ServiceFactory<'a> {
                     name
                 ),
             },
-            Service::MongoDb {
-                name,
-                db_name,
-                schema_collection,
-                ..
-            } => match self.mongo_clients.get(&name) {
+            Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
                 Some(client) => {
-                    let schema_collection = match schema_collection {
-                        Some(collection) => collection,
-                        None => SCHEMA_REGISTRY_COLLECTION.to_owned(),
-                    };
+                    let schema_collection = schema_config.resource.clone();
 
                     Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(
                         client.database(&db_name),

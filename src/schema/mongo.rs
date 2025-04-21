@@ -6,8 +6,6 @@ use crate::config::Encoding;
 
 use super::Schema;
 
-pub const SCHEMA_REGISTRY_COLLECTION: &str = "mstream_schemas";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SchemaEntry {
     schema_id: String,
