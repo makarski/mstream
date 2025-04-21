@@ -55,7 +55,6 @@ pub enum Service {
         name: String,
         connection_string: String,
         db_name: String,
-        schema_collection: Option<String>,
     },
     #[serde(rename = "http")]
     Http {

@@ -46,7 +46,6 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                     name: "mongodb".to_owned(),
                     connection_string: DB_CONNECTION.to_owned(),
                     db_name: DB_NAME.to_owned(),
-                    schema_collection: None,
                 },
             ],
             connectors: vec![Connector {
