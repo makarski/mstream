@@ -5,7 +5,10 @@ use anyhow::anyhow;
 use apache_avro::AvroSchema;
 use mongodb::bson::{doc, Document};
 use mongodb::Collection;
-use mstream::config::{Encoding, GcpAuthConfig, Service, ServiceConfigReference};
+use mstream::config::{
+    Encoding, GcpAuthConfig, SchemaServiceConfigReference, Service, ServiceConfigReference,
+    SourceServiceConfigReference,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tonic::service::Interceptor;
@@ -50,21 +53,24 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
             ],
             connectors: vec![Connector {
                 name: CONNECTOR_NAME.to_owned(),
-                source: ServiceConfigReference {
+                source: SourceServiceConfigReference {
                     service_name: "mongodb".to_owned(),
                     resource: DB_COLLECTION.to_owned(),
-                    encoding: Encoding::Bson,
+                    output_encoding: Encoding::Bson,
+                    input_encoding: None,
+                    schema_id: None,
                 },
                 middlewares: None,
-                schema: Some(ServiceConfigReference {
+                schemas: Some(vec![SchemaServiceConfigReference {
+                    id: "pubsub-schema-id".to_owned(),
                     service_name: "pubsub".to_owned(),
                     resource: env::var("PUBSUB_SCHEMA").unwrap(),
-                    encoding: Encoding::Avro,
-                }),
+                }]),
                 sinks: vec![ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
                     resource: env::var("PUBSUB_TOPIC").unwrap(),
-                    encoding: Encoding::Avro,
+                    output_encoding: Encoding::Avro,
+                    schema_id: Some("pubsub-schema-id".to_owned()),
                 }],
             }],
             ..Default::default()

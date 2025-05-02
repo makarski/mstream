@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context, Ok};
+use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
-use log::{debug, info};
+use log::{debug, error, info};
 use rdkafka::consumer::{stream_consumer::StreamConsumer, Consumer};
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use tokio::sync::mpsc::Sender;
@@ -158,18 +158,33 @@ impl EventSource for KafkaConsumer {
         info!("subscribed to topic: {}", self.topic);
 
         loop {
-            let msg = self.consumer.recv().await?;
-            info!("received message from kafka topic: {}", msg.topic());
-            let payload = msg.payload().context("failed to get payload")?;
+            match self.consumer.recv().await {
+                Ok(msg) => {
+                    info!("received message from kafka topic: {}", msg.topic());
+                    let payload = msg.payload().context("failed to get payload")?;
 
-            events
-                .send(SourceEvent {
-                    raw_bytes: Some(payload.to_vec()),
-                    document: None,
-                    attributes: None,
-                    encoding: self.encoding.clone(),
-                })
-                .await?;
+                    let sender = events.clone();
+                    let payload_vec = payload.to_vec();
+                    let encoding = self.encoding.clone();
+
+                    tokio::spawn(async move {
+                        if let Err(err) = sender
+                            .send(SourceEvent {
+                                raw_bytes: payload_vec,
+                                document: None,
+                                attributes: None,
+                                encoding,
+                            })
+                            .await
+                        {
+                            error!("failed to send event to channel: {}", err);
+                        }
+                    });
+                }
+                Err(err) => {
+                    error!("failed to receive message from kafka topic: {}", err);
+                }
+            }
         }
     }
 }

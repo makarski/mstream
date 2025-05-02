@@ -6,6 +6,7 @@ use crate::{
     config::Encoding,
     pubsub::{srvc::SchemaService, ServiceAccountAuth},
 };
+pub mod encoding;
 pub mod mongo;
 
 pub enum SchemaProvider {

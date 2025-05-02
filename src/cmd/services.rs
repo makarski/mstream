@@ -8,6 +8,9 @@ use gauth::serv_account::ServiceAccount;
 use gauth::token_provider::AsyncTokenProvider;
 use mongodb::Client;
 
+use crate::config::Encoding;
+use crate::config::SchemaServiceConfigReference;
+use crate::config::SourceServiceConfigReference;
 use crate::config::{Config, GcpAuthConfig, Service, ServiceConfigReference};
 use crate::http::{self, middleware::HttpMiddleware};
 use crate::kafka::{consumer::KafkaConsumer, producer::KafkaProducer};
@@ -102,7 +105,7 @@ impl<'a> ServiceFactory<'a> {
             Service::Http { name, .. } => match self.http_services.get(&name) {
                 Some(http_service) => Ok(MiddlewareProvider::Http(HttpMiddleware::new(
                     midware_config.resource.clone(),
-                    midware_config.encoding.clone(),
+                    midware_config.output_encoding.clone(),
                     http_service.clone(),
                 ))),
                 None => bail!(
@@ -119,7 +122,7 @@ impl<'a> ServiceFactory<'a> {
 
     pub async fn schema_provider(
         &self,
-        schema_config: &ServiceConfigReference,
+        schema_config: &SchemaServiceConfigReference,
     ) -> anyhow::Result<SchemaProvider> {
         let service_config = self
             .service_definition(&schema_config.service_name)
@@ -209,13 +212,45 @@ impl<'a> ServiceFactory<'a> {
         }
     }
 
+    fn unwrap_source_input_encoding(
+        service_config: &Service,
+        source_cfg: &SourceServiceConfigReference,
+    ) -> anyhow::Result<Encoding> {
+        match service_config {
+            Service::Kafka { .. } | Service::PubSub { .. } => {
+                match source_cfg.input_encoding.as_ref() {
+                    Some(encoding) => Ok(encoding.clone()),
+                    None => {
+                        bail!(
+                            "initializing source provider: input encoding not found for: {}:{}",
+                            source_cfg.service_name,
+                            source_cfg.resource
+                        )
+                    }
+                }
+            }
+            Service::MongoDb { .. } => {
+                // MongoDB source provider does not require input encoding
+                return Ok(Encoding::default());
+            }
+            Service::Http { .. } => {
+                bail!(
+                    "initializing source provider: unsupported service: {}",
+                    service_config.name()
+                )
+            }
+        }
+    }
+
     pub async fn source_provider(
         &self,
-        sink_cfg: &ServiceConfigReference,
+        source_cfg: &SourceServiceConfigReference,
     ) -> anyhow::Result<SourceProvider> {
         let service_config = self
-            .service_definition(&sink_cfg.service_name)
+            .service_definition(&source_cfg.service_name)
             .context("sink_service")?;
+
+        let input_encoding = Self::unwrap_source_input_encoding(&service_config, source_cfg)?;
 
         match service_config {
             Service::MongoDb { name, db_name, .. } => match self.mongo_clients.get(&name) {
@@ -224,7 +259,7 @@ impl<'a> ServiceFactory<'a> {
                     Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
                         db,
                         db_name,
-                        sink_cfg.resource.clone(),
+                        source_cfg.resource.clone(),
                     )))
                 }
                 None => bail!(
@@ -239,8 +274,8 @@ impl<'a> ServiceFactory<'a> {
             } => {
                 let consumer = KafkaConsumer::new(
                     &config,
-                    sink_cfg.resource.clone(),
-                    sink_cfg.encoding.clone(),
+                    source_cfg.resource.clone(),
+                    input_encoding,
                     offset_seek_back_seconds,
                 )?;
 
@@ -250,8 +285,8 @@ impl<'a> ServiceFactory<'a> {
                 Some(tp) => {
                     let subscriber = PubSubSubscriber::new(
                         tp.clone(),
-                        sink_cfg.resource.clone(),
-                        sink_cfg.encoding.clone(),
+                        source_cfg.resource.clone(),
+                        input_encoding,
                     )
                     .await?;
                     Ok(SourceProvider::PubSub(subscriber))
@@ -292,5 +327,120 @@ impl<'a> ServiceFactory<'a> {
             .service_by_name(service_name)
             .cloned()
             .ok_or_else(|| anyhow!("service config not found for: {}", service_name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Encoding, GcpAuthConfig, Service, SourceServiceConfigReference};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_unwrap_source_input_encoding() {
+        // Create test service configs
+        let mut kafka_config = HashMap::new();
+        kafka_config.insert(
+            "bootstrap.servers".to_string(),
+            "localhost:9092".to_string(),
+        );
+        kafka_config.insert("group.id".to_string(), "test-group".to_string());
+        kafka_config.insert("client.id".to_string(), "test-client".to_string());
+
+        let kafka_service = Service::Kafka {
+            name: "kafka-service".to_string(),
+            offset_seek_back_seconds: Some(60),
+            config: kafka_config,
+        };
+
+        let pubsub_service = Service::PubSub {
+            name: "pubsub-service".to_string(),
+            auth: GcpAuthConfig::StaticToken {
+                env_token_name: "TEST_TOKEN".to_string(),
+            },
+        };
+
+        let mongodb_service = Service::MongoDb {
+            name: "mongodb-service".to_string(),
+            connection_string: "mongodb://localhost:27017".to_string(),
+            db_name: "test_db".to_string(),
+        };
+
+        let http_service = Service::Http {
+            name: "http-service".to_string(),
+            host: "http://localhost:8080".to_string(),
+            max_retries: Some(3),
+            base_backoff_ms: Some(100),
+            connection_timeout_sec: Some(30),
+            timeout_sec: Some(60),
+            tcp_keepalive_sec: Some(60),
+        };
+
+        // Source config references for testing
+        let source_with_encoding = SourceServiceConfigReference {
+            service_name: "test-service".to_string(),
+            resource: "test-resource".to_string(),
+            schema_id: None,
+            input_encoding: Some(Encoding::Json),
+            output_encoding: Encoding::Avro,
+        };
+
+        let source_without_encoding = SourceServiceConfigReference {
+            service_name: "test-service".to_string(),
+            resource: "test-resource".to_string(),
+            schema_id: None,
+            input_encoding: None,
+            output_encoding: Encoding::Avro,
+        };
+
+        // Case 1: Kafka/PubSub with input_encoding specified
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&kafka_service, &source_with_encoding);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Encoding::Json);
+
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&pubsub_service, &source_with_encoding);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Encoding::Json);
+
+        // Case 2: Kafka/PubSub without input_encoding (should error)
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&kafka_service, &source_without_encoding);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("input encoding not found"));
+
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&pubsub_service, &source_without_encoding);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("input encoding not found"));
+
+        // Case 3: MongoDB service (should return default encoding regardless of input_encoding)
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&mongodb_service, &source_with_encoding);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Encoding::default());
+
+        let result = ServiceFactory::unwrap_source_input_encoding(
+            &mongodb_service,
+            &source_without_encoding,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Encoding::default());
+
+        // Case 4: HTTP service (should return error as it's not supported as a source)
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&http_service, &source_with_encoding);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unsupported service"));
+
+        let result =
+            ServiceFactory::unwrap_source_input_encoding(&http_service, &source_without_encoding);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("unsupported service"));
     }
 }

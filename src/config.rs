@@ -123,9 +123,9 @@ pub enum GcpAuthConfig {
 #[derive(Deserialize, Debug, Clone)]
 pub struct Connector {
     pub name: String,
-    pub source: ServiceConfigReference,
+    pub source: SourceServiceConfigReference,
     pub middlewares: Option<Vec<ServiceConfigReference>>,
-    pub schema: Option<ServiceConfigReference>,
+    pub schemas: Option<Vec<SchemaServiceConfigReference>>,
     pub sinks: Vec<ServiceConfigReference>,
 }
 
@@ -133,7 +133,24 @@ pub struct Connector {
 pub struct ServiceConfigReference {
     pub service_name: String,
     pub resource: String,
-    pub encoding: Encoding,
+    pub schema_id: Option<String>,
+    pub output_encoding: Encoding,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SourceServiceConfigReference {
+    pub service_name: String,
+    pub resource: String,
+    pub schema_id: Option<String>,
+    pub input_encoding: Option<Encoding>,
+    pub output_encoding: Encoding,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct SchemaServiceConfigReference {
+    pub id: String,
+    pub service_name: String,
+    pub resource: String,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Serialize)]
@@ -147,4 +164,10 @@ pub enum Encoding {
     // This can be used for pathtrough or in
     // combination with middlewares
     Other,
+}
+
+impl Default for Encoding {
+    fn default() -> Self {
+        Encoding::Other
+    }
 }

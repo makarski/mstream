@@ -141,7 +141,7 @@ impl EventSource for MongoDbChangeStreamListener {
 
                 events
                     .send(SourceEvent {
-                        raw_bytes: Some(bson_raw_bytes),
+                        raw_bytes: bson_raw_bytes,
                         document: Some(document),
                         attributes,
                         encoding: Encoding::Bson,

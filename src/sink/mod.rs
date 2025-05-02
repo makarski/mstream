@@ -37,38 +37,37 @@ impl EventSink for SinkProvider {
         key: Option<&str>,
     ) -> anyhow::Result<String> {
         match self {
-            SinkProvider::Kafka(p) => match sink_event.raw_bytes {
-                Some(b) => p.publish(topic, b, key, sink_event.attributes).await,
-                None => Err(anyhow::anyhow!(
-                    "raw_bytes is missing for kafka producer. topic: {}",
-                    topic
-                )),
-            },
-            SinkProvider::PubSub(p) => match sink_event.raw_bytes {
-                Some(b) => p.publish(topic, b, key, sink_event.attributes).await,
-                None => Err(anyhow::anyhow!(
-                    "raw_bytes is missing for pubsub producer. topic: {}",
-                    topic
-                )),
-            },
-            SinkProvider::MongoDb(p) => match sink_event.bson_doc {
-                Some(doc) => p
-                    .persist(doc, &topic)
+            SinkProvider::Kafka(p) => {
+                p.publish(topic, sink_event.raw_bytes, key, sink_event.attributes)
                     .await
-                    .map_err(|err| anyhow!("failed to persist to collection: {}. {}", topic, err)),
-                None => Err(anyhow::anyhow!(
-                    "bson_doc is missing for mongodb persister. collection: {}",
-                    topic
-                )),
-            },
-            SinkProvider::Http(p) => {
-                let payload = match sink_event.raw_bytes {
-                    Some(b) => b,
-                    None => return Err(anyhow::anyhow!("raw_bytes is missing for http sink")),
-                };
+            }
+            SinkProvider::PubSub(p) => {
+                p.publish(topic, sink_event.raw_bytes, key, sink_event.attributes)
+                    .await
+            }
+            SinkProvider::MongoDb(p) => p
+                .persist2(sink_event.raw_bytes, &topic)
+                .await
+                .map_err(|err| anyhow!("failed to persist to collection: {}. {}", topic, err)),
 
-                p.post(&topic, payload, sink_event.encoding, sink_event.attributes)
-                    .await
+            // match sink_event.bson_doc {
+            //     Some(doc) => p
+            //         .persist(doc, &topic)
+            //         .await
+            //         .map_err(|err| anyhow!("failed to persist to collection: {}. {}", topic, err)),
+            //     None => Err(anyhow::anyhow!(
+            //         "bson_doc is missing for mongodb persister. collection: {}",
+            //         topic
+            //     )),
+            // },
+            SinkProvider::Http(p) => {
+                p.post(
+                    &topic,
+                    sink_event.raw_bytes,
+                    sink_event.encoding,
+                    sink_event.attributes,
+                )
+                .await
             }
         }
     }

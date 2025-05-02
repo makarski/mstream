@@ -53,76 +53,109 @@ timeout_sec = 20
 [[connectors]]
 name = "mongodb-source-connector"
 # Configure the source MongoDB collection to watch for changes
-source = { service_name = "mongodb-source", resource = "example_collection", encoding = "bson" }
-# Schema is optional - if omitted, no field filtering will be applied
-# schema = { service_name = "pubsub-example", resource = "projects/your-project/schemas/example-schema", encoding = "avro" }
+# Optional: reference a schema by ID
+source = { service_name = "mongodb-source", resource = "example_collection", output_encoding = "bson", schema_id = "basic_schema" }
+# Define available schemas
+schemas = [
+    { id = "basic_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/example-schema" },
+    { id = "extended_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/extended-schema" }
+]
 sinks = [
-    { service_name = "kafka-local", resource = "local_topic", encoding = "json" },
-    { service_name = "kafka-cloud", resource = "cloud_topic", encoding = "avro" },
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/example-topic", encoding = "avro" },
-    { service_name = "mongodb-source", resource = "example_collection_copy", encoding = "bson" },
-    { service_name = "http-local", resource = "http_sink", encoding = "json" }
+    { service_name = "kafka-local", resource = "local_topic", output_encoding = "json", schema_id = "basic_schema" },
+    { service_name = "kafka-cloud", resource = "cloud_topic", output_encoding = "avro", schema_id = "extended_schema" },
+    { service_name = "pubsub-example", resource = "projects/your-project/topics/example-topic", output_encoding = "avro", schema_id = "basic_schema" },
+    { service_name = "mongodb-source", resource = "example_collection_copy", output_encoding = "bson" },
+    { service_name = "http-local", resource = "http_sink", output_encoding = "json" }
 ]
 
 [[connectors]]
 name = "basic-mongodb-connector"
 # Simple configuration without schema filtering
-source = { service_name = "mongodb-source", resource = "simple_collection", encoding = "bson" }
-# No schema defined - all fields will be passed through
+source = { service_name = "mongodb-source", resource = "simple_collection", output_encoding = "bson" }
+# No schemas defined - all fields will be passed through
 sinks = [
-    { service_name = "kafka-local", resource = "unfiltered_topic", encoding = "json" }
+    { service_name = "kafka-local", resource = "unfiltered_topic", output_encoding = "json" }
 ]
 
 [[connectors]]
 name = "kafka-source-connector"
 # Configure Kafka as a source
-source = { service_name = "kafka-cloud", resource = "source_topic", encoding = "avro" }
+source = {
+    service_name = "kafka-cloud",
+    resource = "source_topic",
+    input_encoding = "avro",  # Required for Kafka sources
+    output_encoding = "json",
+    schema_id = "kafka_schema"
+}
 # Schema is optional for filtering fields
-schema = { service_name = "pubsub-example", resource = "projects/your-project/schemas/kafka-source-schema", encoding = "avro" }
+schemas = [
+    { id = "kafka_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/kafka-source-schema" }
+]
 sinks = [
-    { service_name = "kafka-local", resource = "processed_topic", encoding = "json" },
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-topic", encoding = "avro" },
+    { service_name = "kafka-local", resource = "processed_topic", output_encoding = "json" },
+    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-topic", output_encoding = "avro", schema_id = "kafka_schema" },
 ]
 
 [[connectors]]
 name = "pubsub-source-connector"
 # Configure PubSub as a source
-source = { service_name = "pubsub-example", resource = "projects/your-project/subscriptions/example-subscription", encoding = "avro" }
+source = {
+    service_name = "pubsub-example",
+    resource = "projects/your-project/subscriptions/example-subscription",
+    input_encoding = "avro",  # Required for PubSub sources
+    output_encoding = "json"
+}
 # Schema configuration is optional
-# schema = { service_name = "mongodb-source", resource = "example-id", encoding = "avro" }
+schemas = [
+    { id = "pubsub_schema", service_name = "mongodb-source", resource = "example-schema-collection" }
+]
 sinks = [
-    { service_name = "kafka-cloud", resource = "pubsub_data_topic", encoding = "avro" },
-    { service_name = "kafka-local", resource = "pubsub_data_local", encoding = "json" },
+    { service_name = "kafka-cloud", resource = "pubsub_data_topic", output_encoding = "avro", schema_id = "pubsub_schema" },
+    { service_name = "kafka-local", resource = "pubsub_data_local", output_encoding = "json" },
 ]
 
 [[connectors]]
 name = "middleware-example-connector"
-source = { service_name = "mongodb-source", resource = "users", encoding = "bson" }
+source = { service_name = "mongodb-source", resource = "users", output_encoding = "bson", schema_id = "user_schema" }
+# Define available schemas
+schemas = [
+    { id = "user_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/user-schema" },
+    { id = "enriched_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/enriched-user" }
+]
 # Define middleware chain for transformations
 middlewares = [
     # First middleware transforms the data (e.g., normalize fields)
-    # The 'id' field now specifies just the path without the host
-    { service_name = "transform-service", resource = "normalize", encoding = "json" },
+    { service_name = "transform-service", resource = "normalize", schema_id = "user_schema", output_encoding = "json" },
     # Second middleware enriches the data
-    { service_name = "http-local", resource = "enrich", encoding = "json" },
+    { service_name = "http-local", resource = "enrich", schema_id = "enriched_schema", output_encoding = "json" },
     # Third middleware filters or validates the data
-    { service_name = "transform-service", resource = "validate", encoding = "json" },
+    { service_name = "transform-service", resource = "validate", schema_id = "enriched_schema", output_encoding = "json" },
 ]
 sinks = [
-    { service_name = "kafka-local", resource = "transformed_users", encoding = "json" },
-    { service_name = "mongodb-source", resource = "processed_users", encoding = "bson" },
+    { service_name = "kafka-local", resource = "transformed_users", output_encoding = "json", schema_id = "enriched_schema" },
+    { service_name = "mongodb-source", resource = "processed_users", output_encoding = "bson", schema_id = "user_schema" },
 ]
 
 [[connectors]]
 name = "avro-middleware-connector"
-source = { service_name = "kafka-cloud", resource = "source_events", encoding = "avro" }
+source = {
+    service_name = "kafka-cloud",
+    resource = "source_events",
+    input_encoding = "avro",
+    output_encoding = "avro",
+    schema_id = "events_schema"
+}
+# Define schemas
+schemas = [
+    { id = "events_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/events-schema" },
+    { id = "processed_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/processed-events" }
+]
 # Middleware with different encoding transformations
 middlewares = [
-    # The 'id' field is now just the path that will be appended to the host URL
-    { service_name = "transform-service", resource = "process", encoding = "json" },
+    { service_name = "transform-service", resource = "process", schema_id = "events_schema", output_encoding = "json" },
     # Result is sent as JSON to the next middleware
-    { service_name = "http-local", resource = "analyze", encoding = "json" },
+    { service_name = "http-local", resource = "analyze", schema_id = "processed_schema", output_encoding = "json" },
 ]
 sinks = [
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-events", encoding = "avro" },
+    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-events", output_encoding = "avro", schema_id = "processed_schema" },
 ]

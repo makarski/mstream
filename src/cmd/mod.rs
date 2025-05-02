@@ -1,14 +1,20 @@
 mod event_handler;
 mod services;
 
-use anyhow::bail;
+use anyhow::{bail, Ok};
 use log::{error, info};
 use services::ServiceFactory;
 use tokio::sync::mpsc::Sender;
 
 use crate::cmd::event_handler::EventHandler;
-use crate::config::{Config, ServiceConfigReference};
+use crate::config::{Config, SourceServiceConfigReference};
+use crate::schema::{Schema, SchemaRegistry};
 use crate::source::{EventSource, SourceEvent};
+
+struct SchemaDefinition {
+    schema_id: String,
+    schema: Schema,
+}
 
 /// Initializes and starts the event listeners for all the connectors
 pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Result<()> {
@@ -17,18 +23,36 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
     for connector_cfg in cfg.connectors.iter().cloned() {
         let done_ch = done_ch.clone();
 
-        let schema_provider = match connector_cfg.schema {
+        let schemas = match connector_cfg.schemas {
             Some(cfg) => {
-                let schema_service = service_container.schema_provider(&cfg).await?;
-                Some((cfg.resource, schema_service))
+                let mut result = Vec::with_capacity(cfg.len());
+                for schema_cfg in cfg.into_iter() {
+                    let mut schema_service = service_container.schema_provider(&schema_cfg).await?;
+
+                    // wait for the schema to be ready
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                    let schema = schema_service
+                        .get_schema(schema_cfg.resource.clone())
+                        .await?;
+
+                    result.push(SchemaDefinition {
+                        schema_id: schema_cfg.id,
+                        schema,
+                    });
+                }
+                Some(result)
             }
             None => None,
         };
 
+        let source_schema = find_schema(connector_cfg.source.schema_id.clone(), schemas.as_ref());
+
         let mut publishers = Vec::new();
         for topic_cfg in connector_cfg.sinks.into_iter() {
             let publisher = service_container.publisher_service(&topic_cfg).await?;
-            publishers.push((topic_cfg, publisher));
+            let schema = find_schema(topic_cfg.schema_id.clone(), schemas.as_ref());
+            publishers.push((topic_cfg, publisher, schema));
         }
 
         let middlewares = match connector_cfg.middlewares {
@@ -38,7 +62,9 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
                     let middleware = service_container
                         .middleware_service(&middleware_cfg)
                         .await?;
-                    result.push((middleware_cfg, middleware));
+
+                    let schema = find_schema(middleware_cfg.schema_id.clone(), schemas.as_ref());
+                    result.push((middleware_cfg, middleware, schema));
                 }
                 Some(result)
             }
@@ -59,12 +85,11 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
 
         tokio::spawn(async move {
             let cnt_name = connector_cfg.name.clone();
-            // todo: change singnature to future?
-
             let mut event_handler = EventHandler {
                 connector_name: connector_cfg.name.clone(),
+                source_schema,
+                source_output_encoding: connector_cfg.source.output_encoding,
                 publishers,
-                schema_provider,
                 middlewares,
             };
 
@@ -85,10 +110,26 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
     Ok(())
 }
 
+fn find_schema(
+    schema_id: Option<String>,
+    schema_definitions: Option<&Vec<SchemaDefinition>>,
+) -> Schema {
+    match (schema_id, schema_definitions) {
+        (Some(id), Some(schemas)) => {
+            if let Some(schema) = schemas.into_iter().find(|schema| schema.schema_id == id) {
+                schema.schema.clone()
+            } else {
+                Schema::Undefined
+            }
+        }
+        _ => Schema::Undefined,
+    }
+}
+
 async fn spawn_source_listener(
     cnt_name: String,
     service_container: &ServiceFactory<'_>,
-    source_cfg: &ServiceConfigReference,
+    source_cfg: &SourceServiceConfigReference,
     events_tx: Sender<SourceEvent>,
 ) -> anyhow::Result<()> {
     let mut source_provider = service_container.source_provider(source_cfg).await?;
