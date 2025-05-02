@@ -1,5 +1,4 @@
-mstream
-===
+# mstream
 
 A lightweight, configurable data streaming bridge that connects sources to sinks with powerful transformation capabilities.
 
@@ -22,11 +21,13 @@ mstream creates connectors that move data between various systems with flexible 
 ## Supported Integrations
 
 **Sources:**
+
 - MongoDB Change Streams (v6.0+)
 - Kafka topics
 - Google Cloud PubSub topics
 
 **Sinks:**
+
 - MongoDB collections
 - Kafka topics
 - Google Cloud PubSub topics
@@ -87,49 +88,36 @@ graph TB
     encoder --> |HTTP POST| http_sink
 ```
 
-### Supported Format Conversions
+### Schema and Encoding Support
 
-mstream supports multiple encoding formats for both sources and sinks:
+mstream provides powerful schema filtering and format conversion capabilities to transform data as it flows through your pipeline.
 
-#### BSON Source
+#### Schema Filtering and Multiple Schema Support
 
-- BSON → Avro: Converts MongoDB BSON documents to Avro records
-- BSON → JSON: Serializes BSON documents to JSON format
-- BSON → BSON: Direct passthrough (for MongoDB to MongoDB replication)
+Schemas in mstream serve two important purposes:
+1. **Field Filtering**: Extract only the fields you need from source documents
+2. **Format Validation**: Ensure data conforms to expected structures
 
-#### Avro Source
+Each connector can define multiple schemas that can be referenced by ID at different points in the pipeline:
 
-- Avro → Avro: Passthrough, no schema validation
-- Avro → JSON: Deserializes Avro records to JSON format
-- Avro → BSON: Converts Avro records to MongoDB BSON documents
+```toml
+[[connectors]]
+name = "multi-schema-example"
+# Define all schemas used in this connector
+schemas = [
+    { id = "basic_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/basic-user" },
+    { id = "extended_schema", service_name = "mongodb-local", resource = "schema_collection" },
+]
+```
 
-#### JSON Source
-
-- JSON → JSON: Passthrough
-- JSON → Avro: Parses JSON and encodes as Avro records
-- JSON → BSON: Parses JSON and converts to BSON documents
-
-JSON source operations are processed by first converting to BSON internally and then
-applying the same transformation logic as BSON sources, unless the target is JSON.
-
-### Schema Filtering (Optional)
-
-A schema can optionally be used as a mask to filter out unwanted fields from the source document, allowing you to selectively extract only the data you need. If no schema is specified, all fields from the source document will be passed through to the sink.
-
-#### How Schema Filtering Works
-
-When a schema is applied to a source document, only fields defined in the schema will be included in the resulting document. Any fields in the source document that aren't specified in the schema will be excluded.
-
-#### Example
+When a schema is applied to a document, only fields defined in the schema will be included in the output. For example:
 
 **Schema definition:**
 ```json
 {
   "type": "record",
   "name": "User",
-  "fields": [
-    { "name": "name", "type": "string" }
-  ]
+  "fields": [{ "name": "name", "type": "string" }]
 }
 ```
 
@@ -149,33 +137,91 @@ When a schema is applied to a source document, only fields defined in the schema
 }
 ```
 
-In this example, only the "name" field was included in the result because it was the only field defined in the schema. The "age" and "last_name" fields were filtered out.
+#### Encoding and Format Conversion
 
-#### Connector Configuration
+mstream v0.16.0+ uses a clear input/output encoding model for data flow:
 
-In your connector configuration, the `schema` field is optional:
+- **Input Encoding**: The format data is received in
+- **Output Encoding**: The format data is transformed to before passing to the next step
 
-1. **With schema filtering:**
-   ```toml
-   [[connectors]]
-   name = "filtered-connector"
-   source = { service_name = "mongodb-source", resource = "users", encoding = "bson" }
-   schema = { service_name = "pubsub-example", resource = "projects/your-project/schemas/user-schema", encoding = "avro" }
-   sinks = [
-       { service_name = "kafka-local", resource = "filtered_users", encoding = "json" }
-   ]
-   ```
+Important rules:
+- **Input encoding** is only required for Kafka and PubSub sources
+- Each step in the pipeline automatically uses the previous step's **output_encoding** as its input
+- Format conversions are explicitly defined by the input/output encoding pair at each step
 
-2. **Without schema filtering (all fields pass through):**
-   ```toml
-   [[connectors]]
-   name = "unfiltered-connector"
-   source = { service_name = "mongodb-source", resource = "users", encoding = "bson" }
-   # No schema defined - all fields will be passed through
-   sinks = [
-       { service_name = "kafka-local", resource = "all_user_data", encoding = "json" }
-   ]
-   ```
+```toml
+[[connectors]]
+name = "format-conversion-example"
+# Source with explicit input and output encodings
+# *mind that toml does not support new lines for [inline tables](https://toml.io/en/v1.0.0#inline-table)
+source = {
+    service_name = "kafka-local",
+    resource = "raw_data",
+    input_encoding = "json",    # Required for Kafka sources
+    output_encoding = "bson",   # Will be converted from JSON to BSON
+    schema_id = "raw_schema"    # Optional schema reference
+}
+```
+
+#### Schema Inheritance
+
+The `schema_id` field is optional in most cases and follows these rules:
+
+1. **Avro encoding**: A schema reference is required whenever Avro encoding is used
+2. **Schema inheritance**: If no schema_id is specified, the component will use the schema defined at the most recent previous step
+3. **Source schema**: If a schema is defined at the source, it will be applied to all steps unless overridden
+
+This allows for flexible pipelines where data can be filtered differently for different destinations:
+
+```toml
+[[connectors]]
+name = "schema-inheritance-example"
+# Define schemas
+schemas = [
+    { id = "base_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/base" },
+    { id = "analytics_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/analytics" },
+]
+
+# Source uses base_schema
+source = { service_name = "mongodb-local", resource = "users", output_encoding = "bson", schema_id = "base_schema"  # This schema will be inherited by default
+}
+
+# Middlewares and sinks can override the schema
+middlewares = [
+    # Uses base_schema by inheritance (no schema_id specified)
+    { service_name = "http-local", resource = "normalize", output_encoding = "json" },
+
+    # Overrides with a different schema
+    { service_name = "http-local", resource = "analyze", schema_id = "analytics_schema", output_encoding = "json" },
+]
+
+sinks = [
+    # Uses analytics_schema from the last middleware
+    { service_name = "kafka-local", resource = "analytics_topic", output_encoding = "json" },
+
+    # Explicitly uses base_schema
+    { service_name = "mongodb-local", resource = "users_copy", output_encoding = "bson", schema_id = "base_schema" },
+]
+```
+
+#### Supported Format Conversions
+
+mstream supports these format conversions throughout the pipeline:
+
+| Source Format | Target Format | Notes                                       |
+|---------------|---------------|---------------------------------------------|
+| BSON          | BSON          | Direct passthrough                          |
+| BSON          | JSON          | Serializes BSON to JSON                     |
+| BSON          | Avro          | Requires schema_id with Avro schema         |
+| JSON          | JSON          | Passthrough                                 |
+| JSON          | BSON          | Parses JSON to BSON                         |
+| JSON          | Avro          | Requires schema_id with Avro schema         |
+| Avro          | Avro          | Validates against schema if provided        |
+| Avro          | JSON          | Deserializes Avro to JSON                   |
+| Avro          | BSON          | Converts Avro records to BSON documents     |
+| Other         | Other         | Binary passthrough for custom formats       |
+
+Conversions between "Other" encoding and structured formats (JSON/BSON/Avro) are not supported directly but can be implemented using middleware services.
 
 ### Middleware Support
 
@@ -208,16 +254,16 @@ In your connector configuration, you can specify one or more middlewares:
 ```toml
 [[connectors]]
 name = "employee-connector"
-source = { service_name = "mongodb-local", resource = "employees", encoding = "bson" }
+source = { service_name = "mongodb-local", resource = "employees", output_encoding = "bson" }
 # Add middleware transformations
 middlewares = [
     # resource = "transform" means that the middleware will execute a http post request to /transform endpoint
-    { service_name = "http-local", resource = "transform", encoding = "json" },
-    { service_name = "http-local", resource = "enrich", encoding = "json" },
+    { service_name = "http-local", resource = "transform", output_encoding = "json" },
+    { service_name = "http-local", resource = "enrich", output_encoding = "json" },
 ]
 sinks = [
-    { service_name = "kafka-local", resource = "test", encoding = "json" },
-    { service_name = "mongodb-local", resource = "employees-copy", encoding = "bson" },
+    { service_name = "kafka-local", resource = "test", output_encoding = "json" },
+    { service_name = "mongodb-local", resource = "employees-copy", output_encoding = "bson" },
 ]
 ```
 
@@ -239,6 +285,7 @@ Each middleware can specify its own encoding format, allowing for flexible trans
 4. The final transformed event is sent to all configured sinks
 
 This middleware capability is especially useful for:
+
 - Data enrichment from external services
 - Complex transformations beyond simple field filtering
 - Normalization of data across different sources
@@ -248,16 +295,18 @@ This middleware capability is especially useful for:
 ### Mongo Event Processing
 
 **Supported Sources**
-* [MongoDB Change Stream Events](https://www.mongodb.com/docs/v6.0/reference/change-events/)
-  * Insert document
-  * Update document
-  * Delete document
-* Kafka Messages
+
+- [MongoDB Change Stream Events](https://www.mongodb.com/docs/v6.0/reference/change-events/)
+  - Insert document
+  - Update document
+  - Delete document
+- Kafka Messages
 
 **The worker will report an error and stop execution for MongoDB events**
-* Invalidate stream
-* Drop collection
-* Drop database
+
+- Invalidate stream
+- Drop collection
+- Drop database
 
 #### Message Structure
 
@@ -265,11 +314,11 @@ A processed change stream is transformed into a pubsub message with the followin
 
 **[Attributes](https://cloud.google.com/pubsub/docs/publisher#using-attributes)**
 
-attribute name | attribute value
----------------| ----------------
-operation_type | event type: `insert`, `update`, `delete`
-database       | mongodb database name
-collection     | mongodb collection name
+| attribute name | attribute value                          |
+| -------------- | ---------------------------------------- |
+| operation_type | event type: `insert`, `update`, `delete` |
+| database       | mongodb database name                    |
+| collection     | mongodb collection name                  |
 
 Attributes can be used to configure fine-grained subscriptions. For more details see [documentation](https://cloud.google.com/pubsub/docs/subscription-message-filter#filtering_syntax)
 
@@ -306,11 +355,12 @@ $ make integration-tests
 ```
 
 ### Configuring Docker Mongo Cluster
+
 https://www.mongodb.com/compatibility/deploying-a-mongodb-cluster-with-docker
 
 ## License
 
 License under either or:
 
-* [MIT](LICENSE-MIT)
-* [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT](LICENSE-MIT)
+- [Apache License, Version 2.0](LICENSE-APACHE)
