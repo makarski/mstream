@@ -6,6 +6,16 @@ use apache_avro::{
 };
 use mongodb::bson::{Decimal128, Document};
 
+pub fn validate(avro_b: Vec<u8>, schema: &Schema) -> anyhow::Result<Vec<u8>> {
+    let mut reader = avro_b.as_slice();
+    let avro_value = from_avro_datum(schema, &mut reader, None)?;
+    if !avro_value.validate(schema) {
+        bail!("failed to validate schema");
+    }
+
+    Ok(avro_b)
+}
+
 pub fn encode(mongo_doc: Document, schema: &Schema) -> anyhow::Result<Vec<u8>> {
     let mut record = Record::new(&schema).context("failed to create record")?;
 
@@ -280,9 +290,11 @@ mod tests {
         avro::{decode, encode},
         json_to_bson_doc,
     };
-    use anyhow::{bail, Context};
-    use apache_avro::{from_avro_datum, Schema};
+    use anyhow::Context;
+    use apache_avro::Schema;
     use mongodb::bson::{doc, Decimal128};
+
+    use super::validate;
 
     #[test]
     fn encode_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {
@@ -399,12 +411,7 @@ mod tests {
         let compiled_schema = Schema::parse_str(raw_schema)
             .context("failed to compile schema from a raw definition")?;
 
-        let mut reader = avro_b.as_slice();
-        let avro_value = from_avro_datum(&compiled_schema, &mut reader, None)?;
-        if !avro_value.validate(&compiled_schema) {
-            bail!("failed to validate schema");
-        }
-
+        validate(avro_b, &compiled_schema)?;
         Ok(())
     }
 

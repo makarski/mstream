@@ -244,7 +244,7 @@ mod tests {
 
     // Helper function to create a SinkEvent for testing
     fn create_test_event(
-        raw_bytes: Option<Vec<u8>>,
+        raw_bytes: Vec<u8>,
         attributes: Option<HashMap<String, String>>,
         encoding: Encoding,
     ) -> SinkEvent {
@@ -252,7 +252,6 @@ mod tests {
             raw_bytes,
             attributes,
             encoding,
-            bson_doc: None,
         }
     }
 
@@ -314,16 +313,11 @@ mod tests {
         let mut attributes = HashMap::new();
         attributes.insert("CustomHeader".to_string(), "custom-value".to_string());
         attributes.insert("ApiKey".to_string(), "secret-key".to_string());
-        let event = create_test_event(Some(payload), Some(attributes), Encoding::Json);
+        let event = create_test_event(payload, Some(attributes), Encoding::Json);
 
         // Call post
         let res = sink
-            .post(
-                &resource,
-                event.raw_bytes.unwrap(),
-                event.encoding,
-                event.attributes,
-            )
+            .post(&resource, event.raw_bytes, event.encoding, event.attributes)
             .await;
 
         assert!(res.is_ok(), "Failed to post event: {:?}", res);
@@ -354,16 +348,11 @@ mod tests {
 
             // Create test event
             let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
-            let event = create_test_event(Some(payload), None, Encoding::Json);
+            let event = create_test_event(payload, None, Encoding::Json);
 
             // Call publish method
             let result = sink
-                .post(
-                    resource,
-                    event.raw_bytes.unwrap(),
-                    event.encoding,
-                    event.attributes,
-                )
+                .post(resource, event.raw_bytes, event.encoding, event.attributes)
                 .await;
 
             // Verify success after retry
@@ -392,16 +381,11 @@ mod tests {
 
             // Create test event
             let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
-            let event = create_test_event(Some(payload), None, Encoding::Json);
+            let event = create_test_event(payload, None, Encoding::Json);
 
             // Call publish method
             let result = sink
-                .post(
-                    resource,
-                    event.raw_bytes.unwrap(),
-                    event.encoding,
-                    event.attributes,
-                )
+                .post(resource, event.raw_bytes, event.encoding, event.attributes)
                 .await;
 
             // Verify failure without retry
@@ -462,13 +446,13 @@ mod tests {
 
         // Create test event
         let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
-        let event = create_test_event(Some(payload), Some(attributes), Encoding::Json);
+        let event = create_test_event(payload, Some(attributes), Encoding::Json);
 
         // Call publish
         let result = sink
             .post(
                 "/webhook",
-                event.raw_bytes.unwrap(),
+                event.raw_bytes,
                 event.encoding,
                 event.attributes,
             )
@@ -494,17 +478,12 @@ mod tests {
 
         // Create test event
         let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
-        let event = create_test_event(Some(payload), None, Encoding::Json);
+        let event = create_test_event(payload, None, Encoding::Json);
 
         // Capture timing of each attempt
         let start = Instant::now();
         let _ = sink
-            .post(
-                resource,
-                event.raw_bytes.unwrap(),
-                event.encoding,
-                event.attributes,
-            )
+            .post(resource, event.raw_bytes, event.encoding, event.attributes)
             .await;
         let total_time = start.elapsed();
 
@@ -528,14 +507,14 @@ mod tests {
 
         // Create test event
         let payload = r#"{"test":"data"}"#.as_bytes().to_vec();
-        let event = create_test_event(Some(payload), None, Encoding::Json);
+        let event = create_test_event(payload, None, Encoding::Json);
 
         // Time the operation to verify retries
         let start = Instant::now();
         let result = sink
             .post(
                 "/webhook",
-                event.raw_bytes.unwrap(),
+                event.raw_bytes,
                 event.encoding,
                 event.attributes,
             )

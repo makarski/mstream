@@ -191,7 +191,7 @@ impl<I: Interceptor> PubSubSubscriber<I> {
                 if let Some(payload) = m.message {
                     log::info!("received pubsub message: {:?}", payload);
                     let source_event = SourceEvent {
-                        raw_bytes: Some(payload.data),
+                        raw_bytes: payload.data,
                         document: None,
                         attributes: Some(payload.attributes),
                         encoding: self.encoding.clone(),
