@@ -50,15 +50,12 @@ impl MongoDbChangeStreamListener {
         // used to obtain the document for delete events
         // https://docs.mongodb.com/manual/reference/command/collMod/#dbcmd.collMod
         self.db
-            .run_command(
-                doc! {
-                    "collMod": self.db_collection.clone(),
-                    "changeStreamPreAndPostImages": doc! {
-                        "enabled": true,
-                    }
-                },
-                None,
-            )
+            .run_command(doc! {
+                "collMod": self.db_collection.clone(),
+                "changeStreamPreAndPostImages": doc! {
+                    "enabled": true,
+                }
+            })
             .await
             .map_err(|err| {
                 anyhow!(
@@ -76,7 +73,7 @@ impl MongoDbChangeStreamListener {
             .start_after(self.resume_token.clone())
             .build();
 
-        Ok(coll.watch(None, Some(opts)).await?)
+        Ok(coll.watch().with_options(opts).await?)
     }
 
     fn event_metadata(

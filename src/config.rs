@@ -123,6 +123,7 @@ pub enum GcpAuthConfig {
 #[derive(Deserialize, Debug, Clone)]
 pub struct Connector {
     pub name: String,
+    pub batch: Option<BatchConfig>,
     pub source: SourceServiceConfigReference,
     pub middlewares: Option<Vec<ServiceConfigReference>>,
     pub schemas: Option<Vec<SchemaServiceConfigReference>>,
@@ -151,6 +152,13 @@ pub struct SchemaServiceConfigReference {
     pub id: String,
     pub service_name: String,
     pub resource: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BatchConfig {
+    Count { size: usize },
+    // Window { step_seconds: u64 }
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Serialize)]

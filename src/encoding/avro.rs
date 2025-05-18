@@ -16,29 +16,66 @@ pub fn validate(avro_b: Vec<u8>, schema: &Schema) -> anyhow::Result<Vec<u8>> {
     Ok(avro_b)
 }
 
-pub fn encode(mongo_doc: Document, schema: &Schema) -> anyhow::Result<Vec<u8>> {
-    let mut record = Record::new(&schema).context("failed to create record")?;
+pub fn validate_many(avro_b: Vec<Vec<u8>>, schema: &Schema) -> anyhow::Result<Vec<u8>> {
+    let mut records = Vec::with_capacity(avro_b.len());
+    let batch_schema = Schema::Array(Box::new(schema.clone()));
 
-    if let Schema::Record { ref fields, .. } = schema {
-        for field in fields.iter() {
-            let field_name = &field.name;
+    // Validate each item individually
+    for item in avro_b.into_iter() {
+        let mut reader = item.as_slice();
+        let avro_value = from_avro_datum(schema, &mut reader, None)?;
 
-            let bson_val = mongo_doc.get(field_name).ok_or_else(|| {
-                anyhow!("failed to find bson property '{}' for schema", &field_name)
-            })?;
-
-            let avro_val =
-                Wrap::try_from(BsonWithSchema(bson_val.clone(), field.schema.clone()))?.0;
-            record.put(field_name, avro_val);
+        if !avro_value.validate(schema) {
+            bail!("Failed to validate schema for an item in the batch");
         }
-    } else {
-        bail!(
-            "expect a record raw schema. got: {}",
-            schema.canonical_form()
-        );
+
+        records.push(avro_value);
     }
 
+    // Encode the validated records as a single Avro array
+    Ok(to_avro_datum(&batch_schema, AvroVal::Array(records))?)
+}
+
+pub fn encode_many(docs: Vec<Document>, item_schema: &Schema) -> anyhow::Result<Vec<u8>> {
+    let mut records = Vec::with_capacity(docs.len());
+    let batch_schema = Schema::Array(Box::new(item_schema.clone()));
+
+    for doc in docs.into_iter() {
+        let record = transform_document_to_avro_record(doc, &item_schema)?;
+        let avro_val: AvroVal = record.into();
+        records.push(avro_val);
+    }
+
+    Ok(to_avro_datum(&batch_schema, AvroVal::Array(records))?)
+}
+
+pub fn encode(mongo_doc: Document, schema: &Schema) -> anyhow::Result<Vec<u8>> {
+    let record = transform_document_to_avro_record(mongo_doc, schema)?;
     Ok(to_avro_datum(&schema, record)?)
+}
+
+fn transform_document_to_avro_record(doc: Document, schema: &Schema) -> anyhow::Result<Record> {
+    match schema {
+        Schema::Record { ref fields, .. } => {
+            let mut record = Record::new(&schema).context("failed to create record")?;
+            for field in fields.iter() {
+                let field_name = &field.name;
+
+                let bson_val = doc.get(field_name).ok_or_else(|| {
+                    anyhow!("failed to find bson property '{}' for schema", &field_name)
+                })?;
+
+                let avro_val =
+                    Wrap::try_from(BsonWithSchema(bson_val.clone(), field.schema.clone()))?.0;
+                record.put(field_name, avro_val);
+            }
+            Ok(record)
+        }
+        _ => bail!(
+            "expect a record raw schema. got: {}",
+            schema.canonical_form()
+        ),
+    }
 }
 
 pub fn decode(avro_bytes: &[u8], schema: &Schema) -> anyhow::Result<Document> {

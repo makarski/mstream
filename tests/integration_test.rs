@@ -17,10 +17,8 @@ async fn test_created_updated_db_to_pubsub() {
 
     let client = Client::with_uri_str(setup::DB_CONNECTION).await.unwrap();
     let db = client.database(setup::DB_NAME);
-    db.drop(None).await.unwrap();
-    db.create_collection(setup::DB_COLLECTION, None)
-        .await
-        .unwrap();
+    db.drop().await.unwrap();
+    db.create_collection(setup::DB_COLLECTION).await.unwrap();
 
     let coll = db.collection(setup::DB_COLLECTION);
 
@@ -45,7 +43,7 @@ async fn test_created_updated_db_to_pubsub() {
         .await
         .unwrap();
 
-    db.drop(None).await.unwrap();
+    db.drop().await.unwrap();
 }
 
 async fn modify_assert_employees_db(
@@ -60,7 +58,10 @@ async fn modify_assert_employees_db(
         let filter = doc! {"id": before.id};
         let options = UpdateOptions::builder().upsert(Some(false)).build();
 
-        let result = coll.update_one(filter, change_fn, options).await?;
+        let result = coll
+            .update_one(filter, change_fn)
+            .with_options(options)
+            .await?;
 
         assert_eq!(
             1, result.modified_count,
@@ -68,7 +69,7 @@ async fn modify_assert_employees_db(
             before.id
         );
 
-        let result = coll.find_one(doc! { "id": before.id }, None).await?;
+        let result = coll.find_one(doc! { "id": before.id }).await?;
 
         assert_eq!(
             Some(after.clone()),
