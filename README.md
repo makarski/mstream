@@ -10,6 +10,7 @@ mstream creates connectors that move data between various systems with flexible 
 2. **Format Conversion**: Seamlessly convert between BSON, JSON, and Avro formats
 3. **Schema Filtering**: Apply schema-based field filtering to extract only needed data
 4. **Transformation Pipeline**: Process data through configurable middleware chains before delivery
+5. **Batch Processing**: Efficiently process events in batches for high-throughput scenarios
 
 ## Key Features
 
@@ -17,6 +18,7 @@ mstream creates connectors that move data between various systems with flexible 
 - **Middleware Processing**: Transform data through HTTP services before delivery
 - **Schema Validation**: Use AVRO schemas to validate and filter document fields
 - **Format Flexibility**: Convert between common data formats (BSON, JSON, Avro)
+- **Batch Processing**: Collect and process multiple events as a batch for improved performance
 
 ## Supported Integrations
 
@@ -49,6 +51,7 @@ graph TB
         (Json, Avro, Bson)`"]]
         middleware[["`Middlewares
         (HTTP Transform)`"]]
+        batch_processor[["`Batch Processor`"]]
     end
 
     subgraph sources[Sources]
@@ -78,9 +81,11 @@ graph TB
     pubsub_schema_registry --> schema_cache
     mongodb_schema_storage --> schema_cache
 
-    handler --> middleware
+    handler --> batch_processor
+    batch_processor --> middleware
     middleware --> encoder
     schema_cache <-->handler
+    schema_cache <--> batch_processor
 
     encoder -.-> mongodb_target
     encoder -.-> pubsub_sink_topic
@@ -154,13 +159,7 @@ Important rules:
 name = "format-conversion-example"
 # Source with explicit input and output encodings
 # *mind that toml does not support new lines for [inline tables](https://toml.io/en/v1.0.0#inline-table)
-source = {
-    service_name = "kafka-local",
-    resource = "raw_data",
-    input_encoding = "json",    # Required for Kafka sources
-    output_encoding = "bson",   # Will be converted from JSON to BSON
-    schema_id = "raw_schema"    # Optional schema reference
-}
+source = { service_name = "kafka-local", resource = "raw_data", input_encoding = "json", output_encoding = "bson", schema_id = "raw_schema" }
 ```
 
 #### Schema Inheritance
@@ -183,8 +182,7 @@ schemas = [
 ]
 
 # Source uses base_schema
-source = { service_name = "mongodb-local", resource = "users", output_encoding = "bson", schema_id = "base_schema"  # This schema will be inherited by default
-}
+source = { service_name = "mongodb-local", resource = "users", output_encoding = "bson", schema_id = "base_schema" }
 
 # Middlewares and sinks can override the schema
 middlewares = [
@@ -222,6 +220,87 @@ mstream supports these format conversions throughout the pipeline:
 | Other         | Other         | Binary passthrough for custom formats       |
 
 Conversions between "Other" encoding and structured formats (JSON/BSON/Avro) are not supported directly but can be implemented using middleware services.
+
+### Batch Processing
+
+mstream v0.17.0+ introduces batch processing capabilities for high-throughput scenarios, allowing you to collect and process multiple events as a single operation.
+
+#### Benefits of Batch Processing
+
+- **Improved Performance**: Reduced overhead by processing multiple events at once
+- **Optimized I/O Operations**: Fewer network calls to sink systems
+- **Better Resource Utilization**: More efficient use of system resources for high-volume data streams
+
+#### Configuring Batch Processing
+
+Batch processing is configured at the connector level using the `batch` parameter:
+
+```toml
+[[connectors]]
+name = "high-throughput-connector"
+# Configure batch processing with count-based batching
+batch = { kind = "count", size = 100 }
+source = { service_name = "mongodb-source", resource = "high_volume_collection", output_encoding = "bson" }
+```
+
+Current batch configuration options:
+
+| Kind  | Parameters | Description                                    |
+|-------|------------|------------------------------------------------|
+| count | size       | Number of events to collect before processing  |
+
+#### How Batch Processing Works
+
+1. The connector collects events from the source until the batch criteria is met (e.g., batch size reached)
+2. The entire batch is processed as a single unit through the pipeline (schema validation, middleware transformations)
+3. The processed batch is delivered to all configured sinks
+
+#### Batch Processing Data Structure
+
+When batch processing is enabled, there are important considerations for how the data is structured:
+
+1. **Middleware Processing**:
+   - Batched events are sent to middleware services as an array of events in a single payload
+   - Middleware services must be prepared to handle arrays rather than single events
+
+2. **MongoDB Sink Format**:
+   - For MongoDB sinks, batched events are stored as a document with an `items` property
+   - The `items` property contains the array of individual events
+   - Example of a stored batch document:
+     ```json
+     {
+       "items": [
+         { "id": 1, "name": "Event 1" },
+         { "id": 2, "name": "Event 2" },
+         { "id": 3, "name": "Event 3" }
+       ]
+     }
+     ```
+
+#### Batch Processing with Schemas and Middleware
+
+Batch processing works seamlessly with existing schema validation and middleware transformations:
+
+```toml
+[[connectors]]
+name = "batch-with-middleware"
+batch = { kind = "count", size = 200 }
+source = { service_name = "kafka-cloud", resource = "batch_events", input_encoding = "avro", output_encoding = "json", schema_id = "batch_schema" }
+schemas = [
+    { id = "batch_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/batch-events-schema" }
+]
+middlewares = [
+    # Middleware receives the entire batch as an array
+    { service_name = "transform-service", resource = "batch_process", schema_id = "batch_schema", output_encoding = "json" }
+]
+```
+
+#### Batch Processing Considerations
+
+- Middleware services must be capable of handling batched data (arrays) in the format provided
+- Schema validation is applied to each event in the batch individually before passing to middleware
+- The batch size directly affects memory usage and should be tuned based on available resources
+- For time-sensitive events, lower batch sizes may be preferable to reduce latency
 
 ### Middleware Support
 
