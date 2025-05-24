@@ -228,7 +228,7 @@ fn exchange_json_bson_for_one(
 
     bson_enc::doc_to_json_or_bson(bson_doc, target_encoding).map_err(|e| {
         anyhow!(
-            "failed to serialize bson<>json exchnage: from: {:?}, to: {:?}, error: {}",
+            "failed to serialize bson<>json exchange: from: {:?}, to: {:?}, error: {}",
             from_encoding,
             target_encoding,
             e
