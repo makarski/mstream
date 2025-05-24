@@ -1,130 +1,336 @@
 use anyhow::{anyhow, bail, Ok};
 use log::debug;
-use mongodb::bson;
+use mongodb::bson::{self};
 
 use super::Schema;
 use crate::config::Encoding;
 use crate::encoding::{avro, json_to_bson_doc};
 
-pub fn apply_schema(
+pub enum SchemaEncoder {
+    SingleEvent(Vec<u8>),
+    Batch(Vec<Vec<u8>>),
+}
+
+impl SchemaEncoder {
+    pub fn new_event(b: Vec<u8>) -> Self {
+        SchemaEncoder::SingleEvent(b)
+    }
+
+    pub fn new_batch(b: Vec<Vec<u8>>) -> Self {
+        SchemaEncoder::Batch(b)
+    }
+
+    pub fn apply_schema(
+        self,
+        from_encoding: &Encoding,
+        target_encoding: &Encoding,
+        item_schema: &Schema,
+    ) -> anyhow::Result<Vec<u8>> {
+        match (from_encoding, target_encoding) {
+            (Encoding::Other, Encoding::Other) => match self {
+                SchemaEncoder::SingleEvent(b) => Ok(b),
+                SchemaEncoder::Batch(batch) => {
+                    // For batch, use a a length-prefixed format
+                    // Format:
+                    // - 4 bytes: length of the batch (u32 in little-endian)
+                    // - For each event in the batch:
+                    //     - 4 bytes: length of the event (u32 in little-endian)
+                    //     - N bytes: the event itself in original encoding
+
+                    let message_count = batch.len() as u32;
+                    let overhead_size = 4 + 4 * message_count;
+                    let payload_size = batch.iter().map(|p| p.len()).sum::<usize>();
+                    let total_size = overhead_size as usize + payload_size;
+
+                    let mut result = Vec::with_capacity(total_size);
+
+                    // Write 4 bytes: message count
+                    result.extend_from_slice(&(message_count).to_le_bytes());
+
+                    for event_bytes in batch {
+                        let event_len = event_bytes.len() as u32;
+                        // Write 4 bytes: event length
+                        result.extend_from_slice(&event_len.to_le_bytes());
+                        // Write N bytes: the event itself
+                        result.extend_from_slice(&event_bytes);
+                    }
+
+                    Ok(result)
+                }
+            },
+            (Encoding::Other, Encoding::Avro | Encoding::Bson | Encoding::Json) => Err(anyhow!(
+                "conversion from Other to Avro/Bson/Json is not supported"
+            )),
+            (Encoding::Avro | Encoding::Json | Encoding::Bson, Encoding::Other) => Err(anyhow!(
+                "conversion from Avro/Bson/Json to Other is not supported"
+            )),
+            (Encoding::Avro, _) => self.from_avro(&target_encoding, item_schema),
+            (Encoding::Json | Encoding::Bson, Encoding::Avro) => {
+                self.to_avro(&from_encoding, item_schema)
+            }
+            (Encoding::Json | Encoding::Bson, Encoding::Json | Encoding::Bson) => {
+                debug!(
+                    "entered exchange. from: {:?}. to: {:?}",
+                    from_encoding, target_encoding
+                );
+
+                self.exchange_json_bson(&from_encoding, &target_encoding, item_schema)
+            }
+        }
+        .map_err(|err| {
+            anyhow!(
+                "{}: from_encoding: {:?}, target_encoding: {:?}",
+                err,
+                from_encoding,
+                target_encoding
+            )
+        })
+    }
+
+    fn from_avro(self, target_encoding: &Encoding, schema: &Schema) -> anyhow::Result<Vec<u8>> {
+        let avro_schema = schema.as_avro().ok_or_else(|| {
+            anyhow!("failed to retrieve underlying avro schema while converting from avro")
+        })?;
+
+        match self {
+            SchemaEncoder::SingleEvent(b) => match target_encoding {
+                Encoding::Avro => Ok(avro::validate(b, &avro_schema)?),
+                Encoding::Json => {
+                    let bson_doc = avro::decode(&b, avro_schema)?;
+                    serde_json::to_vec(&bson_doc).map_err(|e| {
+                        anyhow!("from_avro: failed to serialize bson doc to json: {}", e)
+                    })
+                }
+                Encoding::Bson => {
+                    let bson_doc = avro::decode(&b, avro_schema)?;
+                    bson::to_vec(&bson_doc).map_err(|e| {
+                        anyhow!("from_avro: failed to serialize bson doc to bson: {}", e)
+                    })
+                }
+                Encoding::Other => bail!("unsupported target encoding: {:?}", target_encoding),
+            },
+            SchemaEncoder::Batch(batch) => {
+                let doc_array = bson_enc::docs_from_avro(batch, avro_schema)?;
+
+                match target_encoding {
+                    Encoding::Avro => {
+                        let avro_doc = avro::encode_many(doc_array, &avro_schema)?;
+                        return Ok(avro_doc);
+                    }
+                    Encoding::Json | Encoding::Bson => {
+                        bson_enc::docs_to_json_or_bson(doc_array, target_encoding).map_err(|e| {
+                            anyhow!(
+                                "from_avro: failed to serialize bson doc to json/bson. target: {:?}. error: {}", target_encoding,
+                                e
+                            )
+                        })
+                    }
+                    Encoding::Other => bail!("unsupported target encoding: {:?}", target_encoding),
+                }
+            }
+        }
+    }
+
+    fn to_avro(self, from_encoding: &Encoding, schema: &Schema) -> anyhow::Result<Vec<u8>> {
+        let avro_schema = schema.as_avro().ok_or_else(|| {
+            anyhow!("failed to retrieve underlying avro schema while converting to avro")
+        })?;
+
+        match self {
+            SchemaEncoder::SingleEvent(b) => match from_encoding {
+                Encoding::Avro => Ok(avro::validate(b, &avro_schema)?),
+                Encoding::Json | Encoding::Bson => {
+                    let bson_doc = if *from_encoding == Encoding::Json {
+                        json_to_bson_doc(&b)?
+                    } else {
+                        bson::from_slice::<bson::Document>(&b)?
+                    };
+
+                    avro::encode(bson_doc, &avro_schema)
+                }
+                Encoding::Other => bail!("unsupported source encoding: {:?}", from_encoding),
+            },
+            SchemaEncoder::Batch(batch) => match from_encoding {
+                Encoding::Avro => avro::validate_many(batch, &avro_schema),
+                Encoding::Json | Encoding::Bson => {
+                    let doc_array = bson_enc::docs_from_json_or_bson(batch, from_encoding)?;
+                    avro::encode_many(doc_array, &avro_schema)
+                }
+                Encoding::Other => bail!("unsupported source encoding: {:?}", from_encoding),
+            },
+        }
+    }
+
+    fn exchange_json_bson(
+        self,
+        from_encoding: &Encoding,
+        target_encoding: &Encoding,
+        schema: &Schema,
+    ) -> anyhow::Result<Vec<u8>> {
+        match self {
+            SchemaEncoder::SingleEvent(b) => {
+                exchange_json_bson_for_one(b, from_encoding, target_encoding, schema)
+            }
+            SchemaEncoder::Batch(batch) => match schema {
+                Schema::Avro(avro_schema) => {
+                    let encoded = batch
+                        .into_iter()
+                        .map(|b| {
+                            bson_enc::apply_avro_schema_for_json_or_bson(
+                                b.clone(),
+                                from_encoding,
+                                avro_schema,
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                        .and_then(|docs| bson_enc::docs_to_json_or_bson(docs, target_encoding))?;
+
+                    Ok(encoded)
+                }
+                Schema::Undefined => {
+                    let doc_array = bson_enc::docs_from_json_or_bson(batch, from_encoding)?;
+
+                    if *target_encoding == Encoding::Bson {
+                        bson_enc::docs_to_vec(doc_array).map_err(|e| {
+                            anyhow!(
+                                "batch from_avro: failed to serialize bson doc to bson: {}",
+                                e
+                            )
+                        })
+                    } else {
+                        serde_json::to_vec(&doc_array).map_err(|e| {
+                            anyhow!(
+                                "batch from_avro: failed to serialize bson doc to json: {}",
+                                e
+                            )
+                        })
+                    }
+                }
+            },
+        }
+    }
+}
+
+fn exchange_json_bson_for_one(
     b: Vec<u8>,
     from_encoding: &Encoding,
     target_encoding: &Encoding,
     schema: &Schema,
 ) -> anyhow::Result<Vec<u8>> {
-    let result = match (from_encoding, target_encoding) {
-        (Encoding::Other, Encoding::Other) => Ok(b),
-        (Encoding::Other, Encoding::Avro | Encoding::Bson | Encoding::Json) => Err(anyhow!(
-            "conversion from Other to Avro/Bson/Json is not supported"
-        )),
-        (Encoding::Avro | Encoding::Json | Encoding::Bson, Encoding::Other) => Err(anyhow!(
-            "conversion from Avro/Bson/Json to Other is not supported"
-        )),
-        (Encoding::Avro, _) => from_avro(b, &target_encoding, schema),
-        (Encoding::Json | Encoding::Bson, Encoding::Avro) => to_avro(b, &from_encoding, schema),
-        (Encoding::Json | Encoding::Bson, Encoding::Json | Encoding::Bson) => {
-            debug!(
-                "entered exchange. from: {:?}. to: {:?}",
-                from_encoding, target_encoding
-            );
-
-            exchange_json_bson(b, &from_encoding, &target_encoding, schema)
+    let bson_doc = match schema {
+        // expensive
+        Schema::Avro(avro_schema) => {
+            bson_enc::apply_avro_schema_for_json_or_bson(b, from_encoding, avro_schema)?
         }
+        // if schema is undefined, we can just convert between json and bson
+        Schema::Undefined => bson_enc::doc_from_json_or_bson(b, from_encoding)?,
     };
 
-    result.map_err(|err| {
+    bson_enc::doc_to_json_or_bson(bson_doc, target_encoding).map_err(|e| {
         anyhow!(
-            "{}: from_encoding: {:?}, target_encoding: {:?}",
-            err,
+            "failed to serialize bson<>json exchange: from: {:?}, to: {:?}, error: {}",
             from_encoding,
-            target_encoding
+            target_encoding,
+            e
         )
     })
 }
 
-fn from_avro(b: Vec<u8>, target_encoding: &Encoding, schema: &Schema) -> anyhow::Result<Vec<u8>> {
-    let avro_schema = schema.as_avro().ok_or_else(|| {
-        anyhow!("failed to retrieve underlying avro schema while converting from avro")
-    })?;
+mod bson_enc {
+    use anyhow::bail;
+    use mongodb::bson::Document;
 
-    match target_encoding {
-        Encoding::Avro => Ok(avro::validate(b, &avro_schema)?),
-        Encoding::Json => {
-            let bson_doc = avro::decode(&b, avro_schema)?;
-            serde_json::to_vec(&bson_doc)
-                .map_err(|e| anyhow!("from_avro: failed to serialize bson doc to json: {}", e))
+    use super::bson;
+    use crate::{
+        config::Encoding,
+        encoding::{avro, json_to_bson_doc},
+    };
+
+    pub(super) fn docs_from_avro(
+        batch: Vec<Vec<u8>>,
+        avro_schema: &apache_avro::Schema,
+    ) -> anyhow::Result<Vec<Document>> {
+        let mut doc_array = Vec::with_capacity(batch.len());
+
+        for event in batch {
+            let bson_doc = avro::decode(&event, avro_schema)?;
+            doc_array.push(bson_doc);
         }
-        Encoding::Bson => {
-            let bson_doc = avro::decode(&b, avro_schema)?;
-            bson::to_vec(&bson_doc)
-                .map_err(|e| anyhow!("from_avro: failed to serialize bson doc to bson: {}", e))
-        }
-        Encoding::Other => bail!("unsupported target encoding: {:?}", target_encoding),
+
+        Ok(doc_array)
     }
-}
 
-fn to_avro(b: Vec<u8>, from_encoding: &Encoding, schema: &Schema) -> anyhow::Result<Vec<u8>> {
-    let avro_schema = schema.as_avro().ok_or_else(|| {
-        anyhow!("failed to retrieve underlying avro schema while converting to avro")
-    })?;
+    pub(super) fn docs_from_json_or_bson(
+        batch: Vec<Vec<u8>>,
+        from_encoding: &Encoding,
+    ) -> anyhow::Result<Vec<bson::Document>> {
+        let mut doc_array = Vec::with_capacity(batch.len());
 
-    match from_encoding {
-        Encoding::Avro => Ok(avro::validate(b, &avro_schema)?),
-        Encoding::Json | Encoding::Bson => {
-            let bson_doc = if *from_encoding == Encoding::Json {
-                json_to_bson_doc(&b)?
-            } else {
-                bson::from_slice::<bson::Document>(&b)?
-            };
-
-            avro::encode(bson_doc, &avro_schema)
+        for event in batch {
+            let bson_doc = doc_from_json_or_bson(event, from_encoding)?;
+            doc_array.push(bson_doc);
         }
-        Encoding::Other => bail!("unsupported source encoding: {:?}", from_encoding),
+
+        Ok(doc_array)
     }
-}
 
-fn exchange_json_bson(
-    b: Vec<u8>,
-    from_encoding: &Encoding,
-    target_encoding: &Encoding,
-    schema: &Schema,
-) -> anyhow::Result<Vec<u8>> {
-    match schema {
-        Schema::Avro(avro_schema) => {
-            // expensive
-            let bson_doc = if *from_encoding == Encoding::Json {
-                json_to_bson_doc(&b)?
-            } else {
-                bson::from_slice::<bson::Document>(&b)?
-            };
+    pub(super) fn doc_from_json_or_bson(
+        b: Vec<u8>,
+        from_encoding: &Encoding,
+    ) -> anyhow::Result<bson::Document> {
+        let doc = if *from_encoding == Encoding::Json {
+            json_to_bson_doc(&b)?
+        } else {
+            bson::from_slice::<bson::Document>(&b)?
+        };
 
-            let avro_doc = avro::encode(bson_doc, &avro_schema)?;
-            let bson_doc = avro::decode(&avro_doc, &avro_schema)?;
+        Ok(doc)
+    }
 
-            if *target_encoding == Encoding::Bson {
-                bson::to_vec(&bson_doc)
-                    .map_err(|e| anyhow!("from_avro: failed to serialize bson doc to bson: {}", e))
-            } else {
-                serde_json::to_vec(&bson_doc)
-                    .map_err(|e| anyhow!("from_avro: failed to serialize bson doc to json: {}", e))
-            }
-        }
-        Schema::Undefined => {
-            // if schema is undefined, we can just convert between json and bson
-            match (from_encoding, target_encoding) {
-                (Encoding::Json, Encoding::Bson) => {
-                    let bson_doc = json_to_bson_doc(&b)?;
-                    bson::to_vec(&bson_doc)
-                        .map_err(|e| anyhow!("failed to serialize bson doc to bson: {}", e))
-                }
-                (Encoding::Bson, Encoding::Json) => {
-                    let bson_doc = bson::from_slice::<bson::Document>(&b)?;
-                    serde_json::to_vec(&bson_doc)
-                        .map_err(|e| anyhow!("failed to serialize bson doc to json: {}", e))
-                }
-                _ => Ok(b),
-            }
-        }
+    pub(super) fn doc_to_json_or_bson(
+        doc: Document,
+        target_encoding: &Encoding,
+    ) -> anyhow::Result<Vec<u8>> {
+        let b = match target_encoding {
+            Encoding::Json => serde_json::to_vec(&doc)?,
+            Encoding::Bson => bson::to_vec(&doc)?,
+            _ => bail!("unsupported target encoding: {:?}", target_encoding),
+        };
+
+        Ok(b)
+    }
+
+    pub(super) fn docs_to_json_or_bson(
+        docs: Vec<Document>,
+        target_encoding: &Encoding,
+    ) -> anyhow::Result<Vec<u8>> {
+        let encoded = match target_encoding {
+            Encoding::Json => serde_json::to_vec(&docs)?,
+            Encoding::Bson => docs_to_vec(docs)?,
+            _ => bail!("unsupported target encoding: {:?}", target_encoding),
+        };
+
+        Ok(encoded)
+    }
+
+    pub(super) fn docs_to_vec(docs: Vec<Document>) -> anyhow::Result<Vec<u8>> {
+        // BSON specification itself supports top-level arrays.
+        // but the Rust bson crate (bson::to_vec) only allows top-level serialization of documents (i.e., structs or maps), not arrays.
+        // this is a library-specific limitation, not a BSON limitation.
+        let array_wrapper = bson::doc! {"items": docs};
+        Ok(bson::to_vec(&array_wrapper)?)
+    }
+
+    pub(super) fn apply_avro_schema_for_json_or_bson(
+        b: Vec<u8>,
+        from_encoding: &Encoding,
+        avro_schema: &apache_avro::Schema,
+    ) -> anyhow::Result<Document> {
+        // todo: think of a better way apply an avro schema
+        // this is expensive
+        let bson_doc = doc_from_json_or_bson(b, from_encoding)?;
+        let avro_doc = avro::encode(bson_doc, avro_schema)?;
+        avro::decode(&avro_doc, avro_schema)
     }
 }
 
@@ -181,7 +387,11 @@ mod tests {
         let data = b"some arbitrary binary data".to_vec();
         let schema = Schema::Undefined;
 
-        let result = apply_schema(data.clone(), &Encoding::Other, &Encoding::Other, &schema);
+        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
+            &Encoding::Other,
+            &Encoding::Other,
+            &schema,
+        );
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), data);
@@ -193,7 +403,11 @@ mod tests {
         let schema = Schema::Undefined;
 
         // Test Other -> Avro
-        let result = apply_schema(data.clone(), &Encoding::Other, &Encoding::Avro, &schema);
+        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
+            &Encoding::Other,
+            &Encoding::Avro,
+            &schema,
+        );
 
         assert!(result.is_err());
         assert!(result
@@ -202,12 +416,20 @@ mod tests {
             .contains("conversion from Other to Avro/Bson/Json is not supported"));
 
         // Test Other -> Json
-        let result = apply_schema(data.clone(), &Encoding::Other, &Encoding::Json, &schema);
+        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
+            &Encoding::Other,
+            &Encoding::Json,
+            &schema,
+        );
 
         assert!(result.is_err());
 
         // Test Other -> Bson
-        let result = apply_schema(data.clone(), &Encoding::Other, &Encoding::Bson, &schema);
+        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
+            &Encoding::Other,
+            &Encoding::Bson,
+            &schema,
+        );
 
         assert!(result.is_err());
     }
@@ -220,7 +442,11 @@ mod tests {
         let schema = create_test_avro_schema();
 
         // Test Avro -> Other
-        let result = apply_schema(avro_data, &Encoding::Avro, &Encoding::Other, &schema);
+        let result = SchemaEncoder::new_event(avro_data).apply_schema(
+            &Encoding::Avro,
+            &Encoding::Other,
+            &schema,
+        );
 
         assert!(result.is_err());
         assert!(result
@@ -229,12 +455,20 @@ mod tests {
             .contains("conversion from Avro/Bson/Json to Other is not supported"));
 
         // Test Json -> Other
-        let result = apply_schema(json_data, &Encoding::Json, &Encoding::Other, &schema);
+        let result = SchemaEncoder::new_event(json_data).apply_schema(
+            &Encoding::Json,
+            &Encoding::Other,
+            &schema,
+        );
 
         assert!(result.is_err());
 
         // Test Bson -> Other
-        let result = apply_schema(bson_data, &Encoding::Bson, &Encoding::Other, &schema);
+        let result = SchemaEncoder::new_event(bson_data).apply_schema(
+            &Encoding::Bson,
+            &Encoding::Other,
+            &schema,
+        );
 
         assert!(result.is_err());
     }
@@ -247,7 +481,11 @@ mod tests {
         let expected_value = 42;
 
         // Test Avro -> Json
-        let result = apply_schema(avro_data.clone(), &Encoding::Avro, &Encoding::Json, &schema);
+        let result = SchemaEncoder::new_event(avro_data.clone()).apply_schema(
+            &Encoding::Avro,
+            &Encoding::Json,
+            &schema,
+        );
         assert!(result.is_ok());
 
         // Verify JSON content
@@ -257,7 +495,11 @@ mod tests {
         assert_eq!(json_doc["value"].as_i64().unwrap(), expected_value as i64);
 
         // Test Avro -> Bson
-        let result = apply_schema(avro_data.clone(), &Encoding::Avro, &Encoding::Bson, &schema);
+        let result = SchemaEncoder::new_event(avro_data.clone()).apply_schema(
+            &Encoding::Avro,
+            &Encoding::Bson,
+            &schema,
+        );
         assert!(result.is_ok());
 
         // Verify BSON content
@@ -267,7 +509,11 @@ mod tests {
         assert_eq!(bson_doc.get_i32("value").unwrap(), expected_value);
 
         // Test Avro -> Avro (validation)
-        let result = apply_schema(avro_data.clone(), &Encoding::Avro, &Encoding::Avro, &schema);
+        let result = SchemaEncoder::new_event(avro_data.clone()).apply_schema(
+            &Encoding::Avro,
+            &Encoding::Avro,
+            &schema,
+        );
         assert!(result.is_ok());
 
         // Verify Avro content is unchanged
@@ -297,7 +543,11 @@ mod tests {
         let expected_value = 42;
 
         // Test Json -> Avro
-        let result = apply_schema(json_data.clone(), &Encoding::Json, &Encoding::Avro, &schema);
+        let result = SchemaEncoder::new_event(json_data.clone()).apply_schema(
+            &Encoding::Json,
+            &Encoding::Avro,
+            &schema,
+        );
         assert!(result.is_ok());
 
         // Verify Avro content by decoding it back
@@ -321,7 +571,11 @@ mod tests {
         }
 
         // Test Bson -> Avro
-        let result = apply_schema(bson_data.clone(), &Encoding::Bson, &Encoding::Avro, &schema);
+        let result = SchemaEncoder::new_event(bson_data.clone()).apply_schema(
+            &Encoding::Bson,
+            &Encoding::Avro,
+            &schema,
+        );
         assert!(result.is_ok());
 
         // Verify Avro content by decoding it back
@@ -365,8 +619,7 @@ mod tests {
 
         // Test with Avro schema
         let avro_schema = create_test_avro_schema();
-        let result = apply_schema(
-            json_data.clone(),
+        let result = SchemaEncoder::new_event(json_data.clone()).apply_schema(
             &Encoding::Json,
             &Encoding::Bson,
             &avro_schema,
@@ -381,8 +634,7 @@ mod tests {
 
         // Test with Undefined schema
         let undefined_schema = Schema::Undefined;
-        let result = apply_schema(
-            json_data.clone(),
+        let result = SchemaEncoder::new_event(json_data.clone()).apply_schema(
             &Encoding::Json,
             &Encoding::Bson,
             &undefined_schema,
@@ -415,8 +667,7 @@ mod tests {
         }))
         .unwrap();
 
-        let result = apply_schema(
-            complex_json.clone(),
+        let result = SchemaEncoder::new_event(complex_json.clone()).apply_schema(
             &Encoding::Json,
             &Encoding::Bson,
             &undefined_schema,
@@ -453,7 +704,11 @@ mod tests {
 
         // Test with both schema types
         for schema in [create_test_avro_schema(), Schema::Undefined].iter() {
-            let result = apply_schema(bson_data.clone(), &Encoding::Bson, &Encoding::Json, schema);
+            let result = SchemaEncoder::new_event(bson_data.clone()).apply_schema(
+                &Encoding::Bson,
+                &Encoding::Json,
+                schema,
+            );
             assert!(result.is_ok());
 
             // Verify JSON content
@@ -476,8 +731,7 @@ mod tests {
             "timestamp": bson::Timestamp { time: 123456789, increment: 1 }
         }).unwrap();
 
-        let result = apply_schema(
-            complex_bson,
+        let result = SchemaEncoder::new_event(complex_bson).apply_schema(
             &Encoding::Bson,
             &Encoding::Json,
             &Schema::Undefined,
@@ -541,7 +795,11 @@ mod tests {
         let schema = Schema::Undefined;
 
         // Json -> Json should be identity with undefined schema
-        let result = apply_schema(json_data.clone(), &Encoding::Json, &Encoding::Json, &schema);
+        let result = SchemaEncoder::new_event(json_data.clone()).apply_schema(
+            &Encoding::Json,
+            &Encoding::Json,
+            &schema,
+        );
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), json_data);
@@ -552,7 +810,11 @@ mod tests {
         let invalid_json = b"{not valid json}".to_vec();
         let schema = Schema::Undefined;
 
-        let result = apply_schema(invalid_json, &Encoding::Json, &Encoding::Bson, &schema);
+        let result = SchemaEncoder::new_event(invalid_json).apply_schema(
+            &Encoding::Json,
+            &Encoding::Bson,
+            &schema,
+        );
 
         assert!(result.is_err());
     }

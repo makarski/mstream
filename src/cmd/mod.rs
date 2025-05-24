@@ -7,7 +7,9 @@ use services::ServiceFactory;
 use tokio::sync::mpsc::Sender;
 
 use crate::cmd::event_handler::EventHandler;
-use crate::config::{Config, SourceServiceConfigReference};
+use crate::config::{
+    BatchConfig, Config, SchemaServiceConfigReference, SourceServiceConfigReference,
+};
 use crate::schema::{Schema, SchemaRegistry};
 use crate::source::{EventSource, SourceEvent};
 
@@ -22,30 +24,7 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
 
     for connector_cfg in cfg.connectors.iter().cloned() {
         let done_ch = done_ch.clone();
-
-        let schemas = match connector_cfg.schemas {
-            Some(cfg) => {
-                let mut result = Vec::with_capacity(cfg.len());
-                for schema_cfg in cfg.into_iter() {
-                    let mut schema_service = service_container.schema_provider(&schema_cfg).await?;
-
-                    // wait for the schema to be ready
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-                    let schema = schema_service
-                        .get_schema(schema_cfg.resource.clone())
-                        .await?;
-
-                    result.push(SchemaDefinition {
-                        schema_id: schema_cfg.id,
-                        schema,
-                    });
-                }
-                Some(result)
-            }
-            None => None,
-        };
-
+        let schemas = init_schemas(connector_cfg.schemas.as_ref(), &service_container).await?;
         let source_schema = find_schema(connector_cfg.source.schema_id.clone(), schemas.as_ref());
 
         let mut publishers = Vec::new();
@@ -71,7 +50,17 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
             None => None,
         };
 
-        let (events_tx, events_rx) = tokio::sync::mpsc::channel(1);
+        let (channel_size, is_batch) = if let Some(batch_cfg) = connector_cfg.batch {
+            match batch_cfg {
+                BatchConfig::Count { size } => (size, true),
+            }
+        } else {
+            (1, false)
+        };
+
+        // channel buffer size is the same as the batch size
+        // if the buffer is full, the source listener will block
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(channel_size);
         if let Err(err) = spawn_source_listener(
             connector_cfg.name.clone(),
             &service_container,
@@ -93,8 +82,14 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
                 middlewares,
             };
 
-            if let Err(err) = event_handler.listen(events_rx).await {
-                error!("{err}")
+            if is_batch {
+                if let Err(err) = event_handler.listen_batch(events_rx, channel_size).await {
+                    error!("{err}")
+                }
+            } else {
+                if let Err(err) = event_handler.listen(events_rx).await {
+                    error!("{err}")
+                }
             }
 
             // send done signal
@@ -108,6 +103,34 @@ pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Res
     }
 
     Ok(())
+}
+
+async fn init_schemas(
+    schemas_config: Option<&Vec<SchemaServiceConfigReference>>,
+    service_container: &ServiceFactory<'_>,
+) -> anyhow::Result<Option<Vec<SchemaDefinition>>> {
+    match schemas_config {
+        Some(cfg) => {
+            let mut result = Vec::with_capacity(cfg.len());
+            for schema_cfg in cfg.into_iter() {
+                let mut schema_service = service_container.schema_provider(&schema_cfg).await?;
+
+                // wait for the schema to be ready
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+                let schema = schema_service
+                    .get_schema(schema_cfg.resource.clone())
+                    .await?;
+
+                result.push(SchemaDefinition {
+                    schema_id: schema_cfg.id.clone(),
+                    schema,
+                });
+            }
+            Ok(Some(result))
+        }
+        None => Ok(None),
+    }
 }
 
 fn find_schema(

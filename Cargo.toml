@@ -1,13 +1,13 @@
 [package]
 name = "mstream"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 authors = ["Simon Makarski"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-mongodb = "2.8.2"
+mongodb = "3"
 apache-avro = "0.14"
 anyhow = "1"
 tonic = { version = "0.13", features = ["tls-ring", "tls-webpki-roots"] }

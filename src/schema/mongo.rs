@@ -34,7 +34,7 @@ impl MongoDbSchemaProvider {
             .collection::<SchemaEntry>(self.collection_name.as_str());
 
         let schema = collection
-            .find_one(doc! {"schema_id": &id}, None)
+            .find_one(doc! {"schema_id": &id})
             .await?
             .ok_or_else(|| anyhow!("schema not found: {}", id))?;
 

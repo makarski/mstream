@@ -80,13 +80,7 @@ sinks = [
 [[connectors]]
 name = "kafka-source-connector"
 # Configure Kafka as a source
-source = {
-    service_name = "kafka-cloud",
-    resource = "source_topic",
-    input_encoding = "avro",  # Required for Kafka sources
-    output_encoding = "json",
-    schema_id = "kafka_schema"
-}
+source = { service_name = "kafka-cloud", resource = "source_topic", input_encoding = "avro", output_encoding = "json", schema_id = "kafka_schema" }
 # Schema is optional for filtering fields
 schemas = [
     { id = "kafka_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/kafka-source-schema" }
@@ -99,12 +93,7 @@ sinks = [
 [[connectors]]
 name = "pubsub-source-connector"
 # Configure PubSub as a source
-source = {
-    service_name = "pubsub-example",
-    resource = "projects/your-project/subscriptions/example-subscription",
-    input_encoding = "avro",  # Required for PubSub sources
-    output_encoding = "json"
-}
+source = { service_name = "pubsub-example", resource = "projects/your-project/subscriptions/example-subscription", input_encoding = "avro", output_encoding = "json" }
 # Schema configuration is optional
 schemas = [
     { id = "pubsub_schema", service_name = "mongodb-source", resource = "example-schema-collection" }
@@ -138,13 +127,7 @@ sinks = [
 
 [[connectors]]
 name = "avro-middleware-connector"
-source = {
-    service_name = "kafka-cloud",
-    resource = "source_events",
-    input_encoding = "avro",
-    output_encoding = "avro",
-    schema_id = "events_schema"
-}
+source = { service_name = "kafka-cloud", resource = "source_events", input_encoding = "avro", output_encoding = "avro", schema_id = "events_schema" }
 # Define schemas
 schemas = [
     { id = "events_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/events-schema" },
@@ -158,4 +141,43 @@ middlewares = [
 ]
 sinks = [
     { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-events", output_encoding = "avro", schema_id = "processed_schema" },
+]
+
+# examples for batch processing
+
+[[connectors]]
+name = "batch-mongodb-connector"
+# Configure batch processing with a count of 100 events per batch
+batch = { kind = "count", size = 100 }
+source = { service_name = "mongodb-source", resource = "high_volume_collection", output_encoding = "bson" }
+sinks = [
+    { service_name = "kafka-local", resource = "batched_events", output_encoding = "json" }
+]
+
+[[connectors]]
+name = "batch-with-schema-connector"
+# Larger batch size for high-throughput processing
+batch = { kind = "count", size = 500 }
+source = { service_name = "mongodb-source", resource = "metrics_collection", output_encoding = "bson", schema_id = "metrics_schema" }
+schemas = [
+    { id = "metrics_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/metrics-schema" }
+]
+sinks = [
+    { service_name = "kafka-cloud", resource = "metrics_topic", output_encoding = "avro", schema_id = "metrics_schema" }
+]
+
+[[connectors]]
+name = "batch-middleware-connector"
+# Batch processing with middleware transformations
+batch = { kind = "count", size = 200 }
+source = { service_name = "kafka-cloud", resource = "batch_events", input_encoding = "avro", output_encoding = "json", schema_id = "batch_schema" }
+schemas = [
+    { id = "batch_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/batch-events-schema" }
+]
+middlewares = [
+    # Process batches of events at once for better performance
+    { service_name = "transform-service", resource = "batch_process", schema_id = "batch_schema", output_encoding = "json" }
+]
+sinks = [
+    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-batches", output_encoding = "avro", schema_id = "batch_schema" }
 ]

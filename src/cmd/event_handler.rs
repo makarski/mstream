@@ -1,13 +1,15 @@
-use anyhow::anyhow;
+use core::iter::Iterator;
+
+use anyhow::{anyhow, bail};
 use log::{debug, error, info};
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
     config::{Encoding, ServiceConfigReference},
     middleware::MiddlewareProvider,
-    schema::Schema,
+    schema::{encoding::SchemaEncoder, Schema},
     sink::{encoding::SinkEvent, EventSink, SinkProvider},
-    source::SourceEvent,
+    source::{SourceBatch, SourceEvent},
 };
 
 pub struct EventHandler {
@@ -29,6 +31,10 @@ impl EventHandler {
                 Some(event) => {
                     debug!("processing event: {:?}", event);
 
+                    let event = event
+                        .apply_schema(Some(&self.source_output_encoding), &self.source_schema)
+                        .map_err(|err| anyhow!("failed to apply source schema: {}", err))?;
+
                     if let Err(err) = self.process_event(event).await {
                         error!("{}: failed to process event: {}", &self.connector_name, err)
                     }
@@ -43,14 +49,76 @@ impl EventHandler {
         Ok(())
     }
 
+    pub(super) async fn listen_batch(
+        &mut self,
+        mut events_rx: Receiver<SourceEvent>,
+        batch_size: usize,
+    ) -> anyhow::Result<()> {
+        loop {
+            let mut batch: Vec<SourceEvent> = Vec::with_capacity(batch_size);
+
+            while batch.len() < batch_size {
+                let mut buf = Vec::with_capacity(batch_size - batch.len());
+                let event_count = events_rx
+                    .recv_many(&mut buf, batch_size - batch.len())
+                    .await;
+
+                if event_count == 0 {
+                    bail!(
+                        "batch EventHandler listener exited. connector: {}",
+                        self.connector_name
+                    );
+                }
+
+                batch.extend(buf);
+                debug!("collected events for batch: {}", batch.len());
+            }
+
+            let source_batch = SourceBatch::new(batch);
+            debug!("processing batch: {:?}", source_batch);
+
+            if let Err(err) = self.process_event_batch(source_batch).await {
+                error!(
+                    "{}: failed to process batch event: {}",
+                    &self.connector_name, err
+                )
+            }
+        }
+    }
+
+    async fn process_event_batch(&mut self, event_batch: SourceBatch) -> anyhow::Result<()> {
+        let source_encoding = event_batch.encoding();
+        let attributes = event_batch.attributes().cloned();
+        let payloads = event_batch
+            .into_iter()
+            .map(|event| event.raw_bytes.clone())
+            .collect::<Vec<_>>();
+
+        let schema_encoder = SchemaEncoder::new_batch(payloads);
+        let batch_event = schema_encoder
+            .apply_schema(
+                &source_encoding,
+                &self.source_output_encoding,
+                &self.source_schema,
+            )
+            .map(|payload| SourceEvent {
+                raw_bytes: payload,
+                document: None,
+                attributes: attributes,
+                encoding: self.source_output_encoding.clone(),
+            })?;
+
+        debug!("generated SourceEvent for batch: {:?}", batch_event);
+
+        if let Err(err) = self.process_event(batch_event).await {
+            error!("{}: failed to process event: {}", &self.connector_name, err)
+        }
+
+        Ok(())
+    }
+
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
         let mut transformed_source_event = source_event;
-
-        // apply schema for source event if any
-        if !matches!(&self.source_schema, Schema::Undefined) {
-            transformed_source_event = transformed_source_event
-                .apply_schema(Some(&self.source_output_encoding), &self.source_schema)?;
-        }
 
         if let Some(middlewares) = &mut self.middlewares {
             for (mdlw_cfg, middleware, schema) in middlewares.iter_mut() {
@@ -75,9 +143,9 @@ impl EventHandler {
                 .clone()
                 .apply_schema(Some(&sink_cfg.output_encoding), &schema)
             {
-                Ok(sink_event) => {
-                    debug!("transformed sink event: {:?}", sink_event);
-                    sink_event.into()
+                Ok(source_event) => {
+                    debug!("transforming into sink event: {:?}", source_event);
+                    source_event.into()
                 }
                 Err(err) => {
                     error!(

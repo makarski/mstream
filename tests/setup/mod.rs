@@ -53,6 +53,7 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
             ],
             connectors: vec![Connector {
                 name: CONNECTOR_NAME.to_owned(),
+                batch: None,
                 source: SourceServiceConfigReference {
                     service_name: "mongodb".to_owned(),
                     resource: DB_COLLECTION.to_owned(),
@@ -88,7 +89,7 @@ pub async fn setup_db(
         .map(|(before, _, _)| before)
         .collect::<Vec<_>>();
 
-    coll.insert_many(docs.clone(), None).await?;
+    coll.insert_many(docs.clone()).await?;
 
     Ok(docs
         .into_iter()
