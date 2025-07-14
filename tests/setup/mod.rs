@@ -52,6 +52,7 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 },
             ],
             connectors: vec![Connector {
+                enabled: true,
                 name: CONNECTOR_NAME.to_owned(),
                 batch: None,
                 source: SourceServiceConfigReference {

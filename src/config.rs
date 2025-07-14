@@ -122,12 +122,18 @@ pub enum GcpAuthConfig {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Connector {
+    #[serde(default = "default_connector_enabled")]
+    pub enabled: bool,
     pub name: String,
     pub batch: Option<BatchConfig>,
     pub source: SourceServiceConfigReference,
     pub middlewares: Option<Vec<ServiceConfigReference>>,
     pub schemas: Option<Vec<SchemaServiceConfigReference>>,
     pub sinks: Vec<ServiceConfigReference>,
+}
+
+fn default_connector_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -161,7 +167,7 @@ pub enum BatchConfig {
     // Window { step_seconds: u64 }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Serialize)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoding {
     Avro,
@@ -171,11 +177,6 @@ pub enum Encoding {
     // e.g. Protobuf, MsgPack, etc.
     // This can be used for pathtrough or in
     // combination with middlewares
+    #[default]
     Other,
-}
-
-impl Default for Encoding {
-    fn default() -> Self {
-        Encoding::Other
-    }
 }

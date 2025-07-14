@@ -22,7 +22,7 @@ struct SchemaDefinition {
 pub async fn listen_streams(done_ch: Sender<String>, cfg: Config) -> anyhow::Result<()> {
     let service_container = ServiceFactory::new(&cfg).await?;
 
-    for connector_cfg in cfg.connectors.iter().cloned() {
+    for connector_cfg in cfg.connectors.iter().filter(|c| c.enabled).cloned() {
         let done_ch = done_ch.clone();
         let schemas = init_schemas(connector_cfg.schemas.as_ref(), &service_container).await?;
         let source_schema = find_schema(connector_cfg.source.schema_id.clone(), schemas.as_ref());

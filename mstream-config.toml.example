@@ -51,6 +51,7 @@ timeout_sec = 20
 
 # Connector Configurations
 [[connectors]]
+enabled = true
 name = "mongodb-source-connector"
 # Configure the source MongoDB collection to watch for changes
 # Optional: reference a schema by ID
@@ -69,6 +70,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "basic-mongodb-connector"
 # Simple configuration without schema filtering
 source = { service_name = "mongodb-source", resource = "simple_collection", output_encoding = "bson" }
@@ -78,6 +80,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "kafka-source-connector"
 # Configure Kafka as a source
 source = { service_name = "kafka-cloud", resource = "source_topic", input_encoding = "avro", output_encoding = "json", schema_id = "kafka_schema" }
@@ -91,6 +94,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "pubsub-source-connector"
 # Configure PubSub as a source
 source = { service_name = "pubsub-example", resource = "projects/your-project/subscriptions/example-subscription", input_encoding = "avro", output_encoding = "json" }
@@ -104,6 +108,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "middleware-example-connector"
 source = { service_name = "mongodb-source", resource = "users", output_encoding = "bson", schema_id = "user_schema" }
 # Define available schemas
@@ -126,6 +131,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "avro-middleware-connector"
 source = { service_name = "kafka-cloud", resource = "source_events", input_encoding = "avro", output_encoding = "avro", schema_id = "events_schema" }
 # Define schemas
@@ -146,6 +152,7 @@ sinks = [
 # examples for batch processing
 
 [[connectors]]
+enabled = true
 name = "batch-mongodb-connector"
 # Configure batch processing with a count of 100 events per batch
 batch = { kind = "count", size = 100 }
@@ -155,6 +162,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "batch-with-schema-connector"
 # Larger batch size for high-throughput processing
 batch = { kind = "count", size = 500 }
@@ -167,6 +175,7 @@ sinks = [
 ]
 
 [[connectors]]
+enabled = true
 name = "batch-middleware-connector"
 # Batch processing with middleware transformations
 batch = { kind = "count", size = 200 }
