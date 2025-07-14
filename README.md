@@ -107,6 +107,7 @@ Each connector can define multiple schemas that can be referenced by ID at diffe
 
 ```toml
 [[connectors]]
+enabled = true
 name = "multi-schema-example"
 # Define all schemas used in this connector
 schemas = [
@@ -156,6 +157,7 @@ Important rules:
 
 ```toml
 [[connectors]]
+enabled = true
 name = "format-conversion-example"
 # Source with explicit input and output encodings
 # *mind that toml does not support new lines for [inline tables](https://toml.io/en/v1.0.0#inline-table)
@@ -174,6 +176,7 @@ This allows for flexible pipelines where data can be filtered differently for di
 
 ```toml
 [[connectors]]
+enabled = true
 name = "schema-inheritance-example"
 # Define schemas
 schemas = [
@@ -237,6 +240,7 @@ Batch processing is configured at the connector level using the `batch` paramete
 
 ```toml
 [[connectors]]
+enabled = true
 name = "high-throughput-connector"
 # Configure batch processing with count-based batching
 batch = { kind = "count", size = 100 }
@@ -283,6 +287,7 @@ Batch processing works seamlessly with existing schema validation and middleware
 
 ```toml
 [[connectors]]
+enabled = true
 name = "batch-with-middleware"
 batch = { kind = "count", size = 200 }
 source = { service_name = "kafka-cloud", resource = "batch_events", input_encoding = "avro", output_encoding = "json", schema_id = "batch_schema" }
@@ -332,6 +337,7 @@ In your connector configuration, you can specify one or more middlewares:
 
 ```toml
 [[connectors]]
+enabled = true
 name = "employee-connector"
 source = { service_name = "mongodb-local", resource = "employees", output_encoding = "bson" }
 # Add middleware transformations
