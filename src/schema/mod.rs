@@ -42,6 +42,13 @@ impl Schema {
         Ok(parsed)
     }
 
+    pub fn try_as_avro(&self) -> Result<&AvroSchema, anyhow::Error> {
+        match self {
+            Self::Avro(schema) => Ok(schema),
+            _ => Err(anyhow::anyhow!("schema is not Avro")),
+        }
+    }
+
     pub fn as_avro(&self) -> Option<&AvroSchema> {
         match self {
             Self::Avro(schema) => Some(schema),
