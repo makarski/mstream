@@ -1,6 +1,6 @@
 [package]
 name = "mstream"
-version = "0.17.1"
+version = "0.18.0"
 edition = "2021"
 authors = ["Simon Makarski"]
 
