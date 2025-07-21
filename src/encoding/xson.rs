@@ -251,7 +251,11 @@ impl TryFrom<JsonBatchBytesWithSchema<'_>> for JsonBytes {
             Schema::Undefined => {
                 let mut combined_data = vec![b'['];
 
-                for item in value {
+                for (i, item) in value.enumerate() {
+                    if i > 0 {
+                        combined_data.push(b',');
+                    }
+
                     combined_data.push(b',');
                     combined_data.extend(item.data);
                 }
@@ -277,18 +281,7 @@ impl TryFrom<JsonBatchBytesWithSchema<'_>> for BsonBytes {
                 let combined_data = bson::to_vec(&combined_data)?;
                 Ok(BsonBytes(combined_data))
             }
-            Schema::Undefined => {
-                let mut combined_data = Vec::new();
-                combined_data.push(b'[');
-
-                for item in value {
-                    combined_data.push(b',');
-                    combined_data.extend(item.data);
-                }
-
-                combined_data.push(b']');
-                Ok(BsonBytes(combined_data))
-            }
+            Schema::Undefined => value.try_into().and_then(|jb: JsonBytes| jb.try_into()),
         }
     }
 }
@@ -336,8 +329,10 @@ impl TryFrom<BsonBatchBytesWithSchema<'_>> for JsonBytes {
             Schema::Undefined => {
                 let mut combined_data = vec![b'['];
 
-                for item in value {
-                    combined_data.push(b',');
+                for (i, item) in value.enumerate() {
+                    if i > 0 {
+                        combined_data.push(b',');
+                    }
                     let json_b: JsonBytes = BsonBytes(item.data).try_into()?;
                     combined_data.extend(json_b.0);
                 }

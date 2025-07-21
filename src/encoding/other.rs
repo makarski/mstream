@@ -1,3 +1,5 @@
+use std::convert::TryFrom;
+
 pub struct OtherBytes(pub Vec<Vec<u8>>);
 
 impl TryFrom<OtherBytes> for Vec<u8> {
