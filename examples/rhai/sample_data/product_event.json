@@ -1,0 +1,11 @@
+{
+    "id": "prod_456",
+    "name": "Wireless Headphones",
+    "category": "electronics",
+    "price": 79.99,
+    "discount_percentage": 15,
+    "quantity": 25,
+    "active": true,
+    "description": "High-quality wireless headphones with noise cancellation",
+    "created_at": "2023-12-01T09:00:00Z"
+}

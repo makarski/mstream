@@ -15,7 +15,8 @@ mstream creates connectors that move data between various systems with flexible 
 ## Key Features
 
 - **Multiple Destination Support**: Stream from one source to multiple sinks simultaneously
-- **Middleware Processing**: Transform data through HTTP services before delivery
+- **Middleware Processing**: Transform data through HTTP services or user-defined scripts before delivery
+- **User-Defined Functions**: Execute custom Rhai scripts for complex data transformations
 - **Schema Validation**: Use AVRO schemas to validate and filter document fields
 - **Format Flexibility**: Convert between common data formats (BSON, JSON, Avro)
 - **Batch Processing**: Collect and process multiple events as a batch for improved performance
@@ -50,7 +51,7 @@ graph TB
         encoder[["`Format Encoder
         (Json, Avro, Bson)`"]]
         middleware[["`Middlewares
-        (HTTP Transform)`"]]
+        (HTTP Transform, UDF Scripts)`"]]
         batch_processor[["`Batch Processor`"]]
     end
 
@@ -354,13 +355,48 @@ sinks = [
 
 #### HTTP Middleware
 
-The currently implemented middleware type is HTTP, which:
+One type of middleware is HTTP, which:
 
 1. Sends the event data to an external HTTP endpoint
 2. Receives the transformed data as the response
 3. Passes the transformed data to the next middleware or sink
 
 Each middleware can specify its own encoding format, allowing for flexible transformation chains that convert between different data formats as needed.
+
+#### UDF (User-Defined Function) Middleware
+
+UDF middleware allows you to transform data using custom scripts written in the Rhai scripting language. This provides powerful data transformation capabilities while maintaining security through sandboxed execution.
+
+**Features:**
+- Safe, sandboxed script execution
+- Resource limits (operations, memory, execution depth)
+- Built-in JSON processing functions
+- Binary data handling through base64 encoding
+
+**Configuration:**
+```toml
+[[services]]
+provider = "udf"
+name = "udf-rhai"
+engine = { kind = "rhai" }
+script_path = "/my/script/path"
+
+middlewares = [
+    { service_name = "udf-rhai", resource = "json_transform.rhai", output_encoding = "json" },
+]
+```
+
+**Script Requirements:**
+Scripts must define a `transform` function with the signature:
+```rhai
+fn transform(input, attributes) {
+    // Process data and return result
+    result(transformed_data, updated_attributes)
+}
+```
+
+**Examples:**
+See the [examples/rhai](./examples/rhai) directory for complete script examples including JSON transformation, attribute enrichment, and data filtering.
 
 #### Data Flow with Middleware
 

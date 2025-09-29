@@ -16,7 +16,7 @@ pub trait EventSource {
     async fn listen(&mut self, events: Sender<SourceEvent>) -> anyhow::Result<()>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SourceEvent {
     pub raw_bytes: Vec<u8>,
     pub document: Option<Document>,
