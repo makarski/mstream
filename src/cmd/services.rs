@@ -11,9 +11,12 @@ use mongodb::Client;
 use crate::config::Encoding;
 use crate::config::SchemaServiceConfigReference;
 use crate::config::SourceServiceConfigReference;
+use crate::config::UdfEngine;
 use crate::config::{Config, GcpAuthConfig, Service, ServiceConfigReference};
 use crate::http::{self, middleware::HttpMiddleware};
 use crate::kafka::{consumer::KafkaConsumer, producer::KafkaProducer};
+use crate::middleware::udf::rhai::RhaiMiddleware;
+use crate::middleware::udf::UdfMiddleware;
 use crate::middleware::MiddlewareProvider;
 use crate::mongodb::{db_client, persister::MongoDbPersister, MongoDbChangeStreamListener};
 use crate::pubsub::{
@@ -113,6 +116,22 @@ impl<'a> ServiceFactory<'a> {
                     name
                 ),
             },
+            Service::Udf {
+                name,
+                script_path,
+                engine,
+            } => match engine {
+                UdfEngine::Rhai => Ok(MiddlewareProvider::Udf(UdfMiddleware::Rhai(
+                    RhaiMiddleware::new(script_path.clone(), midware_config.resource.clone())
+                        .with_context(|| {
+                            format!(
+                                "failed initializing RhaiScript middleware provider: {}:{}",
+                                name, script_path
+                            )
+                        })?,
+                ))),
+            },
+
             _ => bail!(
                 "initializing middleware: unsupported service: {}",
                 service_config.name()
@@ -209,6 +228,10 @@ impl<'a> ServiceFactory<'a> {
 
                 Ok(SinkProvider::Http(http_service))
             }
+            _ => bail!(
+                "publisher_service: unsupported service: {}",
+                service_config.name()
+            ),
         }
     }
 
@@ -234,6 +257,12 @@ impl<'a> ServiceFactory<'a> {
                 return Ok(Encoding::default());
             }
             Service::Http { .. } => {
+                bail!(
+                    "initializing source provider: unsupported service: {}",
+                    service_config.name()
+                )
+            }
+            _ => {
                 bail!(
                     "initializing source provider: unsupported service: {}",
                     service_config.name()

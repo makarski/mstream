@@ -7,13 +7,13 @@ mod http;
 mod kafka;
 mod mongodb;
 mod sink;
-mod source;
 
 pub mod cmd;
 pub mod config;
 pub mod middleware;
 pub mod pubsub;
 pub mod schema;
+pub mod source;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path).with_context(|| "failed to load config")?;

@@ -66,6 +66,19 @@ pub enum Service {
         timeout_sec: Option<u64>,
         tcp_keepalive_sec: Option<u64>,
     },
+    #[serde(rename = "udf")]
+    Udf {
+        name: String,
+        script_path: String,
+        engine: UdfEngine,
+    },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "kind")]
+pub enum UdfEngine {
+    #[serde(rename = "rhai")]
+    Rhai,
 }
 
 fn deserialize_hasmap_with_env_vals<'de, D>(
@@ -105,6 +118,7 @@ impl Service {
             Service::Kafka { name, .. } => name.as_str(),
             Service::MongoDb { name, .. } => name.as_str(),
             Service::Http { name, .. } => name.as_str(),
+            Service::Udf { name, .. } => name.as_str(),
         }
     }
 }
