@@ -125,7 +125,7 @@ impl<'a> ServiceFactory<'a> {
                     RhaiMiddleware::new(script_path.clone(), midware_config.resource.clone())
                         .with_context(|| {
                             format!(
-                                "failed initalizing RhaiScript middleware provider: {}:{}",
+                                "failed initializing RhaiScript middleware provider: {}:{}",
                                 name, script_path
                             )
                         })?,
