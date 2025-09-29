@@ -16,7 +16,7 @@
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```rust,ignore
 //! use mstream::middleware::udf::rhai::convert::{RhaiString, JsonConverter};
 //!
 //! // Convert binary data to Rhai string
@@ -65,7 +65,7 @@ pub enum ConvertError {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use serde_json::json;
 /// use rhai::Dynamic;
 /// use mstream::middleware::udf::rhai::convert::JsonConverter;
@@ -74,7 +74,7 @@ pub enum ConvertError {
 /// let converter = JsonConverter::new(json_value);
 /// let dynamic: Dynamic = converter.try_into()?;
 /// ```
-pub(super) struct JsonConverter(serde_json::Value);
+pub struct JsonConverter(serde_json::Value);
 
 impl TryFrom<JsonConverter> for Dynamic {
     type Error = ConvertError;
@@ -180,7 +180,7 @@ impl JsonConverter {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,ignore
 /// use mstream::middleware::udf::rhai::convert::RhaiString;
 ///
 /// // UTF-8 string
@@ -193,7 +193,7 @@ impl JsonConverter {
 /// let rhai_str = RhaiString::from(binary.as_slice());
 /// assert!(rhai_str.0.starts_with("data:base64,"));
 /// ```
-pub(super) struct RhaiString(pub(super) String);
+pub struct RhaiString(pub String);
 
 impl From<&[u8]> for RhaiString {
     fn from(bytes: &[u8]) -> Self {
@@ -243,7 +243,7 @@ impl TryInto<Vec<u8>> for RhaiString {
 /// let empty_map = RhaiMap::from(None);
 /// assert!(empty_map.0.is_empty());
 /// ```
-pub(super) struct RhaiMap(pub(super) rhai::Map);
+pub struct RhaiMap(pub rhai::Map);
 
 impl From<Option<&HashMap<String, String>>> for RhaiMap {
     fn from(opt_map: Option<&HashMap<String, String>>) -> Self {

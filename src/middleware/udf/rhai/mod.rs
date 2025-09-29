@@ -97,7 +97,7 @@ use crate::{
     source::SourceEvent,
 };
 
-mod convert;
+pub mod convert;
 
 /// The required name for the transformation function in Rhai scripts
 const UDF_NAME: &str = "transform";
