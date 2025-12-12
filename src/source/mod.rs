@@ -23,34 +23,15 @@ pub struct SourceEvent {
     pub is_framed_batch: bool,
 }
 
-#[derive(Debug)]
-pub struct SourceBatch(Vec<SourceEvent>);
-
-impl SourceBatch {
-    pub fn new(events: Vec<SourceEvent>) -> Self {
-        Self(events)
-    }
-}
-
-impl IntoIterator for SourceBatch {
-    type Item = SourceEvent;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl SourceBatch {
-    pub fn encoding(&self) -> anyhow::Result<Encoding> {
-        self.0
-            .first()
-            .map(|e| e.encoding.clone())
-            .ok_or_else(|| anyhow::anyhow!("cannot determine encoding of empty source event batch"))
-    }
-
-    pub fn attributes(&self) -> Option<&HashMap<String, String>> {
-        self.0.first().and_then(|e| e.attributes.as_ref())
+#[cfg(test)]
+impl Default for SourceEvent {
+    fn default() -> Self {
+        Self {
+            raw_bytes: Vec::new(),
+            attributes: None,
+            encoding: Encoding::Json,
+            is_framed_batch: false,
+        }
     }
 }
 
