@@ -30,9 +30,12 @@
 //! ```
 
 use base64::engine::{general_purpose, Engine as _};
+use mongodb::bson::{self, Bson};
 use rhai::{Array, Dynamic, Map};
 use serde_json::Value;
 use std::{collections::HashMap, convert::TryFrom};
+
+use crate::config::Encoding;
 
 /// Errors that can occur during type conversions
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +59,277 @@ pub enum ConvertError {
     /// Invalid data URI format
     #[error("Invalid data URI format: expected 'data:base64,' prefix")]
     InvalidDataUri,
+
+    #[error("Failed to decode BSON: {0}")]
+    BsonDecodeError(#[from] bson::de::Error),
+
+    #[error("Failed to encode BSON: {0}")]
+    BsonEncodeError(#[from] bson::ser::Error),
+
+    #[error("Failed to decode JSON: {0}")]
+    JsonDecodeError(#[from] serde_json::Error),
+
+    #[error("Unsupported encoding: {0:?}")]
+    UnsupportedEncoding(Encoding),
+
+    #[error("Script must return a Map/Object for BSON encoding")]
+    InvalidBsonStructure,
+}
+
+pub trait RhaiEncodingExt {
+    /// Decodes raw bytes into a Rhai Dynamic value based on the encoding
+    fn decode_rhai(&self, bytes: &[u8], is_framed_batch: bool) -> Result<Dynamic, ConvertError>;
+
+    /// Encodes a Rhai Dynamic value back into bytes based on the encoding
+    fn encode_rhai(&self, data: Dynamic, as_framed_batch: bool) -> Result<Vec<u8>, ConvertError>;
+}
+
+impl RhaiEncodingExt for Encoding {
+    fn decode_rhai(&self, bytes: &[u8], is_framed_batch: bool) -> Result<Dynamic, ConvertError> {
+        if is_framed_batch {
+            return Self::decode_framed(bytes);
+        }
+
+        match self {
+            Encoding::Bson => {
+                let doc = mongodb::bson::from_slice::<mongodb::bson::Document>(bytes)?;
+                // Reuse existing BsonConverter logic
+                let converter = BsonConverter(Bson::Document(doc));
+                Dynamic::try_from(converter)
+            }
+            Encoding::Json => {
+                // Use native Rhai serde support (efficient)
+                serde_json::from_slice(bytes).map_err(ConvertError::from)
+            }
+            _ => Err(ConvertError::UnsupportedEncoding(self.clone())),
+        }
+    }
+
+    fn encode_rhai(&self, data: Dynamic, as_framed_batch: bool) -> Result<Vec<u8>, ConvertError> {
+        if as_framed_batch {
+            return Self::encode_framed(data, self);
+        }
+
+        match self {
+            Encoding::Bson => {
+                let converter = BsonConverter::try_from(data)?;
+                match converter.0 {
+                    Bson::Document(doc) => Ok(mongodb::bson::to_vec(&doc)?),
+                    _ => Err(ConvertError::InvalidBsonStructure),
+                }
+            }
+            Encoding::Json => {
+                // Use native Rhai serde support
+                serde_json::to_vec(&data).map_err(ConvertError::from)
+            }
+            _ => Err(ConvertError::UnsupportedEncoding(self.clone())),
+        }
+    }
+}
+
+impl Encoding {
+    fn decode_framed(bytes: &[u8]) -> Result<Dynamic, ConvertError> {
+        use crate::encoding::framed::BatchContentType;
+
+        let (items, content_type) =
+            crate::encoding::framed::decode(bytes).map_err(|e| ConvertError::UnsupportedType {
+                type_name: format!("Framed decode error: {}", e),
+            })?;
+
+        let mut array = Vec::with_capacity(items.len());
+
+        for item in items {
+            let val = match content_type {
+                BatchContentType::Bson => {
+                    let doc = mongodb::bson::from_slice::<mongodb::bson::Document>(&item)?;
+                    Dynamic::try_from(BsonConverter(Bson::Document(doc)))?
+                }
+                BatchContentType::Json => {
+                    serde_json::from_slice(&item).map_err(ConvertError::from)?
+                }
+                BatchContentType::Raw => Dynamic::from_blob(item),
+                _ => {
+                    return Err(ConvertError::UnsupportedType {
+                        type_name: "Avro/Other in Framed".into(),
+                    })
+                }
+            };
+            array.push(val);
+        }
+        Ok(Dynamic::from_array(array))
+    }
+
+    fn encode_framed(data: Dynamic, target_encoding: &Encoding) -> Result<Vec<u8>, ConvertError> {
+        use crate::encoding::framed::{BatchContentType, FramedWriter};
+
+        if !data.is_array() {
+            return Err(ConvertError::UnsupportedType {
+                type_name: "Expected Array for Framed encoding".into(),
+            });
+        }
+
+        let array = data.into_array().expect("checked is_array");
+        let capacity = array.len() * 128; // Heuristic pre-allocation
+
+        let content_type = match target_encoding {
+            Encoding::Json => BatchContentType::Json,
+            _ => BatchContentType::Bson,
+        };
+
+        let mut writer = FramedWriter::new(content_type, capacity);
+
+        for item in array {
+            match content_type {
+                BatchContentType::Json => {
+                    writer
+                        .add_item_with(|buf| {
+                            serde_json::to_writer(buf, &item).map_err(ConvertError::from)
+                        })
+                        .map_err(|e| ConvertError::UnsupportedType {
+                            type_name: format!("Json encode error: {}", e),
+                        })?;
+                }
+                BatchContentType::Bson => {
+                    let converter = BsonConverter::try_from(item)?;
+                    match converter.0 {
+                        Bson::Document(doc) => {
+                            // Try to use to_writer if available, otherwise fallback to to_vec
+                            // Assuming to_writer is available on Document
+                            writer
+                                .add_item_with(|buf| {
+                                    doc.to_writer(buf).map_err(ConvertError::BsonEncodeError)
+                                })
+                                .map_err(|e| ConvertError::UnsupportedType {
+                                    type_name: format!("Bson encode error: {}", e),
+                                })?;
+                        }
+                        _ => return Err(ConvertError::InvalidBsonStructure),
+                    }
+                }
+                _ => {
+                    return Err(ConvertError::UnsupportedType {
+                        type_name: "Unsupported content type".into(),
+                    })
+                }
+            }
+        }
+
+        Ok(writer.finish())
+    }
+}
+
+/// Converter between `mongodb::bson::Bson` and Rhai `Dynamic`
+pub struct BsonConverter(pub Bson);
+
+impl TryFrom<BsonConverter> for Dynamic {
+    type Error = ConvertError;
+
+    fn try_from(converter: BsonConverter) -> Result<Self, Self::Error> {
+        let value = converter.0;
+
+        Ok(match value {
+            Bson::Null => Dynamic::UNIT,
+            Bson::Boolean(b) => Dynamic::from(b),
+            Bson::Int32(i) => Dynamic::from(i as i64),
+            Bson::Int64(i) => Dynamic::from(i),
+            Bson::Double(f) => Dynamic::from(f),
+            Bson::String(s) => Dynamic::from(s),
+            Bson::Array(arr) => {
+                let mut rhai_arr = Array::new();
+                for item in arr {
+                    rhai_arr.push(Dynamic::try_from(BsonConverter(item))?);
+                }
+                Dynamic::from(rhai_arr)
+            }
+            Bson::Document(doc) => {
+                let mut rhai_map = Map::new();
+                for (key, value) in doc {
+                    rhai_map.insert(key.into(), Dynamic::try_from(BsonConverter(value))?);
+                }
+                Dynamic::from(rhai_map)
+            }
+            Bson::DateTime(dt) => {
+                // Convert to EJSON format: { "$date": { "$numberLong": "millis" } }
+                let mut inner = Map::new();
+                inner.insert(
+                    "$numberLong".into(),
+                    Dynamic::from(dt.timestamp_millis().to_string()),
+                );
+                let mut map = Map::new();
+                map.insert("$date".into(), Dynamic::from(inner));
+                Dynamic::from(map)
+            }
+            Bson::ObjectId(oid) => {
+                // Convert to EJSON format: { "$oid": "hex" }
+                let mut map = Map::new();
+                map.insert("$oid".into(), Dynamic::from(oid.to_string()));
+                Dynamic::from(map)
+            }
+            _ => Dynamic::UNIT,
+        })
+    }
+}
+
+impl TryFrom<Dynamic> for BsonConverter {
+    type Error = ConvertError;
+
+    fn try_from(dynamic: Dynamic) -> Result<Self, Self::Error> {
+        let value = if dynamic.is_unit() {
+            Bson::Null
+        } else if let Some(b) = dynamic.as_bool().ok() {
+            Bson::Boolean(b)
+        } else if let Some(i) = dynamic.as_int().ok() {
+            Bson::Int64(i)
+        } else if let Some(f) = dynamic.as_float().ok() {
+            Bson::Double(f)
+        } else if let Some(s) = dynamic.clone().into_immutable_string().ok() {
+            Bson::String(s.to_string())
+        } else if let Some(arr) = dynamic.clone().try_cast::<Array>() {
+            let mut bson_arr = Vec::new();
+            for item in arr {
+                let converter = BsonConverter::try_from(item)?;
+                bson_arr.push(converter.0);
+            }
+            Bson::Array(bson_arr)
+        } else if let Some(map) = dynamic.clone().try_cast::<Map>() {
+            // Check for EJSON Date: { "$date": ... }
+            if let Some(date_val) = map.get("$date") {
+                if let Some(inner) = date_val.clone().try_cast::<Map>() {
+                    if let Some(millis_str) = inner
+                        .get("$numberLong")
+                        .and_then(|v| v.clone().into_immutable_string().ok())
+                    {
+                        if let Ok(millis) = millis_str.parse::<i64>() {
+                            return Ok(BsonConverter(Bson::DateTime(
+                                mongodb::bson::DateTime::from_millis(millis),
+                            )));
+                        }
+                    }
+                }
+            }
+
+            // Check for EJSON ObjectId: { "$oid": "hex" }
+            if let Some(oid_val) = map.get("$oid") {
+                if let Some(oid_str) = oid_val.clone().into_immutable_string().ok() {
+                    if let Ok(oid) = mongodb::bson::oid::ObjectId::parse_str(&oid_str) {
+                        return Ok(BsonConverter(Bson::ObjectId(oid)));
+                    }
+                }
+            }
+
+            let mut bson_doc = mongodb::bson::Document::new();
+            for (key, value) in map {
+                let key_str = key.as_str();
+                let converter = BsonConverter::try_from(value)?;
+                bson_doc.insert(key_str.to_string(), converter.0);
+            }
+            Bson::Document(bson_doc)
+        } else {
+            Bson::String(dynamic.to_string())
+        };
+
+        Ok(BsonConverter(value))
+    }
 }
 
 /// Converter between `serde_json::Value` and Rhai `Dynamic`

@@ -16,12 +16,12 @@ pub trait EventSource {
     async fn listen(&mut self, events: Sender<SourceEvent>) -> anyhow::Result<()>;
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SourceEvent {
     pub raw_bytes: Vec<u8>,
-    pub document: Option<Document>,
     pub attributes: Option<HashMap<String, String>>,
     pub encoding: Encoding,
+    pub is_framed_batch: bool,
 }
 
 #[derive(Debug)]
@@ -33,20 +33,21 @@ impl SourceBatch {
     }
 }
 
-impl Iterator for SourceBatch {
+impl IntoIterator for SourceBatch {
     type Item = SourceEvent;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.pop()
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
 impl SourceBatch {
-    pub fn encoding(&self) -> Encoding {
+    pub fn encoding(&self) -> anyhow::Result<Encoding> {
         self.0
             .first()
             .map(|e| e.encoding.clone())
-            .unwrap_or_default()
+            .ok_or_else(|| anyhow::anyhow!("cannot determine encoding of empty source event batch"))
     }
 
     pub fn attributes(&self) -> Option<&HashMap<String, String>> {
@@ -65,9 +66,9 @@ impl SourceEvent {
             .apply_schema(&self.encoding, target_encoding, schema)
             .map(|b| SourceEvent {
                 raw_bytes: b,
-                document: self.document,
                 attributes: self.attributes,
                 encoding: target_encoding.clone(),
+                is_framed_batch: self.is_framed_batch,
             })
     }
 }

@@ -1,3 +1,3 @@
 pub mod avro;
-pub mod other;
+pub mod framed;
 pub mod xson;

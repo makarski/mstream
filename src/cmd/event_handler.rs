@@ -2,7 +2,7 @@ use core::iter::Iterator;
 
 use anyhow::{anyhow, bail};
 use log::{debug, error, info};
-use tokio::sync::mpsc::Receiver;
+use tokio::{sync::mpsc::Receiver, task::block_in_place};
 
 use crate::{
     config::{Encoding, ServiceConfigReference},
@@ -31,9 +31,11 @@ impl EventHandler {
                 Some(event) => {
                     debug!("processing event: {:?}", event);
 
-                    let event = event
-                        .apply_schema(Some(&self.source_output_encoding), &self.source_schema)
-                        .map_err(|err| anyhow!("failed to apply source schema: {}", err))?;
+                    let event = block_in_place(|| {
+                        event
+                            .apply_schema(Some(&self.source_output_encoding), &self.source_schema)
+                            .map_err(|err| anyhow!("failed to apply source schema: {}", err))
+                    })?;
 
                     if let Err(err) = self.process_event(event).await {
                         error!("{}: failed to process event: {}", &self.connector_name, err)
@@ -58,10 +60,8 @@ impl EventHandler {
             let mut batch: Vec<SourceEvent> = Vec::with_capacity(batch_size);
 
             while batch.len() < batch_size {
-                let mut buf = Vec::with_capacity(batch_size - batch.len());
-                let event_count = events_rx
-                    .recv_many(&mut buf, batch_size - batch.len())
-                    .await;
+                let limit = batch_size - batch.len();
+                let event_count = events_rx.recv_many(&mut batch, limit).await;
 
                 if event_count == 0 {
                     bail!(
@@ -70,7 +70,6 @@ impl EventHandler {
                     );
                 }
 
-                batch.extend(buf);
                 debug!("collected events for batch: {}", batch.len());
             }
 
@@ -87,26 +86,26 @@ impl EventHandler {
     }
 
     async fn process_event_batch(&mut self, event_batch: SourceBatch) -> anyhow::Result<()> {
-        let source_encoding = event_batch.encoding();
+        let source_encoding = event_batch.encoding()?;
         let attributes = event_batch.attributes().cloned();
-        let payloads = event_batch
-            .into_iter()
-            .map(|event| event.raw_bytes.clone())
-            .collect::<Vec<_>>();
+        let payloads = event_batch.into_iter().map(|event| event.raw_bytes);
 
         let schema_encoder = SchemaEncoder::new_batch(payloads);
-        let batch_event = schema_encoder
-            .apply_schema(
-                &source_encoding,
-                &self.source_output_encoding,
-                &self.source_schema,
-            )
-            .map(|payload| SourceEvent {
-                raw_bytes: payload,
-                document: None,
-                attributes: attributes,
-                encoding: self.source_output_encoding.clone(),
-            })?;
+
+        let batch_event = block_in_place(|| {
+            schema_encoder
+                .apply_schema(
+                    &source_encoding,
+                    &self.source_output_encoding,
+                    &self.source_schema,
+                )
+                .map(|payload| SourceEvent {
+                    raw_bytes: payload,
+                    attributes: attributes,
+                    encoding: self.source_output_encoding.clone(),
+                    is_framed_batch: true,
+                })
+        })?;
 
         debug!("generated SourceEvent for batch: {:?}", batch_event);
 
@@ -122,27 +121,31 @@ impl EventHandler {
 
         if let Some(middlewares) = &mut self.middlewares {
             for (mdlw_cfg, middleware, schema) in middlewares.iter_mut() {
-                transformed_source_event = middleware
-                    .transform(transformed_source_event)
-                    .await
-                    .and_then(|event| event.apply_schema(Some(&mdlw_cfg.output_encoding), &schema))
-                    .map_err(|err| {
-                        anyhow!(
-                            "middleware: {}:{}. schema: {:?}: {}",
-                            mdlw_cfg.service_name,
-                            mdlw_cfg.resource,
-                            mdlw_cfg.schema_id,
-                            err
-                        )
-                    })?;
+                transformed_source_event = middleware.transform(transformed_source_event).await?;
+
+                transformed_source_event = block_in_place(|| {
+                    transformed_source_event.apply_schema(Some(&mdlw_cfg.output_encoding), &schema)
+                })
+                .map_err(|err| {
+                    anyhow!(
+                        "middleware: {}:{}. schema: {:?}: {}",
+                        mdlw_cfg.service_name,
+                        mdlw_cfg.resource,
+                        mdlw_cfg.schema_id,
+                        err
+                    )
+                })?;
             }
         }
 
         for (sink_cfg, publisher, schema) in self.publishers.iter_mut() {
-            let sink_event: SinkEvent = match transformed_source_event
-                .clone()
-                .apply_schema(Some(&sink_cfg.output_encoding), &schema)
-            {
+            let sink_event_result = block_in_place(|| {
+                transformed_source_event
+                    .clone()
+                    .apply_schema(Some(&sink_cfg.output_encoding), &schema)
+            });
+
+            let sink_event: SinkEvent = match sink_event_result {
                 Ok(source_event) => {
                     debug!("transforming into sink event: {:?}", source_event);
                     source_event.into()
@@ -156,13 +159,14 @@ impl EventHandler {
                 }
             };
 
+            // maybe we need a config in publisher, ie explode batch
             match publisher
                 .publish(sink_event, sink_cfg.resource.clone(), None)
                 .await
             {
                 Ok(message) => {
                     info!(
-                        "published a message to: {}:{:?}. stream: {}. resource: {}",
+                        "published a message to: {}:{}. stream: {}. resource: {}",
                         sink_cfg.service_name, message, &self.connector_name, sink_cfg.resource,
                     );
                 }

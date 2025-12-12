@@ -181,16 +181,10 @@ pub enum BatchConfig {
     // Window { step_seconds: u64 }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Serialize, Default)]
+#[derive(Deserialize, Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Encoding {
     Avro,
     Json,
     Bson,
-    // Other can be used for any other encoding
-    // e.g. Protobuf, MsgPack, etc.
-    // This can be used for pathtrough or in
-    // combination with middlewares
-    #[default]
-    Other,
 }

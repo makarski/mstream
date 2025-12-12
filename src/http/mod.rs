@@ -74,13 +74,14 @@ impl HttpService {
         payload: Vec<u8>,
         encoding: Encoding,
         attrs: Option<HashMap<String, String>>,
+        is_framed_batch: bool,
     ) -> anyhow::Result<String> {
         let full_url = self
             .host_url
             .join(path)
             .with_context(|| anyhow!("failed to construct the url for path: {}", path))?;
 
-        let headers = self.headers_from_attrs(attrs, encoding)?;
+        let headers = self.headers_from_attrs(attrs, encoding, is_framed_batch)?;
         let mut attempt = 0;
         let mut last_error = None;
 
@@ -198,26 +199,31 @@ impl HttpService {
         &self,
         attr: Option<HashMap<String, String>>,
         encoding: Encoding,
+        is_framed_batch: bool,
     ) -> anyhow::Result<HeaderMap> {
         let mut hmap = HeaderMap::new();
-        let _ = match encoding {
-            Encoding::Avro => hmap.insert(
+
+        if is_framed_batch {
+            hmap.insert(
                 HeaderName::from_static("content-type"),
-                HeaderValue::from_str("avro/binary")?,
-            ),
-            Encoding::Json => hmap.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_str("application/json")?,
-            ),
-            Encoding::Other => hmap.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_str("application/octet-stream")?,
-            ),
-            Encoding::Bson => hmap.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_str("application/bson")?,
-            ),
-        };
+                HeaderValue::from_str("application/x-mstream-framed")?,
+            );
+        } else {
+            let _ = match encoding {
+                Encoding::Avro => hmap.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_str("avro/binary")?,
+                ),
+                Encoding::Json => hmap.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_str("application/json")?,
+                ),
+                Encoding::Bson => hmap.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_str("application/bson")?,
+                ),
+            };
+        }
 
         if let Some(attr) = attr {
             for (name, value) in attr {

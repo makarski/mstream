@@ -162,25 +162,21 @@ impl EventSource for KafkaConsumer {
                 Ok(msg) => {
                     info!("received message from kafka topic: {}", msg.topic());
                     let payload = msg.payload().context("failed to get payload")?;
-
-                    let sender = events.clone();
                     let payload_vec = payload.to_vec();
-                    let encoding = self.encoding.clone();
 
-                    tokio::spawn(async move {
-                        if let Err(err) = sender
-                            .send(SourceEvent {
-                                raw_bytes: payload_vec,
-                                document: None,
-                                attributes: None,
-                                encoding,
-                            })
-                            .await
-                        {
-                            error!("failed to send event to channel: {}", err);
-                        }
-                    });
+                    if let Err(err) = events
+                        .send(SourceEvent {
+                            raw_bytes: payload_vec,
+                            attributes: None,
+                            encoding: self.encoding.clone(),
+                            is_framed_batch: false,
+                        })
+                        .await
+                    {
+                        error!("failed to send event to channel: {}", err);
+                    }
                 }
+
                 Err(err) => {
                     error!("failed to receive message from kafka topic: {}", err);
                 }

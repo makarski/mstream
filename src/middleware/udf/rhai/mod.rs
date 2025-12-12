@@ -90,12 +90,10 @@
 
 use std::{collections::HashMap, path::Path};
 
+use crate::middleware::udf::rhai::convert::{ConvertError, RhaiEncodingExt, RhaiMap};
+use crate::source::SourceEvent;
 use rhai::{Dynamic, AST};
-
-use crate::{
-    middleware::udf::rhai::convert::{ConvertError, JsonConverter, RhaiMap, RhaiString},
-    source::SourceEvent,
-};
+use tokio::task::block_in_place;
 
 pub mod convert;
 
@@ -279,35 +277,51 @@ impl RhaiMiddleware {
         &mut self,
         event: SourceEvent,
     ) -> Result<SourceEvent, RhaiMiddlewareError> {
-        let rhai_byte_string = RhaiString::from(event.raw_bytes.as_slice()).0;
-        let rhai_attributes: rhai::Map = RhaiMap::from(event.attributes.as_ref()).0;
+        block_in_place(|| {
+            let rhai_attributes: rhai::Map = RhaiMap::from(event.attributes.as_ref()).0;
 
-        let result = self
-            .engine
-            .call_fn::<TransformResult>(
-                &mut rhai::Scope::new(),
-                &self.compiled_script,
-                UDF_NAME,
-                (rhai_byte_string, rhai_attributes),
-            )
-            .map_err(|err| RhaiMiddlewareError::ExecutionError {
-                message: err.to_string(),
-                path: self.script_path.clone(),
-            })?;
-
-        let attributes = result.attributes().or_else(|| event.attributes);
-        let transformed_bytes: Vec<u8> =
-            RhaiString(result.data)
-                .try_into()
+            // 1. Input: Bytes -> Rhai Map
+            let rhai_input = event
+                .encoding
+                .decode_rhai(&event.raw_bytes, event.is_framed_batch)
                 .map_err(|e| RhaiMiddlewareError::DecodeError {
                     source: e,
                     path: self.script_path.clone(),
                 })?;
 
-        Ok(SourceEvent {
-            raw_bytes: transformed_bytes,
-            attributes,
-            ..event
+            // 2. Execute Script
+            let result = self
+                .engine
+                .call_fn::<TransformResult>(
+                    &mut rhai::Scope::new(),
+                    &self.compiled_script,
+                    UDF_NAME,
+                    (rhai_input, rhai_attributes),
+                )
+                .map_err(|err| RhaiMiddlewareError::ExecutionError {
+                    message: err.to_string(),
+                    path: self.script_path.clone(),
+                })?;
+
+            let attributes = result.attributes().or_else(|| event.attributes);
+
+            // 3. Output: Rhai Map -> Bytes
+            let raw_bytes = event
+                // todo: consider a case when middleware changes inner encoding?
+                // in this case the source event encoding (as here) will not be valid
+                .encoding
+                .encode_rhai(result.data, event.is_framed_batch)
+                .map_err(|e| RhaiMiddlewareError::ExecutionError {
+                    message: e.to_string(),
+                    path: self.script_path.clone(),
+                })?;
+
+            Ok(SourceEvent {
+                raw_bytes,
+                attributes,
+                encoding: event.encoding,
+                ..event
+            })
         })
     }
 
@@ -315,6 +329,14 @@ impl RhaiMiddleware {
     fn sandboxed_engine() -> rhai::Engine {
         let mut engine = rhai::Engine::new();
 
+        Self::configure_sandbox(&mut engine);
+        Self::configure_limits(&mut engine);
+        Self::register_api(&mut engine);
+
+        engine
+    }
+
+    fn configure_sandbox(engine: &mut rhai::Engine) {
         // Disable dangerous operations
         engine.disable_symbol("eval");
         engine.disable_symbol("load_file");
@@ -327,50 +349,133 @@ impl RhaiMiddleware {
         engine.disable_symbol("read_line");
         engine.disable_symbol("write");
         engine.disable_symbol("flush");
+    }
 
-        // Set resource limits
-        engine.set_max_operations(10_000);
-        engine.set_max_call_levels(10);
+    fn configure_limits(engine: &mut rhai::Engine) {
+        engine.set_max_operations(1_000_000);
+        engine.set_max_call_levels(64);
         engine.set_max_expr_depths(32, 32);
-        engine.set_max_string_size(4_096_000); // 4MB
-        engine.set_max_array_size(10_000);
-        engine.set_max_map_size(10_000);
+        engine.set_max_string_size(0); // unlimited
+        engine.set_max_array_size(0); // unlimited
+        engine.set_max_map_size(0); // unlimited
+    }
 
-        // Register custom types and functions
+    fn register_api(engine: &mut rhai::Engine) {
+        // Register custom types
         engine.register_type::<TransformResult>();
 
+        // Register result functions
         engine.register_fn(
             "result",
-            |data: String, attr: rhai::Map| -> TransformResult { TransformResult::new(data, attr) },
+            |data: Dynamic, attr: rhai::Map| -> TransformResult {
+                TransformResult::new(data, attr)
+            },
         );
-
-        engine.register_fn("result", |data: String| -> TransformResult {
+        engine.register_fn("result", |data: Dynamic| -> TransformResult {
             TransformResult::new(data, rhai::Map::new())
         });
 
-        engine.register_fn(
-            "json_decode",
-            |json_str: &str| -> Result<Dynamic, Box<rhai::EvalAltResult>> {
-                let json_value = serde_json::from_str(json_str)
-                    .map_err(|e| format!("Rhai JSON parse error: {}", e))?;
+        // Register utilities
+        engine.register_fn("timestamp_ms", Self::timestamp_ms);
+        engine.register_fn("hash_sha256", Self::hash_sha256);
+        engine.register_fn("mask_email", Self::mask_email);
+        engine.register_fn("mask_phone", Self::mask_phone);
+        engine.register_fn("mask_year_only", Self::mask_year_only);
+    }
 
-                let json_converter = JsonConverter::new(json_value);
-                Dynamic::try_from(json_converter)
-                    .map_err(|e: ConvertError| format!("JSON conversion error: {}", e).into())
-            },
-        );
+    fn timestamp_ms() -> i64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_millis() as i64,
+            Err(err) => {
+                log::warn!("system clock drift detected: {}", err);
+                0
+            }
+        }
+    }
 
-        engine.register_fn(
-            "json_encode",
-            |d: Dynamic| -> Result<String, Box<rhai::EvalAltResult>> {
-                let converter = JsonConverter::try_from(d)
-                    .map_err(|e: ConvertError| format!("JSON conversion error: {}", e))?;
-                serde_json::to_string(&converter.into_value())
-                    .map_err(|e| format!("Rhai JSON encode error: {}", e).into())
-            },
-        );
+    fn hash_sha256(input: rhai::Dynamic) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(input.to_string());
+        format!("{:x}", hasher.finalize())
+    }
 
-        engine
+    fn mask_email(email: &str) -> String {
+        let parts: Vec<&str> = email.split('@').collect();
+        if parts.len() != 2 {
+            return email.to_string();
+        }
+        let local = parts[0];
+        let domain = parts[1];
+        if local.len() <= 1 {
+            format!("*@{}", domain)
+        } else {
+            let first_char = local.chars().next().unwrap();
+            format!("{}***@{}", first_char, domain)
+        }
+    }
+
+    fn mask_phone(phone: &str) -> String {
+        let len = phone.len();
+        if len <= 4 {
+            return phone.to_string();
+        }
+        let visible = &phone[len - 4..];
+        let masked_len = len - 4;
+        let masked = "*".repeat(masked_len);
+        format!("{}{}", masked, visible)
+    }
+
+    fn mask_year_only(input: rhai::Dynamic) -> rhai::Dynamic {
+        use chrono::{DateTime, Datelike, TimeZone, Utc};
+        use rhai::Map;
+
+        // Helper to mask a DateTime to Jan 1st
+        let mask_date = |dt: DateTime<Utc>| -> DateTime<Utc> {
+            Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).unwrap()
+        };
+
+        // Case 1: Input is a string
+        if let Ok(date_str) = input.clone().into_string() {
+            // Try parsing as RFC3339 / ISO8601
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&date_str) {
+                let masked = mask_date(dt.with_timezone(&Utc));
+                // Return in same format (RFC3339)
+                return masked.to_rfc3339().into();
+            }
+            // Fallback for simple YYYY-MM-DD
+            if let Ok(dt) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                return format!("{}-01-01", dt.format("%Y")).into();
+            }
+            return input;
+        }
+
+        // Case 2: Input is a Map (MongoDB EJSON)
+        if let Some(map) = input.clone().try_cast::<Map>() {
+            if let Some(inner) = map.get("$date").and_then(|v| v.clone().try_cast::<Map>()) {
+                if let Some(millis_str) = inner
+                    .get("$numberLong")
+                    .and_then(|v| v.clone().into_string().ok())
+                {
+                    if let Ok(millis) = millis_str.parse::<i64>() {
+                        if let Some(dt) = Utc.timestamp_millis_opt(millis).single() {
+                            let masked = mask_date(dt);
+                            let new_millis = masked.timestamp_millis();
+
+                            // Reconstruct EJSON
+                            let mut new_inner = Map::new();
+                            new_inner.insert("$numberLong".into(), new_millis.to_string().into());
+                            let mut new_map = Map::new();
+                            new_map.insert("$date".into(), new_inner.into());
+                            return new_map.into();
+                        }
+                    }
+                }
+            }
+        }
+
+        input
     }
 
     /// Validates that the script defines exactly one transform function with correct signature
@@ -397,27 +502,30 @@ impl RhaiMiddleware {
 /// Result type returned by Rhai transform functions
 #[derive(Clone)]
 struct TransformResult {
-    data: String,
-    attributes: rhai::Map,
+    pub data: Dynamic,
+    pub attributes: Option<rhai::Map>,
 }
 
 impl TransformResult {
-    fn new(data: String, attributes: rhai::Map) -> Self {
-        Self { data, attributes }
+    pub fn new(data: Dynamic, attributes: rhai::Map) -> Self {
+        Self {
+            data,
+            attributes: Some(attributes),
+        }
     }
 
     /// Converts Rhai map attributes to HashMap, returning None if empty
     fn attributes(&self) -> Option<HashMap<String, String>> {
-        if self.attributes.is_empty() {
-            None
-        } else {
-            let map = self
-                .attributes
+        if self.attributes.is_none() {
+            return None;
+        }
+
+        self.attributes.as_ref().map(|attrs| {
+            attrs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<HashMap<String, String>>();
-            Some(map)
-        }
+                .collect()
+        })
     }
 }
 

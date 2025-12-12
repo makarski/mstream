@@ -9,6 +9,7 @@ pub struct SinkEvent {
     // pub bson_doc: Option<Document>,
     pub attributes: Option<HashMap<String, String>>,
     pub encoding: Encoding,
+    pub is_framed_batch: bool,
 }
 
 impl From<SourceEvent> for SinkEvent {
@@ -18,6 +19,7 @@ impl From<SourceEvent> for SinkEvent {
             // bson_doc: se.document,
             attributes: se.attributes,
             encoding: se.encoding,
+            is_framed_batch: se.is_framed_batch,
         }
     }
 }

@@ -253,8 +253,7 @@ impl<'a> ServiceFactory<'a> {
                 }
             }
             Service::MongoDb { .. } => {
-                // MongoDB source provider does not require input encoding
-                return Ok(Encoding::default());
+                return Ok(Encoding::Bson);
             }
             Service::Http { .. } => {
                 bail!(

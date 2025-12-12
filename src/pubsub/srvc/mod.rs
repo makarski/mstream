@@ -192,9 +192,9 @@ impl<I: Interceptor> PubSubSubscriber<I> {
                     log::info!("received pubsub message: {:?}", payload);
                     let source_event = SourceEvent {
                         raw_bytes: payload.data,
-                        document: None,
                         attributes: Some(payload.attributes),
                         encoding: self.encoding.clone(),
+                        is_framed_batch: false,
                     };
                     events.send(source_event).await?;
                 }

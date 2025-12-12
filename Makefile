@@ -1,5 +1,5 @@
 AUTH_TOKEN=$(shell gcloud auth print-access-token)
-PRIMARY_HOST := $(shell docker exec -it mongo1 mongosh --eval "rs.status().members.find(member => member.stateStr === 'PRIMARY').name" | grep -E 'mongo[1-3]:27017' | awk -F ':' '{print $$1}')
+PRIMARY_HOST := $(shell docker exec mongo1 mongosh --eval "rs.status().members.find(member => member.stateStr === 'PRIMARY').name" | grep -E 'mongo[1-3]:27017' | awk -F ':' '{print $$1}')
 
 .PHONY: help
 help: ## Show this help.
@@ -26,7 +26,7 @@ db-stop: ## Stops the mongo cluster
 
 .PHONY: db-check
 db-check: ## Checks the status of the mongo cluster
-	@docker exec -it mongo1 mongosh --eval "rs.status()"
+	@docker exec -it mongo1 mongosh --username admin --password adminpassword --authenticationDatabase admin --eval "rs.status()"
 
 .PHONY: auth
 auth: ## Authenticates with gcloud
@@ -36,6 +36,10 @@ auth: ## Authenticates with gcloud
 run-debug: ## Runs the server in debug mode
 	RUST_LOG=debug cargo run
 
+.PHONY: run-profile
+run-profile: ## Runs the server in debug mode
+	RUST_LOG=info cargo run --features pprof --
+
 .PHONY: print-token
 print-token: ## Prints the access token
 	@echo $(AUTH_TOKEN)
@@ -43,11 +47,22 @@ print-token: ## Prints the access token
 .PHONY: db-fixtures
 db-fixtures: ## Loads the fixtures into the db
 	@db_name=employees; \
-    read -p "Enter db name (default is $$db_name): " user_db_name; \
+	coll_name=employees; \
+	fixtures=fixtures.json; \
+    read -p "> Enter db name (default is $$db_name): " user_db_name; \
     if [ -n "$$user_db_name" ]; then \
         db_name=$$user_db_name; \
     fi; \
-    docker exec $(PRIMARY_HOST) mongoimport --db $$db_name --collection employees --file /opt/fixtures/fixtures.json --jsonArray
+    read -p "> Enter collection name (default is $$coll_name): " user_coll_name; \
+    if [ -n "$$user_coll_name" ]; then \
+        coll_name=$$user_coll_name; \
+    fi; \
+    echo "\033[3;90m  - fixtures file must be copied to ./db_fixtures/ first\033[0m"; \
+    read -p "> Enter fixtures file (default is $$fixtures): " fixtures; \
+    if [ -n "$$fixtures_file" ]; then \
+        fixtures=.$fixtures_file; \
+    fi; \
+    docker exec $(PRIMARY_HOST) mongoimport --db $$db_name --collection $$coll_name --file /opt/fixtures/$$fixtures --jsonArray
 
 .PHONY: integration-tests
 integration-tests: ## Runs the integration tests

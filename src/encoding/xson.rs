@@ -215,7 +215,10 @@ pub struct JsonBatchBytesWithSchema<'a> {
 }
 
 impl<'a> JsonBatchBytesWithSchema<'a> {
-    pub fn new(data: Vec<Vec<u8>>, schema: &'a Schema) -> Self {
+    pub fn new<I>(data: I, schema: &'a Schema) -> Self
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
         let data = data
             .into_iter()
             .map(|d| JsonBytesWithSchema::new(d, schema))
@@ -296,7 +299,10 @@ pub struct BsonBatchBytesWithSchema<'a> {
 }
 
 impl<'a> BsonBatchBytesWithSchema<'a> {
-    pub fn new(data: Vec<Vec<u8>>, schema: &'a Schema) -> Self {
+    pub fn new<I>(data: I, schema: &'a Schema) -> Self
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+    {
         let data = data
             .into_iter()
             .map(|d| BsonBytesWithSchema::new(d, schema))
@@ -357,6 +363,58 @@ impl TryFrom<BsonBatchBytesWithSchema<'_>> for BsonBytes {
                 json_array
                     .try_into()
                     .map_err(|e| anyhow::anyhow!("failed to convert JSON batch to BSON: {}", e))
+            }
+        }
+    }
+}
+
+// JSON Batch -> Bson Batch (List of items)
+impl TryFrom<JsonBatchBytesWithSchema<'_>> for BsonBatchBytes {
+    type Error = anyhow::Error;
+
+    fn try_from(value: JsonBatchBytesWithSchema) -> Result<Self, Self::Error> {
+        match value.schema {
+            Schema::Avro(avro_schema) => {
+                let mut batch = Vec::new();
+                for item in value.data {
+                    let bson_doc = JsonBytes(item.data).apply_avro_schema(avro_schema)?;
+                    batch.push(BsonBytes(bson::to_vec(&bson_doc)?));
+                }
+                Ok(BsonBatchBytes(batch))
+            }
+            Schema::Undefined => {
+                let mut batch = Vec::new();
+                for item in value.data {
+                    let doc: Document = JsonBytes(item.data).try_into()?;
+                    batch.push(BsonBytes(bson::to_vec(&doc)?));
+                }
+                Ok(BsonBatchBytes(batch))
+            }
+        }
+    }
+}
+
+// BSON Batch -> JSON Batch (List of items)
+impl TryFrom<BsonBatchBytesWithSchema<'_>> for JsonBatchBytes {
+    type Error = anyhow::Error;
+
+    fn try_from(value: BsonBatchBytesWithSchema) -> Result<Self, Self::Error> {
+        match value.schema {
+            Schema::Avro(avro_schema) => {
+                let mut batch = Vec::new();
+                for item in value.data {
+                    let bson_doc = BsonBytes(item.data).apply_avro_schema(avro_schema)?;
+                    batch.push(JsonBytes(serde_json::to_vec(&bson_doc)?));
+                }
+                Ok(JsonBatchBytes(batch))
+            }
+            Schema::Undefined => {
+                let mut batch = Vec::new();
+                for item in value.data {
+                    let json_b: JsonBytes = BsonBytes(item.data).try_into()?;
+                    batch.push(json_b);
+                }
+                Ok(JsonBatchBytes(batch))
             }
         }
     }

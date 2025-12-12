@@ -2,19 +2,6 @@
 
 This directory contains example Rhai scripts for transforming events using the UDF middleware.
 
-## Running the Examples
-
-To use these scripts with the middleware:
-
-```rust
-use mstream::middleware::udf::rhai::RhaiMiddleware;
-
-let middleware = RhaiMiddleware::new(
-    "examples/rhai/scripts".to_string(),
-    "json_transform.rhai".to_string()
-)?;
-```
-
 ## TOML Configuration Example
 
 Here's a complete TOML configuration example showing how to use these Rhai scripts in a connector:
@@ -54,15 +41,29 @@ sinks = [
 
 ## Available Scripts
 
-### json_transform.rhai
+* [json_transform.rhai](./scripts/json_transform.rhai)
 Transforms JSON events by adding fields, calculating derived values, and cleaning data.
 
-### attribute_enrichment.rhai
+* [json_transform.rhai](./scripts/attribute_enrichment.rhai)
 Enriches event attributes with processing metadata and derived information.
 
-### data_filter.rhai
+* [data_filter.rhai](./scripts/data_filter.rhai)
 Filters and reshapes data based on business rules.
 
 ## Sample Data
 
 The `sample_data/` directory contains example JSON events that can be processed by these scripts.
+
+## Built-in Rhai Helper Functions
+
+The embedded Rhai engine exposes several helper functions you can call from your scripts:
+
+- `result(data, attributes?)`: wraps the transformed payload (and optional updated attributes) for the pipeline.
+- `json_decode(string)` / `json_encode(dynamic)`: convert between JSON text and Rhai maps/arrays.
+- `timestamp_ms()`: returns the current UNIX timestamp in milliseconds.
+- `hash_sha256(value)`: computes a SHA-256 hex digest for anonymization.
+- `mask_email(email)`: obfuscates the local-part of an email (e.g., `alice@example.com` → `a***@example.com`).
+- `mask_phone(phone)`: masks all but the last four digits of a phone number.
+- `mask_year_only(date_or_iso_date)`: truncates a date to the first day of its year, handling both plain strings and MongoDB EJSON timestamps.
+
+Use these helpers to keep your Rhai scripts concise and consistent across connectors.

@@ -65,7 +65,7 @@ impl MongoDbChangeStreamListener {
                 )
             })?;
 
-        let coll = self.db.collection::<Document>(self.db.name());
+        let coll = self.db.collection::<Document>(&self.db_collection);
 
         let opts = ChangeStreamOptions::builder()
             .full_document(Some(FullDocumentType::UpdateLookup))
@@ -139,9 +139,9 @@ impl EventSource for MongoDbChangeStreamListener {
                 events
                     .send(SourceEvent {
                         raw_bytes: bson_raw_bytes,
-                        document: Some(document),
                         attributes,
                         encoding: Encoding::Bson,
+                        is_framed_batch: false,
                     })
                     .await?;
             }
