@@ -9,7 +9,7 @@ use crate::{
     middleware::MiddlewareProvider,
     schema::{encoding::SchemaEncoder, Schema},
     sink::{encoding::SinkEvent, EventSink, SinkProvider},
-    source::{SourceBatch, SourceEvent},
+    source::SourceEvent,
 };
 
 pub struct EventHandler {
@@ -56,9 +56,10 @@ impl EventHandler {
         mut events_rx: Receiver<SourceEvent>,
         batch_size: usize,
     ) -> anyhow::Result<()> {
+        // pre-allocate batch vector once to avoid repeated allocations
+        let mut batch: Vec<SourceEvent> = Vec::with_capacity(batch_size);
         loop {
-            let mut batch: Vec<SourceEvent> = Vec::with_capacity(batch_size);
-
+            batch.clear();
             while batch.len() < batch_size {
                 let limit = batch_size - batch.len();
                 let event_count = events_rx.recv_many(&mut batch, limit).await;
@@ -73,10 +74,9 @@ impl EventHandler {
                 debug!("collected events for batch: {}", batch.len());
             }
 
-            let source_batch = SourceBatch::new(batch);
-            debug!("processing batch: {:?}", source_batch);
+            debug!("processing batch of size: {}", batch.len());
 
-            if let Err(err) = self.process_event_batch(source_batch).await {
+            if let Err(err) = self.process_event_batch(&mut batch).await {
                 error!(
                     "{}: failed to process batch event: {}",
                     &self.connector_name, err
@@ -85,10 +85,14 @@ impl EventHandler {
         }
     }
 
-    async fn process_event_batch(&mut self, event_batch: SourceBatch) -> anyhow::Result<()> {
-        let source_encoding = event_batch.encoding()?;
-        let attributes = event_batch.attributes().cloned();
-        let payloads = event_batch.into_iter().map(|event| event.raw_bytes);
+    async fn process_event_batch(&mut self, batch: &mut Vec<SourceEvent>) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            bail!("empty event batch");
+        }
+
+        let source_encoding = batch[0].encoding.clone();
+        let attributes = batch[0].attributes.clone();
+        let payloads: Vec<Vec<u8>> = batch.drain(..).map(|event| event.raw_bytes).collect();
 
         let schema_encoder = SchemaEncoder::new_batch(payloads);
 
@@ -107,7 +111,10 @@ impl EventHandler {
                 })
         })?;
 
-        debug!("generated SourceEvent for batch: {:?}", batch_event);
+        debug!(
+            "generated SourceEvent for batch. size: {} bytes",
+            batch_event.raw_bytes.len()
+        );
 
         if let Err(err) = self.process_event(batch_event).await {
             error!("{}: failed to process event: {}", &self.connector_name, err)
@@ -138,11 +145,24 @@ impl EventHandler {
             }
         }
 
-        for (sink_cfg, publisher, schema) in self.publishers.iter_mut() {
+        let mut event_holder = Some(transformed_source_event);
+        let publishers_len = self.publishers.len();
+
+        for (i, (sink_cfg, publisher, schema)) in self.publishers.iter_mut().enumerate() {
             let sink_event_result = block_in_place(|| {
-                transformed_source_event
-                    .clone()
-                    .apply_schema(Some(&sink_cfg.output_encoding), &schema)
+                let event = if i == publishers_len - 1 {
+                    // move the last event to avoid clone
+                    event_holder.take().expect("publishers: last event move")
+                } else {
+                    // clone the event for other publishers
+                    event_holder
+                        .as_ref()
+                        .expect("publishers: event ref")
+                        .clone()
+                };
+
+                // apply sink schema
+                event.apply_schema(Some(&sink_cfg.output_encoding), &schema)
             });
 
             let sink_event: SinkEvent = match sink_event_result {

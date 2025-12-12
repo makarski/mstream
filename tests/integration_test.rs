@@ -13,8 +13,6 @@ use setup::{
 #[tokio::test]
 #[ignore = "Integration test - requires a running mongodb in docker and connection to GCP pubsub"]
 async fn test_created_updated_db_to_pubsub() {
-    pretty_env_logger::try_init_timed().unwrap();
-
     let client = Client::with_uri_str(setup::DB_CONNECTION).await.unwrap();
     let db = client.database(setup::DB_NAME);
     db.drop().await.unwrap();

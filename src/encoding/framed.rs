@@ -42,28 +42,18 @@ where
     type Error = anyhow::Error;
 
     fn try_from(value: FramedBytes<I>) -> Result<Self, Self::Error> {
-        let mut result = Vec::new();
-        // 1. Count Placeholder (4 bytes)
-        result.extend(0u32.to_le_bytes());
+        let iter = value.iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        // Heuristic: assume 256 bytes per item if we have a count, otherwise default
+        let capacity = if lower > 0 { lower * 256 } else { 1024 };
 
-        // 2. Content Type (1 byte)
-        result.push(value.content_type as u8);
+        let mut writer = FramedWriter::new(value.content_type, capacity);
 
-        let mut count = 0u32;
-        for event_bytes in value.iter {
-            count += 1;
-            // 3. Item Length (4 bytes)
-            let event_len = event_bytes.len() as u32;
-            result.extend(event_len.to_le_bytes());
-            // 4. Item Payload
-            result.extend(event_bytes);
+        for event_bytes in iter {
+            writer.add_item(&event_bytes);
         }
 
-        // Update count at the beginning
-        let count_bytes = count.to_le_bytes();
-        result[0..4].copy_from_slice(&count_bytes);
-
-        Ok(result)
+        Ok(writer.finish())
     }
 }
 

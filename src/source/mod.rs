@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use mongodb::bson::Document;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::Encoding;

@@ -90,7 +90,9 @@
 
 use std::{collections::HashMap, path::Path};
 
-use crate::middleware::udf::rhai::convert::{ConvertError, RhaiEncodingExt, RhaiMap};
+use crate::middleware::udf::rhai::convert::{
+    ConvertError, LazyBsonDocument, RhaiEncodingExt, RhaiMap,
+};
 use crate::source::SourceEvent;
 use rhai::{Dynamic, AST};
 use tokio::task::block_in_place;
@@ -361,7 +363,12 @@ impl RhaiMiddleware {
     }
 
     fn register_api(engine: &mut rhai::Engine) {
-        // Register custom types
+        engine
+            .register_type_with_name::<LazyBsonDocument>("BsonDocument")
+            .register_indexer_get(LazyBsonDocument::get)
+            .register_indexer_set(LazyBsonDocument::set)
+            .register_fn("remove", LazyBsonDocument::remove);
+
         engine.register_type::<TransformResult>();
 
         // Register result functions

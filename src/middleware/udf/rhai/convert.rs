@@ -30,10 +30,10 @@
 //! ```
 
 use base64::engine::{general_purpose, Engine as _};
-use mongodb::bson::{self, Bson};
-use rhai::{Array, Dynamic, Map};
+use mongodb::bson::{self, Bson, RawBsonRef, RawDocumentBuf};
+use rhai::{Array, Dynamic, EvalAltResult, Map};
 use serde_json::Value;
-use std::{collections::HashMap, convert::TryFrom};
+use std::{collections::HashMap, convert::TryFrom, sync::Arc};
 
 use crate::config::Encoding;
 
@@ -92,10 +92,10 @@ impl RhaiEncodingExt for Encoding {
 
         match self {
             Encoding::Bson => {
-                let doc = mongodb::bson::from_slice::<mongodb::bson::Document>(bytes)?;
-                // Reuse existing BsonConverter logic
-                let converter = BsonConverter(Bson::Document(doc));
-                Dynamic::try_from(converter)
+                let lazy = LazyBsonDocument::new(bytes.to_vec())
+                    .map_err(|_| ConvertError::InvalidBsonStructure)?;
+
+                Ok(Dynamic::from(lazy))
             }
             Encoding::Json => {
                 // Use native Rhai serde support (efficient)
@@ -112,12 +112,30 @@ impl RhaiEncodingExt for Encoding {
 
         match self {
             Encoding::Bson => {
+                if data.is::<LazyBsonDocument>() {
+                    let lazy = data.cast::<LazyBsonDocument>();
+                    match lazy.state {
+                        LazyBsonState::Raw(raw) => return Ok(raw.as_bytes().to_vec()),
+                        LazyBsonState::Materialized(map) => {
+                            // if modified we serialize the map
+                            // and reuse BsonConverter logic
+                            let converter = BsonConverter::try_from(Dynamic::from(map))?;
+                            match converter.0 {
+                                Bson::Document(doc) => return Ok(mongodb::bson::to_vec(&doc)?),
+                                _ => return Err(ConvertError::InvalidBsonStructure),
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: Eager conversion
                 let converter = BsonConverter::try_from(data)?;
                 match converter.0 {
                     Bson::Document(doc) => Ok(mongodb::bson::to_vec(&doc)?),
                     _ => Err(ConvertError::InvalidBsonStructure),
                 }
             }
+
             Encoding::Json => {
                 // Use native Rhai serde support
                 serde_json::to_vec(&data).map_err(ConvertError::from)
@@ -141,8 +159,12 @@ impl Encoding {
         for item in items {
             let val = match content_type {
                 BatchContentType::Bson => {
-                    let doc = mongodb::bson::from_slice::<mongodb::bson::Document>(&item)?;
-                    Dynamic::try_from(BsonConverter(Bson::Document(doc)))?
+                    // Wrap the raw bytes in a LazyBsonDocument instead of eagerly parsing
+                    let lazy =
+                        LazyBsonDocument::new(item).map_err(|e| ConvertError::UnsupportedType {
+                            type_name: format!("Lazy BSON parse error: {}", e),
+                        })?;
+                    Dynamic::from(lazy)
                 }
                 BatchContentType::Json => {
                     serde_json::from_slice(&item).map_err(ConvertError::from)?
@@ -169,7 +191,7 @@ impl Encoding {
         }
 
         let array = data.into_array().expect("checked is_array");
-        let capacity = array.len() * 128; // Heuristic pre-allocation
+        let capacity = array.len() * 4096; // 4Kb: Heuristic pre-allocation
 
         let content_type = match target_encoding {
             Encoding::Json => BatchContentType::Json,
@@ -190,11 +212,50 @@ impl Encoding {
                         })?;
                 }
                 BatchContentType::Bson => {
+                    if item.is::<LazyBsonDocument>() {
+                        let lazy = item.cast::<LazyBsonDocument>();
+                        match lazy.state {
+                            LazyBsonState::Raw(raw) => {
+                                writer
+                                    .add_item_with(|buf| {
+                                        use std::io::Write;
+                                        buf.write_all(raw.as_bytes()).map_err(|e| {
+                                            ConvertError::BsonEncodeError(
+                                                mongodb::bson::ser::Error::Io(std::sync::Arc::new(
+                                                    e,
+                                                )),
+                                            )
+                                        })
+                                    })
+                                    .map_err(|e| ConvertError::UnsupportedType {
+                                        type_name: format!("Lazy BSON write error: {}", e),
+                                    })?;
+                                continue;
+                            }
+                            LazyBsonState::Materialized(map) => {
+                                let converter = BsonConverter::try_from(Dynamic::from(map))?;
+                                match converter.0 {
+                                    Bson::Document(doc) => {
+                                        writer
+                                            .add_item_with(|buf| {
+                                                doc.to_writer(buf)
+                                                    .map_err(ConvertError::BsonEncodeError)
+                                            })
+                                            .map_err(|e| ConvertError::UnsupportedType {
+                                                type_name: format!("Bson encode error: {}", e),
+                                            })?;
+                                    }
+                                    _ => return Err(ConvertError::InvalidBsonStructure),
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
+                    // fallback to eager conversion
                     let converter = BsonConverter::try_from(item)?;
                     match converter.0 {
                         Bson::Document(doc) => {
-                            // Try to use to_writer if available, otherwise fallback to to_vec
-                            // Assuming to_writer is available on Document
                             writer
                                 .add_item_with(|buf| {
                                     doc.to_writer(buf).map_err(ConvertError::BsonEncodeError)
@@ -206,6 +267,7 @@ impl Encoding {
                         _ => return Err(ConvertError::InvalidBsonStructure),
                     }
                 }
+
                 _ => {
                     return Err(ConvertError::UnsupportedType {
                         type_name: "Unsupported content type".into(),
@@ -284,6 +346,17 @@ impl TryFrom<Dynamic> for BsonConverter {
             Bson::Double(f)
         } else if let Some(s) = dynamic.clone().into_immutable_string().ok() {
             Bson::String(s.to_string())
+        } else if let Some(lazy) = dynamic.clone().try_cast::<LazyBsonDocument>() {
+            match &lazy.state {
+                LazyBsonState::Raw(raw) => {
+                    let doc =
+                        bson::from_slice(raw.as_bytes()).map_err(ConvertError::BsonDecodeError)?;
+                    Bson::Document(doc)
+                }
+                LazyBsonState::Materialized(map) => {
+                    BsonConverter::try_from(Dynamic::from(map.clone()))?.0
+                }
+            }
         } else if let Some(arr) = dynamic.clone().try_cast::<Array>() {
             let mut bson_arr = Vec::new();
             for item in arr {
@@ -599,6 +672,122 @@ fn is_likely_base64(s: &str) -> bool {
     }
 
     true
+}
+
+#[derive(Clone, Debug)]
+pub enum LazyBsonState {
+    Raw(Arc<RawDocumentBuf>),
+    Materialized(Map),
+}
+
+#[derive(Clone, Debug)]
+pub struct LazyBsonDocument {
+    pub state: LazyBsonState,
+}
+
+impl std::fmt::Display for LazyBsonDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LazyBsonDocument")
+    }
+}
+
+impl LazyBsonDocument {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, mongodb::bson::raw::Error> {
+        let doc = RawDocumentBuf::from_bytes(bytes)?;
+        Ok(Self {
+            state: LazyBsonState::Raw(Arc::new(doc)),
+        })
+    }
+
+    pub fn get(&mut self, key: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw(raw) => match raw.get(key) {
+                Ok(Some(raw_val)) => convert_raw_to_dynamic(raw_val),
+                Ok(None) => Ok(Dynamic::UNIT),
+                Err(e) => Err(format!("BSON error: {}", e).into()),
+            },
+            LazyBsonState::Materialized(map) => Ok(map.get(key).cloned().unwrap_or(Dynamic::UNIT)),
+        }
+    }
+
+    pub fn set(&mut self, key: &str, value: Dynamic) -> Result<(), Box<EvalAltResult>> {
+        // If Raw, materialize first (Copy-on-Write)
+        if let LazyBsonState::Raw(raw) = &self.state {
+            let map = convert_raw_to_map(raw)?;
+            self.state = LazyBsonState::Materialized(map);
+        }
+
+        // Now we are Materialized
+        if let LazyBsonState::Materialized(map) = &mut self.state {
+            map.insert(key.into(), value);
+            Ok(())
+        } else {
+            unreachable!()
+        }
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        if let LazyBsonState::Raw(raw) = &self.state {
+            let map = convert_raw_to_map(raw)?;
+            self.state = LazyBsonState::Materialized(map);
+        }
+
+        if let LazyBsonState::Materialized(map) = &mut self.state {
+            Ok(map.remove(key).unwrap_or(Dynamic::UNIT))
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+fn convert_raw_to_map(raw: &RawDocumentBuf) -> Result<Map, Box<EvalAltResult>> {
+    let mut map = Map::new();
+    for elem in raw.iter() {
+        let (key, value) = elem.map_err(|e| format!("BSON error: {}", e))?;
+        map.insert(key.into(), convert_raw_to_dynamic(value)?);
+    }
+    Ok(map)
+}
+
+fn convert_raw_to_dynamic(raw: RawBsonRef) -> Result<Dynamic, Box<EvalAltResult>> {
+    match raw {
+        RawBsonRef::Double(v) => Ok(Dynamic::from(v)),
+        RawBsonRef::String(v) => Ok(Dynamic::from(v.to_string())),
+        RawBsonRef::Array(v) => {
+            let mut arr = Vec::new();
+            for item in v.into_iter() {
+                let item = item.map_err(|e| format!("BSON array error: {}", e))?;
+                arr.push(convert_raw_to_dynamic(item)?);
+            }
+            Ok(Dynamic::from(arr))
+        }
+        RawBsonRef::Document(v) => {
+            let buf = v.to_raw_document_buf();
+            Ok(Dynamic::from(LazyBsonDocument {
+                state: LazyBsonState::Raw(Arc::new(buf)),
+            }))
+        }
+        RawBsonRef::Boolean(v) => Ok(Dynamic::from(v)),
+        RawBsonRef::Null => Ok(Dynamic::UNIT),
+        RawBsonRef::Int32(v) => Ok(Dynamic::from(v as i64)),
+        RawBsonRef::Int64(v) => Ok(Dynamic::from(v)),
+        RawBsonRef::DateTime(v) => {
+            let mut inner = Map::new();
+            inner.insert(
+                "$numberLong".into(),
+                Dynamic::from(v.timestamp_millis().to_string()),
+            );
+            let mut map = Map::new();
+            map.insert("$date".into(), Dynamic::from(inner));
+            Ok(Dynamic::from(map))
+        }
+        RawBsonRef::ObjectId(v) => {
+            let mut map = Map::new();
+            map.insert("$oid".into(), Dynamic::from(v.to_string()));
+            Ok(Dynamic::from(map))
+        }
+        _ => Ok(Dynamic::UNIT),
+    }
 }
 
 #[cfg(test)]
