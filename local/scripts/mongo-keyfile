@@ -1,16 +1,11 @@
-NR30YXcUWDPQRdww/xW7jRzuIy+nXUIrSanMVOrdUFHRAOIT7opnDw4EhIFEwmrx
-migHez6S9ss5qqfZKykqbnrkBbQDpaqPsuX/ml7uQ9J9DYjGEuUiCj0cNA6utBVB
-qVI3AVU+ujIn2/iWK3UQR3UN1AerGF58u9+EZjcV9m/ISXsPbUIRTwBz1J27SDXP
-uneb3o6jjjKwlEkccFUnM1G2LPunLtEntCUUqhG0X5dm/gaPcdw5OmtknpzcVydS
-N1ZmJNw9wxm6GEUlASPNLYVFcuhRVWbnFndgkzviN52PDGf9rdjmhLoe1ilGlUiN
-+xYtwU4tfG8jGQjLR9MEMJZ4jTItMmaSu9+mgwn8EKwiVVQ5w0RZL7WPvhZScG4z
-UO5zSG24COhH5ROWvb3RQ/qwyz4aYEgKeqTv/fvcZk9RNgVEfPKwiv7UzTaAXwC9
-tykO1sGFpVlbCkiecOcaiXH+MG/EZ4IwUSF3ePusjaq8Np8UdgapZYzCDVwZ7HnW
-jnwhPiy9FIhYi7JBnnPIDwolovS36k6Jl1uUN+0PcK2fA3NdyzuG+sxmLOq73b8r
-PyhmuMzCiC+Jd8gVJXmuLjmM82lXI1cagBEXz+XqqnNChJAUNyQYoBfaeMKJzG3g
-pNW6BY8EvcOPvSHdWjugDssRDWPVOuNfJ/kzpZdMvzTIM0zF3ZXJ6P27HfDUhXr6
-DOZdjI501QjL3KXq0oYb/FV9HczjmLO6TdgDrZ+T01d6jPsKOrSlh6vtZ81sYoVT
-THJLiyT8OVtgEWVVQJygj+Djg9RX+u2S+eyrFWzeLSKQyKQ7Hc50IHVGrY+uxUy1
-vO0LC6Xy+yjbOQyza0azMFtSuVOsoyehzCE1N+0bTgqWnVBY08uPVNTX2rDVPwmq
-mbLNBb7TFTn9ilP9AX341vrlik2XjNXBdkeZxVuOxJmureLlcYIXjbCijqKn/XhE
-jQs9HUpaKwxPazSY6IpJTG3YNScxc1SD9O4eCgcGzEfQb/r3
+# MongoDB keyfile for replica set authentication
+# 
+# This file should NOT be committed to version control.
+# 
+# For local development, generate a keyfile dynamically or create it manually.
+# For production, use a secure, unique keyfile and manage it with a secrets manager.
+# 
+# Example (to generate a keyfile):
+#   openssl rand -base64 756 > local/scripts/mongo-keyfile
+# 
+# Add this file to .gitignore to prevent accidental commits.
