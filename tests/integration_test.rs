@@ -10,10 +10,12 @@ use setup::{
     fixtures, generate_pubsub_attributes, pull_from_pubsub, setup_db, start_app_listener, Employee,
 };
 
-#[tokio::test]
-#[ignore = "Integration test - requires a running mongodb in docker and connection to GCP pubsub"]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "Integration test - requires a running mongodb in docke  r and connection to GCP pubsub"]
 async fn test_created_updated_db_to_pubsub() {
-    let client = Client::with_uri_str(setup::DB_CONNECTION).await.unwrap();
+    let mongo_uri = std::env::var(setup::DB_CONNECTION_ENV)
+        .expect("expected MONGO_URI env var to be set for integration tests");
+    let client = Client::with_uri_str(mongo_uri).await.unwrap();
     let db = client.database(setup::DB_NAME);
     db.drop().await.unwrap();
     db.create_collection(setup::DB_COLLECTION).await.unwrap();

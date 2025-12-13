@@ -66,7 +66,7 @@ db-fixtures: ## Loads the fixtures into the db
 
 .PHONY: integration-tests
 integration-tests: ## Runs the integration tests
-	@source .env.test && RUST_LOG=debug \
+	 @source .env.test && RUST_LOG=debug \
 	 MSTREAM_TEST_AUTH_TOKEN=$(AUTH_TOKEN) \
 	 cargo test -- --nocapture --ignored
 

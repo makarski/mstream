@@ -449,14 +449,14 @@ mod tests {
         let result =
             ServiceFactory::unwrap_source_input_encoding(&mongodb_service, &source_with_encoding);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Encoding::default());
+        assert_eq!(result.unwrap(), Encoding::Bson);
 
         let result = ServiceFactory::unwrap_source_input_encoding(
             &mongodb_service,
             &source_without_encoding,
         );
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Encoding::default());
+        assert_eq!(result.unwrap(), Encoding::Bson);
 
         // Case 4: HTTP service (should return error as it's not supported as a source)
         let result =

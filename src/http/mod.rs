@@ -258,6 +258,7 @@ mod tests {
             raw_bytes,
             attributes,
             encoding,
+            is_framed_batch: false,
         }
     }
 
@@ -323,7 +324,13 @@ mod tests {
 
         // Call post
         let res = sink
-            .post(&resource, event.raw_bytes, event.encoding, event.attributes)
+            .post(
+                &resource,
+                event.raw_bytes,
+                event.encoding,
+                event.attributes,
+                false,
+            )
             .await;
 
         assert!(res.is_ok(), "Failed to post event: {:?}", res);
@@ -358,7 +365,13 @@ mod tests {
 
             // Call publish method
             let result = sink
-                .post(resource, event.raw_bytes, event.encoding, event.attributes)
+                .post(
+                    resource,
+                    event.raw_bytes,
+                    event.encoding,
+                    event.attributes,
+                    false,
+                )
                 .await;
 
             // Verify success after retry
@@ -391,7 +404,13 @@ mod tests {
 
             // Call publish method
             let result = sink
-                .post(resource, event.raw_bytes, event.encoding, event.attributes)
+                .post(
+                    resource,
+                    event.raw_bytes,
+                    event.encoding,
+                    event.attributes,
+                    false,
+                )
                 .await;
 
             // Verify failure without retry
@@ -461,6 +480,7 @@ mod tests {
                 event.raw_bytes,
                 event.encoding,
                 event.attributes,
+                false,
             )
             .await;
 
@@ -489,7 +509,13 @@ mod tests {
         // Capture timing of each attempt
         let start = Instant::now();
         let _ = sink
-            .post(resource, event.raw_bytes, event.encoding, event.attributes)
+            .post(
+                resource,
+                event.raw_bytes,
+                event.encoding,
+                event.attributes,
+                false,
+            )
             .await;
         let total_time = start.elapsed();
 
@@ -523,6 +549,7 @@ mod tests {
                 event.raw_bytes,
                 event.encoding,
                 event.attributes,
+                false,
             )
             .await;
 

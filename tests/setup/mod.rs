@@ -20,7 +20,7 @@ use mstream::pubsub::{ServiceAccountAuth, StaticAccessToken};
 const CONNECTOR_NAME: &str = "employee-stream-test";
 pub const DB_NAME: &str = "integration-tests";
 pub const DB_COLLECTION: &str = "employees";
-pub const DB_CONNECTION: &str = "mongodb://localhost:27017";
+pub const DB_CONNECTION_ENV: &str = "MONGO_URI";
 
 #[derive(AvroSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Employee {
@@ -47,7 +47,7 @@ pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
                 },
                 Service::MongoDb {
                     name: "mongodb".to_owned(),
-                    connection_string: DB_CONNECTION.to_owned(),
+                    connection_string: env::var(DB_CONNECTION_ENV).unwrap(),
                     db_name: DB_NAME.to_owned(),
                 },
             ],
