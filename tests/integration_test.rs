@@ -11,7 +11,7 @@ use setup::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Integration test - requires a running mongodb in docke  r and connection to GCP pubsub"]
+#[ignore = "Integration test - requires a running mongodb in docker and connection to GCP pubsub"]
 async fn test_created_updated_db_to_pubsub() {
     let mongo_uri = std::env::var(setup::DB_CONNECTION_ENV)
         .expect("expected MONGO_URI env var to be set for integration tests");
