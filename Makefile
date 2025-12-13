@@ -1,13 +1,8 @@
 AUTH_TOKEN=$(shell gcloud auth print-access-token)
-PRIMARY_HOST := $(shell docker exec mongo1 mongosh --eval "rs.status().members.find(member => member.stateStr === 'PRIMARY').name" | grep -E 'mongo[1-3]:27017' | awk -F ':' '{print $$1}')
 
 .PHONY: help
 help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
-
-.PHONY: print-primary-host
-print-primary-host: ## Prints the primary mongo host
-	@echo $(PRIMARY_HOST)
 
 .PHONY: docker-up
 docker-up: ## Starts the full stack (db + mstream)
@@ -72,7 +67,7 @@ db-fixtures: ## Loads the fixtures into the db
     if [ -n "$$fixtures_file" ]; then \
         fixtures=.$fixtures_file; \
     fi; \
-    docker exec $(PRIMARY_HOST) mongoimport --db $$db_name --collection $$coll_name --file /opt/fixtures/$$fixtures --jsonArray
+    docker exec mongo1 mongoimport --db $$db_name --collection $$coll_name --file /opt/fixtures/$$fixtures --jsonArray
 
 .PHONY: integration-tests
 integration-tests: ## Runs the integration tests
