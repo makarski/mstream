@@ -44,7 +44,7 @@ sinks = [
 * [json_transform.rhai](./scripts/json_transform.rhai)
 Transforms JSON events by adding fields, calculating derived values, and cleaning data.
 
-* [json_transform.rhai](./scripts/attribute_enrichment.rhai)
+* [attribute_enrichment.rhai](./scripts/attribute_enrichment.rhai)
 Enriches event attributes with processing metadata and derived information.
 
 * [data_filter.rhai](./scripts/data_filter.rhai)
