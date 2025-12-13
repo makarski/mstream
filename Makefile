@@ -47,7 +47,7 @@ run-debug: ## Runs the server in debug mode
 	RUST_LOG=debug cargo run
 
 .PHONY: run-profile
-run-profile: ## Runs the server in debug mode
+run-profile: ## Runs the server with profiling enabled
 	RUST_LOG=info cargo run --features pprof --
 
 .PHONY: print-token
