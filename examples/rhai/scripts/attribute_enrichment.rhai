@@ -1,47 +1,31 @@
 // Enrich event attributes with metadata and derived information
-fn transform(input, attributes) {
+fn transform(data, attributes) {
     // Calculate content metrics
-    let input_length = input.len();
-    let line_count = input.split("\n").len();
-    let word_count = input.split(" ").len();
+    // Note: 'data' is already decoded (e.g. a Map for JSON/BSON)
+    let field_count = 0;
 
-    // Detect content type
-    let content_type = if input.starts_with("{") || input.starts_with("[") {
-        "json"
-    } else if input.starts_with("<?xml") {
-        "xml"
-    } else if input.starts_with("data:base64,") {
-        "binary_base64"
-    } else if input.contains("\t") {
-        "tsv"
-    } else if input.contains(",") && line_count > 1 {
-        "csv"
-    } else {
-        "text"
-    };
+    if type_of(data) == "map" {
+        field_count = data.len();
+    }
 
     // Add metrics to attributes
-    attributes["content_type"] = content_type;
-    attributes["byte_count"] = input_length.to_string();
-    attributes["line_count"] = line_count.to_string();
-    attributes["word_count"] = word_count.to_string();
+    attributes["field_count"] = field_count.to_string();
+    attributes["data_type"] = type_of(data);
 
     // Add processing timestamp
     attributes["processed_at"] = "2024-01-01T00:00:00Z";
 
     // Add data quality indicators
-    if input_length == 0 {
+    if field_count == 0 {
         attributes["quality"] = "empty";
-    } else if input_length < 10 {
+    } else if field_count < 5 {
         attributes["quality"] = "minimal";
-    } else if input_length < 100 {
-        attributes["quality"] = "small";
-    } else if input_length < 1000 {
-        attributes["quality"] = "medium";
+    } else if field_count < 20 {
+        attributes["quality"] = "standard";
     } else {
-        attributes["quality"] = "large";
+        attributes["quality"] = "complex";
     }
 
-    // Pass through the input unchanged but with enriched attributes
-    result(input, attributes)
+    // Pass through the data unchanged but with enriched attributes
+    result(data, attributes)
 }

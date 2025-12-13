@@ -19,6 +19,14 @@ pub struct KafkaConsumer {
 }
 
 impl KafkaConsumer {
+    /// Creates a new Kafka consumer instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `configs` - A map of Kafka client configuration properties.
+    /// * `topic` - The name of the topic to consume from.
+    /// * `encoding` - The expected encoding of the messages.
+    /// * `seek_back_secs` - Optional number of seconds to seek back from the current time.
     pub fn new(
         configs: &HashMap<String, String>,
         topic: String,

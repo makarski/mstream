@@ -1,7 +1,5 @@
 // Filter and reshape product events based on business rules
-fn transform(input, attributes) {
-    let product = json_decode(input);
-
+fn transform(product, attributes) {
     // Filter logic - only process active products with valid prices
     if !product.active || product.price <= 0 {
         // Mark as filtered in attributes
@@ -13,7 +11,7 @@ fn transform(input, attributes) {
         };
 
         // Return empty object for filtered items
-        result(json_encode(#{}), attributes)
+        result(#{}, attributes)
     } else {
         // Reshape product data
         let output = #{};
@@ -71,6 +69,6 @@ fn transform(input, attributes) {
         attributes["price_tier"] = output.price_tier;
         attributes["department"] = output.department;
 
-        result(json_encode(output), attributes)
+        result(output, attributes)
     }
 }

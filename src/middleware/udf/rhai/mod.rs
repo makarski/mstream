@@ -72,11 +72,10 @@
 //!
 //! ### JSON Processing
 //! ```rhai
-//! fn transform(input, attributes) {
-//!     let obj = json_decode(input);
-//!     obj.processed = true;
-//!     obj.timestamp = "2024-01-01";
-//!     result(json_encode(obj))
+//! fn transform(data, attributes) {
+//!     data.processed = true;
+//!     data.timestamp = "2024-01-01";
+//!     result(data)
 //! }
 //! ```
 //!

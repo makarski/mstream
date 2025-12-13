@@ -28,6 +28,16 @@ struct ResponseError {
 }
 
 impl HttpService {
+    /// Creates a new HTTP service instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The target host URL.
+    /// * `max_retries` - Maximum number of retries for failed requests (default: 5).
+    /// * `base_backoff_ms` - Base backoff time in milliseconds for retries (default: 1000ms).
+    /// * `connection_timeout_sec` - Connection timeout in seconds (default: 10s).
+    /// * `timeout_sec` - Request timeout in seconds (default: 30s).
+    /// * `tcp_keepalive_sec` - TCP keepalive duration in seconds (default: 300s).
     pub fn new(
         host: String,
         max_retries: Option<u32>,

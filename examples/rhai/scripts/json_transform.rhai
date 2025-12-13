@@ -1,8 +1,5 @@
 // Transform user events by enriching with calculated fields
-fn transform(input, attributes) {
-    // Parse JSON input
-    let data = json_decode(input);
-
+fn transform(data, attributes) {
     // Add processing metadata
     data.processed_at = "2024-01-01T00:00:00Z";
     data.version = "1.0";
@@ -54,5 +51,5 @@ fn transform(input, attributes) {
     }
 
     // Return transformed data and attributes
-    result(json_encode(data), attributes)
+    result(data, attributes)
 }

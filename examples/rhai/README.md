@@ -54,12 +54,15 @@ Filters and reshapes data based on business rules.
 
 The `sample_data/` directory contains example JSON events that can be processed by these scripts.
 
+## Writing Rhai Scripts
+
+The `transform` function receives the event data automatically decoded based on the source encoding (e.g., as a Map for JSON/BSON). It should return the transformed data, which will be encoded back to the output format.
+
 ## Built-in Rhai Helper Functions
 
 The embedded Rhai engine exposes several helper functions you can call from your scripts:
 
 - `result(data, attributes?)`: wraps the transformed payload (and optional updated attributes) for the pipeline.
-- `json_decode(string)` / `json_encode(dynamic)`: convert between JSON text and Rhai maps/arrays.
 - `timestamp_ms()`: returns the current UNIX timestamp in milliseconds.
 - `hash_sha256(value)`: computes a SHA-256 hex digest for anonymization.
 - `mask_email(email)`: obfuscates the local-part of an email (e.g., `alice@example.com` → `a***@example.com`).

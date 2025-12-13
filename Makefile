@@ -9,12 +9,14 @@ help: ## Show this help.
 print-primary-host: ## Prints the primary mongo host
 	@echo $(PRIMARY_HOST)
 
-.PHONY: up
-up: db-up db-init-rpl-set ## Starts the mongo cluster and initializes the replica set
+.PHONY: docker-up
+docker-up: ## Starts the full stack (db + mstream)
+	@docker-compose up -d --build
+	@$(MAKE) db-init-rpl-set
 
-.PHONY: db-up
-db-up: ## Starts the mongo cluster
-	@docker-compose up -d
+.PHONY: docker-db-up
+docker-db-up: ## Starts the mongo cluster only
+	@docker-compose up -d mongo1
 
 .PHONY: db-init-rpl-set
 db-init-rpl-set: ## Initializes the replica set
@@ -22,7 +24,7 @@ db-init-rpl-set: ## Initializes the replica set
 
 .PHONY: db-stop
 db-stop: ## Stops the mongo cluster
-	@docker-compose stop
+	@docker-compose stop mongo1
 
 .PHONY: db-check
 db-check: ## Checks the status of the mongo cluster
@@ -31,6 +33,14 @@ db-check: ## Checks the status of the mongo cluster
 .PHONY: auth
 auth: ## Authenticates with gcloud
 	gcloud auth login
+
+.PHONY: build-docker
+build-docker: ## Builds the docker image
+	docker build -t mstream .
+
+.PHONY: run-docker
+run-docker: ## Runs the docker image without mongo db
+	docker run -v $$(pwd)/mstream-config.toml:/app/mstream-config.toml mstream
 
 .PHONY: run-debug
 run-debug: ## Runs the server in debug mode

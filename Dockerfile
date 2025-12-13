@@ -1,10 +1,17 @@
-FROM rust:1.86.0-bookworm
+FROM rust:1.91-bookworm
 
 WORKDIR /app
 COPY . .
 
-# Compile + (optionally) strip symbols
-RUN cargo build --release && \
-    strip target/release/mstream || true
+# Install protobuf compiler and build dependencies
+RUN apt-get update && apt-get install -y protobuf-compiler cmake libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
 
-CMD ["./target/release/mstream", "config.toml"]
+# Compile, strip symbols, and move binary to WORKDIR
+RUN cargo build --release && \
+    (strip target/release/mstream || true) && \
+    mv target/release/mstream .
+
+ENV RUST_LOG=info
+
+# The app looks for "mstream-config.toml" in the current working directory
+CMD ["./mstream"]
