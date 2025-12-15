@@ -12,12 +12,17 @@ pub fn validate(avro_b: Vec<u8>, schema: &Schema) -> anyhow::Result<Vec<u8>> {
     Ok(avro_b)
 }
 
-pub fn validate_many(avro_b: Vec<Vec<u8>>, schema: &Schema) -> anyhow::Result<Vec<u8>> {
-    let mut records = Vec::with_capacity(avro_b.len());
+pub fn validate_many<I>(avro_b: I, schema: &Schema) -> anyhow::Result<Vec<u8>>
+where
+    I: IntoIterator<Item = Vec<u8>>,
+{
+    let iter = avro_b.into_iter();
+    let (lower, _) = iter.size_hint();
+    let mut records = Vec::with_capacity(lower);
     let batch_schema = Schema::Array(Box::new(schema.clone()));
 
     // Validate each item individually
-    for item in avro_b.into_iter() {
+    for item in iter {
         let mut reader = item.as_slice();
         let avro_value = from_avro_datum(schema, &mut reader, None)?;
 

@@ -28,6 +28,16 @@ struct ResponseError {
 }
 
 impl HttpService {
+    /// Creates a new HTTP service instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - The target host URL.
+    /// * `max_retries` - Maximum number of retries for failed requests (default: 5).
+    /// * `base_backoff_ms` - Base backoff time in milliseconds for retries (default: 1000ms).
+    /// * `connection_timeout_sec` - Connection timeout in seconds (default: 10s).
+    /// * `timeout_sec` - Request timeout in seconds (default: 30s).
+    /// * `tcp_keepalive_sec` - TCP keepalive duration in seconds (default: 300s).
     pub fn new(
         host: String,
         max_retries: Option<u32>,
@@ -74,13 +84,14 @@ impl HttpService {
         payload: Vec<u8>,
         encoding: Encoding,
         attrs: Option<HashMap<String, String>>,
+        is_framed_batch: bool,
     ) -> anyhow::Result<String> {
         let full_url = self
             .host_url
             .join(path)
             .with_context(|| anyhow!("failed to construct the url for path: {}", path))?;
 
-        let headers = self.headers_from_attrs(attrs, encoding)?;
+        let headers = self.headers_from_attrs(attrs, encoding, is_framed_batch)?;
         let mut attempt = 0;
         let mut last_error = None;
 
@@ -198,26 +209,31 @@ impl HttpService {
         &self,
         attr: Option<HashMap<String, String>>,
         encoding: Encoding,
+        is_framed_batch: bool,
     ) -> anyhow::Result<HeaderMap> {
         let mut hmap = HeaderMap::new();
-        let _ = match encoding {
-            Encoding::Avro => hmap.insert(
+
+        if is_framed_batch {
+            hmap.insert(
                 HeaderName::from_static("content-type"),
-                HeaderValue::from_str("avro/binary")?,
-            ),
-            Encoding::Json => hmap.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_str("application/json")?,
-            ),
-            Encoding::Other => hmap.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_str("application/octet-stream")?,
-            ),
-            Encoding::Bson => hmap.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_str("application/bson")?,
-            ),
-        };
+                HeaderValue::from_str("application/x-mstream-framed")?,
+            );
+        } else {
+            let _ = match encoding {
+                Encoding::Avro => hmap.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_str("avro/binary")?,
+                ),
+                Encoding::Json => hmap.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_str("application/json")?,
+                ),
+                Encoding::Bson => hmap.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_str("application/bson")?,
+                ),
+            };
+        }
 
         if let Some(attr) = attr {
             for (name, value) in attr {
@@ -252,6 +268,7 @@ mod tests {
             raw_bytes,
             attributes,
             encoding,
+            is_framed_batch: false,
         }
     }
 
@@ -317,7 +334,13 @@ mod tests {
 
         // Call post
         let res = sink
-            .post(&resource, event.raw_bytes, event.encoding, event.attributes)
+            .post(
+                &resource,
+                event.raw_bytes,
+                event.encoding,
+                event.attributes,
+                false,
+            )
             .await;
 
         assert!(res.is_ok(), "Failed to post event: {:?}", res);
@@ -352,7 +375,13 @@ mod tests {
 
             // Call publish method
             let result = sink
-                .post(resource, event.raw_bytes, event.encoding, event.attributes)
+                .post(
+                    resource,
+                    event.raw_bytes,
+                    event.encoding,
+                    event.attributes,
+                    false,
+                )
                 .await;
 
             // Verify success after retry
@@ -385,7 +414,13 @@ mod tests {
 
             // Call publish method
             let result = sink
-                .post(resource, event.raw_bytes, event.encoding, event.attributes)
+                .post(
+                    resource,
+                    event.raw_bytes,
+                    event.encoding,
+                    event.attributes,
+                    false,
+                )
                 .await;
 
             // Verify failure without retry
@@ -455,6 +490,7 @@ mod tests {
                 event.raw_bytes,
                 event.encoding,
                 event.attributes,
+                false,
             )
             .await;
 
@@ -483,7 +519,13 @@ mod tests {
         // Capture timing of each attempt
         let start = Instant::now();
         let _ = sink
-            .post(resource, event.raw_bytes, event.encoding, event.attributes)
+            .post(
+                resource,
+                event.raw_bytes,
+                event.encoding,
+                event.attributes,
+                false,
+            )
             .await;
         let total_time = start.elapsed();
 
@@ -517,6 +559,7 @@ mod tests {
                 event.raw_bytes,
                 event.encoding,
                 event.attributes,
+                false,
             )
             .await;
 

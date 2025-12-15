@@ -151,6 +151,12 @@ sinks = [
 
 # examples for batch processing
 
+# Note on Batch Processing:
+# Batch mode is optimized for MongoDB using framed BSON.
+# - Mixed output encodings (e.g. one sink using 'bson' and another 'json') are NOT supported in batch mode.
+# - PubSub and Kafka sinks do not support the framed batch format.
+# - For MongoDB sources/sinks, the inner item encoding is restricted to 'bson'.
+
 [[connectors]]
 enabled = true
 name = "batch-mongodb-connector"

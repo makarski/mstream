@@ -1,22 +1,23 @@
-use anyhow::{anyhow, bail, Ok};
+use std::convert::TryInto;
+
+use anyhow::anyhow;
 use mongodb::bson::{self, Document};
 
-use super::Schema;
-use crate::config::Encoding::{self, Avro, Bson, Json, Other};
-use crate::encoding::avro;
+use crate::config::Encoding::{self, Avro, Bson, Json};
 use crate::encoding::avro::types::{AvroBatchBytesWithSchema, AvroBytes};
 use crate::encoding::avro::validate::{
     validate as avro_validate, validate_many as avro_validate_many,
 };
-use crate::encoding::other::OtherBytes;
+use crate::encoding::avro::{self};
 use crate::encoding::xson::{
-    BsonBatchBytesWithSchema, BsonBytes, BsonBytesWithSchema, JsonBatchBytesWithSchema, JsonBytes,
-    JsonBytesWithSchema,
+    BsonBatchBytes, BsonBatchBytesWithSchema, BsonBytes, BsonBytesWithSchema, JsonBatchBytes,
+    JsonBatchBytesWithSchema, JsonBytes, JsonBytesWithSchema,
 };
+use crate::schema::Schema; // Ensure these are imported
 
 pub enum SchemaEncoder {
     SingleEvent(Vec<u8>),
-    Batch(Vec<Vec<u8>>),
+    Batch(Box<dyn Iterator<Item = Vec<u8>> + Send>),
 }
 
 impl SchemaEncoder {
@@ -24,8 +25,12 @@ impl SchemaEncoder {
         SchemaEncoder::SingleEvent(b)
     }
 
-    pub fn new_batch(b: Vec<Vec<u8>>) -> Self {
-        SchemaEncoder::Batch(b)
+    pub fn new_batch<I>(b: I) -> Self
+    where
+        I: IntoIterator<Item = Vec<u8>>,
+        I::IntoIter: Send + 'static,
+    {
+        SchemaEncoder::Batch(Box::new(b.into_iter()))
     }
 
     fn apply_schema_for_one(
@@ -34,59 +39,48 @@ impl SchemaEncoder {
         target: &Encoding,
         item_schema: &Schema,
     ) -> anyhow::Result<Vec<u8>> {
-        match (from, target) {
-            // Other conversions
-            (Other, Bson | Avro | Json) => Err(anyhow!(
-                "conversion from Other to Avro/Bson/Json is not supported"
-            )),
-            (Bson | Avro | Json, Other) => Err(anyhow!(
-                "conversion from Avro/Bson/Json to Other is not supported"
-            )),
+        match from {
+            Json => match target {
+                Json => JsonBytesWithSchema::new(b, item_schema)
+                    .try_into()
+                    .map(|jb: JsonBytes| jb.0),
+                Bson => JsonBytesWithSchema::new(b, item_schema)
+                    .try_into()
+                    .map(|bb: BsonBytes| bb.0),
+                Avro => JsonBytesWithSchema::new(b, item_schema)
+                    .try_into()
+                    .map(|ab: AvroBytes| ab.0),
+            },
 
-            (Other, Other) => Ok(b),
+            Bson => match target {
+                Bson => BsonBytesWithSchema::new(b, item_schema)
+                    .try_into()
+                    .map(|bb: BsonBytes| bb.0),
+                Json => BsonBytesWithSchema::new(b, item_schema)
+                    .try_into()
+                    .map(|jb: JsonBytes| jb.0),
+                Avro => BsonBytesWithSchema::new(b, item_schema)
+                    .try_into()
+                    .map(|ab: AvroBytes| ab.0),
+            },
 
-            // From Json
-            (Json, Json) => JsonBytesWithSchema::new(b, item_schema)
-                .try_into()
-                .map(|jb: JsonBytes| jb.0),
-            (Json, Bson) => JsonBytesWithSchema::new(b, item_schema)
-                .try_into()
-                .map(|bb: BsonBytes| bb.0),
-            (Json, Avro) => JsonBytesWithSchema::new(b, item_schema)
-                .try_into()
-                .map(|ab: AvroBytes| ab.0),
-
-            // From Bson
-            (Bson, Bson) => BsonBytesWithSchema::new(b, item_schema)
-                .try_into()
-                .map(|bb: BsonBytes| bb.0),
-            (Bson, Json) => BsonBytesWithSchema::new(b, item_schema)
-                .try_into()
-                .map(|jb: JsonBytes| jb.0),
-            (Bson, Avro) => BsonBytesWithSchema::new(b, item_schema)
-                .try_into()
-                .map(|ab: AvroBytes| ab.0),
-
-            // From Avro
-            (Avro, to_encoding) => {
+            Avro => {
+                // Perform common validation/setup for Avro input
+                // Note: For Framed target, we might NOT want to validate if we just want to wrap raw bytes.
+                // But usually, we want to ensure data is valid before passing it on.
+                // Let's assume we validate.
                 let avro_schema = item_schema.try_as_avro()?;
 
-                match to_encoding {
+                match target {
                     Avro => Ok(avro_validate(b, &avro_schema)?),
                     Json => {
                         let bson_doc = avro::decode(&b, avro_schema)?;
-                        serde_json::to_vec(&bson_doc).map_err(|e| {
-                            anyhow!("from_avro: failed to serialize bson doc to json: {}", e)
-                        })
+                        serde_json::to_vec(&bson_doc)
+                            .map_err(|e| anyhow!("from_avro: json error: {}", e))
                     }
                     Bson => {
                         let bson_doc = avro::decode(&b, avro_schema)?;
-                        bson::to_vec(&bson_doc).map_err(|e| {
-                            anyhow!("from_avro: failed to serialize bson doc to bson: {}", e)
-                        })
-                    }
-                    Other => {
-                        bail!("from_avro: unsupported target encoding: {:?}", to_encoding)
+                        bson::to_vec(&bson_doc).map_err(|e| anyhow!("from_avro: bson error: {}", e))
                     }
                 }
             }
@@ -94,57 +88,95 @@ impl SchemaEncoder {
     }
 
     fn apply_schema_for_many(
-        batch: Vec<Vec<u8>>,
+        batch: Box<dyn Iterator<Item = Vec<u8>> + Send>,
         from: &Encoding,
         to: &Encoding,
         item_schema: &Schema,
     ) -> anyhow::Result<Vec<u8>> {
-        if batch.is_empty() {
-            return Ok(Vec::new());
-        }
+        use crate::encoding::framed::{BatchContentType, FramedBytes};
 
         match (from, to) {
-            (Other, Other) => OtherBytes(batch).try_into(),
-            (Other, Avro | Bson | Json) => Err(anyhow!(
-                "conversion from Other to Avro/Bson/Json is not supported"
-            )),
-            (Avro | Bson | Json, Other) => Err(anyhow!(
-                "conversion from Avro/Bson/Json to Other is not supported"
-            )),
-            (Json, Json) => JsonBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .map(|jb: JsonBytes| jb.0),
-            (Json, Bson) => JsonBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .map(|jb: BsonBytes| jb.0),
-            (Json, Avro) => JsonBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .map(|jb: AvroBytes| jb.0),
+            (Json, Json) => {
+                let processed = JsonBatchBytesWithSchema::new(batch, item_schema)
+                    .data
+                    .into_iter()
+                    .map(|item| item.data);
+                FramedBytes::new(processed, BatchContentType::Json).try_into()
+            }
 
-            (Bson, Json) => BsonBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .map(|bb: JsonBytes| bb.0),
-            (Bson, Bson) => BsonBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .map(|bb: BsonBytes| bb.0),
-            (Bson, Avro) => BsonBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .map(|bb: AvroBytes| bb.0),
+            (Json, Bson) => {
+                let processed = JsonBatchBytesWithSchema::new(batch, item_schema)
+                    .try_into()
+                    .map(|jb: BsonBatchBytes| jb.0.into_iter().map(|b| b.0))?;
+                FramedBytes::new(processed, BatchContentType::Bson).try_into()
+            }
+
+            (Json, Avro) => {
+                let avro_bytes: AvroBytes =
+                    JsonBatchBytesWithSchema::new(batch, item_schema).try_into()?;
+                FramedBytes::new(vec![avro_bytes.0], BatchContentType::Avro).try_into()
+            }
+
+            (Bson, Json) => {
+                let processed = BsonBatchBytesWithSchema::new(batch, item_schema)
+                    .try_into()
+                    .map(|jb: JsonBatchBytes| jb.0.into_iter().map(|b| b.0))?;
+                FramedBytes::new(processed, BatchContentType::Json).try_into()
+            }
+
+            (Bson, Bson) => {
+                let processed = BsonBatchBytesWithSchema::new(batch, item_schema)
+                    .data
+                    .into_iter()
+                    .map(|item| item.data);
+                FramedBytes::new(processed, BatchContentType::Bson).try_into()
+            }
+
+            (Bson, Avro) => {
+                let avro_bytes: AvroBytes =
+                    BsonBatchBytesWithSchema::new(batch, item_schema).try_into()?;
+                FramedBytes::new(vec![avro_bytes.0], BatchContentType::Avro).try_into()
+            }
 
             (Avro, Avro) => {
                 let avro_schema = item_schema.try_as_avro()?;
-                let validated_batch = avro_validate_many(batch, &avro_schema)?;
-                Ok(validated_batch)
+                let validated_block = avro_validate_many(batch, &avro_schema)?;
+                FramedBytes::new(vec![validated_block], BatchContentType::Avro).try_into()
             }
-            (Avro, Json) => AvroBatchBytesWithSchema::new(batch, item_schema)
-                .try_into()
-                .and_then(|docs: Vec<Document>| docs.try_into())
-                .map(|jb: JsonBytes| jb.0),
 
-            (Avro, Bson) => AvroBatchBytesWithSchema::new(batch, item_schema)
+            (Avro, Json) => {
+                let docs: Vec<Document> =
+                    AvroBatchBytesWithSchema::new(batch, item_schema).try_into()?;
+                let json_batch: JsonBatchBytes = docs
+                    .into_iter()
+                    .map(|d| serde_json::to_vec(&d).map(JsonBytes))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow!("failed to convert docs to json: {}", e))
+                    .map(JsonBatchBytes)?;
+
+                FramedBytes::new(
+                    json_batch.0.into_iter().map(|b| b.0),
+                    BatchContentType::Json,
+                )
                 .try_into()
-                .and_then(|docs: Vec<Document>| docs.try_into())
-                .map(|bb: BsonBytes| bb.0),
+            }
+
+            (Avro, Bson) => {
+                let docs: Vec<Document> =
+                    AvroBatchBytesWithSchema::new(batch, item_schema).try_into()?;
+                let bson_batch: BsonBatchBytes = docs
+                    .into_iter()
+                    .map(|d| bson::to_vec(&d).map(BsonBytes))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow!("failed to convert docs to bson: {}", e))
+                    .map(BsonBatchBytes)?;
+
+                FramedBytes::new(
+                    bson_batch.0.into_iter().map(|b| b.0),
+                    BatchContentType::Bson,
+                )
+                .try_into()
+            }
         }
     }
 
@@ -211,97 +243,6 @@ mod tests {
     // Helper to create valid BSON encoded data
     fn create_bson_data() -> Vec<u8> {
         bson::to_vec(&doc! {"id": "test123", "value": 42}).unwrap()
-    }
-
-    #[test]
-    fn test_other_to_other_encoding() {
-        let data = b"some arbitrary binary data".to_vec();
-        let schema = Schema::Undefined;
-
-        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
-            &Encoding::Other,
-            &Encoding::Other,
-            &schema,
-        );
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), data);
-    }
-
-    #[test]
-    fn test_other_to_structured_format() {
-        let data = b"some arbitrary binary data".to_vec();
-        let schema = Schema::Undefined;
-
-        // Test Other -> Avro
-        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
-            &Encoding::Other,
-            &Encoding::Avro,
-            &schema,
-        );
-
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("conversion from Other to Avro/Bson/Json is not supported"));
-
-        // Test Other -> Json
-        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
-            &Encoding::Other,
-            &Encoding::Json,
-            &schema,
-        );
-
-        assert!(result.is_err());
-
-        // Test Other -> Bson
-        let result = SchemaEncoder::new_event(data.clone()).apply_schema(
-            &Encoding::Other,
-            &Encoding::Bson,
-            &schema,
-        );
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_structured_to_other_format() {
-        let avro_data = create_avro_data();
-        let json_data = create_json_data();
-        let bson_data = create_bson_data();
-        let schema = create_test_avro_schema();
-
-        // Test Avro -> Other
-        let result = SchemaEncoder::new_event(avro_data).apply_schema(
-            &Encoding::Avro,
-            &Encoding::Other,
-            &schema,
-        );
-
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("conversion from Avro/Bson/Json to Other is not supported"));
-
-        // Test Json -> Other
-        let result = SchemaEncoder::new_event(json_data).apply_schema(
-            &Encoding::Json,
-            &Encoding::Other,
-            &schema,
-        );
-
-        assert!(result.is_err());
-
-        // Test Bson -> Other
-        let result = SchemaEncoder::new_event(bson_data).apply_schema(
-            &Encoding::Bson,
-            &Encoding::Other,
-            &schema,
-        );
-
-        assert!(result.is_err());
     }
 
     #[test]

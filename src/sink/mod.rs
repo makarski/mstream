@@ -46,26 +46,21 @@ impl EventSink for SinkProvider {
                     .await
             }
             SinkProvider::MongoDb(p) => p
-                .persist2(sink_event.raw_bytes, &topic)
+                .persist2(
+                    sink_event.raw_bytes,
+                    &topic,
+                    &sink_event.encoding,
+                    sink_event.is_framed_batch,
+                )
                 .await
                 .map_err(|err| anyhow!("failed to persist to collection: {}. {}", topic, err)),
-
-            // match sink_event.bson_doc {
-            //     Some(doc) => p
-            //         .persist(doc, &topic)
-            //         .await
-            //         .map_err(|err| anyhow!("failed to persist to collection: {}. {}", topic, err)),
-            //     None => Err(anyhow::anyhow!(
-            //         "bson_doc is missing for mongodb persister. collection: {}",
-            //         topic
-            //     )),
-            // },
             SinkProvider::Http(p) => {
                 p.post(
                     &topic,
                     sink_event.raw_bytes,
                     sink_event.encoding,
                     sink_event.attributes,
+                    sink_event.is_framed_batch,
                 )
                 .await
             }

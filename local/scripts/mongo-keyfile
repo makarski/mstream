@@ -1,0 +1,11 @@
+# MongoDB keyfile for replica set authentication
+# 
+# This file should NOT be committed to version control.
+# 
+# For local development, generate a keyfile dynamically or create it manually.
+# For production, use a secure, unique keyfile and manage it with a secrets manager.
+# 
+# Example (to generate a keyfile):
+#   openssl rand -base64 756 > local/scripts/mongo-keyfile
+# 
+# Add this file to .gitignore to prevent accidental commits.

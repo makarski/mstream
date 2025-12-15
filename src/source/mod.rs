@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use mongodb::bson::Document;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::Encoding;
@@ -16,41 +15,23 @@ pub trait EventSource {
     async fn listen(&mut self, events: Sender<SourceEvent>) -> anyhow::Result<()>;
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SourceEvent {
     pub raw_bytes: Vec<u8>,
-    pub document: Option<Document>,
     pub attributes: Option<HashMap<String, String>>,
     pub encoding: Encoding,
+    pub is_framed_batch: bool,
 }
 
-#[derive(Debug)]
-pub struct SourceBatch(Vec<SourceEvent>);
-
-impl SourceBatch {
-    pub fn new(events: Vec<SourceEvent>) -> Self {
-        Self(events)
-    }
-}
-
-impl Iterator for SourceBatch {
-    type Item = SourceEvent;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.pop()
-    }
-}
-
-impl SourceBatch {
-    pub fn encoding(&self) -> Encoding {
-        self.0
-            .first()
-            .map(|e| e.encoding.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn attributes(&self) -> Option<&HashMap<String, String>> {
-        self.0.first().and_then(|e| e.attributes.as_ref())
+#[cfg(test)]
+impl Default for SourceEvent {
+    fn default() -> Self {
+        Self {
+            raw_bytes: Vec::new(),
+            attributes: None,
+            encoding: Encoding::Json,
+            is_framed_batch: false,
+        }
     }
 }
 
@@ -65,9 +46,9 @@ impl SourceEvent {
             .apply_schema(&self.encoding, target_encoding, schema)
             .map(|b| SourceEvent {
                 raw_bytes: b,
-                document: self.document,
                 attributes: self.attributes,
                 encoding: target_encoding.clone(),
+                is_framed_batch: self.is_framed_batch,
             })
     }
 }

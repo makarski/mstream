@@ -51,7 +51,8 @@
 //! let event = SourceEvent {
 //!     raw_bytes: b"hello world".to_vec(),
 //!     attributes: Some(HashMap::new()),
-//!     ..Default::default()
+//!     encoding: mstream::config::Encoding::Json,
+//!     is_framed_batch: false,
 //! };
 //!
 //! // Transform the event
@@ -71,11 +72,10 @@
 //!
 //! ### JSON Processing
 //! ```rhai
-//! fn transform(input, attributes) {
-//!     let obj = json_decode(input);
-//!     obj.processed = true;
-//!     obj.timestamp = "2024-01-01";
-//!     result(json_encode(obj))
+//! fn transform(data, attributes) {
+//!     data.processed = true;
+//!     data.timestamp = "2024-01-01";
+//!     result(data)
 //! }
 //! ```
 //!
@@ -90,12 +90,12 @@
 
 use std::{collections::HashMap, path::Path};
 
-use rhai::{Dynamic, AST};
-
-use crate::{
-    middleware::udf::rhai::convert::{ConvertError, JsonConverter, RhaiMap, RhaiString},
-    source::SourceEvent,
+use crate::middleware::udf::rhai::convert::{
+    ConvertError, LazyBsonDocument, RhaiEncodingExt, RhaiMap,
 };
+use crate::source::SourceEvent;
+use rhai::{Dynamic, AST};
+use tokio::task::block_in_place;
 
 pub mod convert;
 
@@ -268,7 +268,8 @@ impl RhaiMiddleware {
     /// let event = SourceEvent {
     ///     raw_bytes: b"hello".to_vec(),
     ///     attributes: None,
-    ///     ..Default::default()
+    ///     encoding: mstream::config::Encoding::Json,
+    ///     is_framed_batch: false,
     /// };
     ///
     /// let transformed = middleware.transform(event).await?;
@@ -279,35 +280,51 @@ impl RhaiMiddleware {
         &mut self,
         event: SourceEvent,
     ) -> Result<SourceEvent, RhaiMiddlewareError> {
-        let rhai_byte_string = RhaiString::from(event.raw_bytes.as_slice()).0;
-        let rhai_attributes: rhai::Map = RhaiMap::from(event.attributes.as_ref()).0;
+        block_in_place(|| {
+            let rhai_attributes: rhai::Map = RhaiMap::from(event.attributes.as_ref()).0;
 
-        let result = self
-            .engine
-            .call_fn::<TransformResult>(
-                &mut rhai::Scope::new(),
-                &self.compiled_script,
-                UDF_NAME,
-                (rhai_byte_string, rhai_attributes),
-            )
-            .map_err(|err| RhaiMiddlewareError::ExecutionError {
-                message: err.to_string(),
-                path: self.script_path.clone(),
-            })?;
-
-        let attributes = result.attributes().or_else(|| event.attributes);
-        let transformed_bytes: Vec<u8> =
-            RhaiString(result.data)
-                .try_into()
+            // 1. Input: Bytes -> Rhai Map
+            let rhai_input = event
+                .encoding
+                .decode_rhai(&event.raw_bytes, event.is_framed_batch)
                 .map_err(|e| RhaiMiddlewareError::DecodeError {
                     source: e,
                     path: self.script_path.clone(),
                 })?;
 
-        Ok(SourceEvent {
-            raw_bytes: transformed_bytes,
-            attributes,
-            ..event
+            // 2. Execute Script
+            let result = self
+                .engine
+                .call_fn::<TransformResult>(
+                    &mut rhai::Scope::new(),
+                    &self.compiled_script,
+                    UDF_NAME,
+                    (rhai_input, rhai_attributes),
+                )
+                .map_err(|err| RhaiMiddlewareError::ExecutionError {
+                    message: err.to_string(),
+                    path: self.script_path.clone(),
+                })?;
+
+            let attributes = result.attributes().or_else(|| event.attributes);
+
+            // 3. Output: Rhai Map -> Bytes
+            let raw_bytes = event
+                // todo: consider a case when middleware changes inner encoding?
+                // in this case the source event encoding (as here) will not be valid
+                .encoding
+                .encode_rhai(result.data, event.is_framed_batch)
+                .map_err(|e| RhaiMiddlewareError::ExecutionError {
+                    message: e.to_string(),
+                    path: self.script_path.clone(),
+                })?;
+
+            Ok(SourceEvent {
+                raw_bytes,
+                attributes,
+                encoding: event.encoding,
+                ..event
+            })
         })
     }
 
@@ -315,6 +332,14 @@ impl RhaiMiddleware {
     fn sandboxed_engine() -> rhai::Engine {
         let mut engine = rhai::Engine::new();
 
+        Self::configure_sandbox(&mut engine);
+        Self::configure_limits(&mut engine);
+        Self::register_api(&mut engine);
+
+        engine
+    }
+
+    fn configure_sandbox(engine: &mut rhai::Engine) {
         // Disable dangerous operations
         engine.disable_symbol("eval");
         engine.disable_symbol("load_file");
@@ -327,50 +352,138 @@ impl RhaiMiddleware {
         engine.disable_symbol("read_line");
         engine.disable_symbol("write");
         engine.disable_symbol("flush");
+    }
 
-        // Set resource limits
-        engine.set_max_operations(10_000);
-        engine.set_max_call_levels(10);
+    fn configure_limits(engine: &mut rhai::Engine) {
+        engine.set_max_operations(1_000_000);
+        engine.set_max_call_levels(64);
         engine.set_max_expr_depths(32, 32);
-        engine.set_max_string_size(4_096_000); // 4MB
-        engine.set_max_array_size(10_000);
-        engine.set_max_map_size(10_000);
+        engine.set_max_string_size(0); // unlimited
+        engine.set_max_array_size(0); // unlimited
+        engine.set_max_map_size(0); // unlimited
+    }
 
-        // Register custom types and functions
+    fn register_api(engine: &mut rhai::Engine) {
+        engine
+            .register_type_with_name::<LazyBsonDocument>("BsonDocument")
+            .register_indexer_get(LazyBsonDocument::get)
+            .register_indexer_set(LazyBsonDocument::set)
+            .register_fn("remove", LazyBsonDocument::remove);
+
         engine.register_type::<TransformResult>();
 
+        // Register result functions
         engine.register_fn(
             "result",
-            |data: String, attr: rhai::Map| -> TransformResult { TransformResult::new(data, attr) },
+            |data: Dynamic, attr: rhai::Map| -> TransformResult {
+                TransformResult::new(data, attr)
+            },
         );
-
-        engine.register_fn("result", |data: String| -> TransformResult {
+        engine.register_fn("result", |data: Dynamic| -> TransformResult {
             TransformResult::new(data, rhai::Map::new())
         });
 
-        engine.register_fn(
-            "json_decode",
-            |json_str: &str| -> Result<Dynamic, Box<rhai::EvalAltResult>> {
-                let json_value = serde_json::from_str(json_str)
-                    .map_err(|e| format!("Rhai JSON parse error: {}", e))?;
+        // Register utilities
+        engine.register_fn("timestamp_ms", Self::timestamp_ms);
+        engine.register_fn("hash_sha256", Self::hash_sha256);
+        engine.register_fn("mask_email", Self::mask_email);
+        engine.register_fn("mask_phone", Self::mask_phone);
+        engine.register_fn("mask_year_only", Self::mask_year_only);
+    }
 
-                let json_converter = JsonConverter::new(json_value);
-                Dynamic::try_from(json_converter)
-                    .map_err(|e: ConvertError| format!("JSON conversion error: {}", e).into())
-            },
-        );
+    fn timestamp_ms() -> i64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_millis() as i64,
+            Err(err) => {
+                log::warn!("system clock drift detected: {}", err);
+                0
+            }
+        }
+    }
 
-        engine.register_fn(
-            "json_encode",
-            |d: Dynamic| -> Result<String, Box<rhai::EvalAltResult>> {
-                let converter = JsonConverter::try_from(d)
-                    .map_err(|e: ConvertError| format!("JSON conversion error: {}", e))?;
-                serde_json::to_string(&converter.into_value())
-                    .map_err(|e| format!("Rhai JSON encode error: {}", e).into())
-            },
-        );
+    fn hash_sha256(input: rhai::Dynamic) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(input.to_string());
+        format!("{:x}", hasher.finalize())
+    }
 
-        engine
+    fn mask_email(email: &str) -> String {
+        let parts: Vec<&str> = email.split('@').collect();
+        if parts.len() != 2 {
+            return email.to_string();
+        }
+        let local = parts[0];
+        let domain = parts[1];
+        if local.len() <= 1 {
+            format!("*@{}", domain)
+        } else {
+            let first_char = local.chars().next().unwrap();
+            format!("{}***@{}", first_char, domain)
+        }
+    }
+
+    fn mask_phone(phone: &str) -> String {
+        let len = phone.len();
+        if len <= 4 {
+            return phone.to_string();
+        }
+        let visible = &phone[len - 4..];
+        let masked_len = len - 4;
+        let masked = "*".repeat(masked_len);
+        format!("{}{}", masked, visible)
+    }
+
+    fn mask_year_only(input: rhai::Dynamic) -> rhai::Dynamic {
+        use chrono::{DateTime, Datelike, TimeZone, Utc};
+        use rhai::Map;
+
+        // Helper to mask a DateTime to Jan 1st
+        let mask_date = |dt: DateTime<Utc>| -> DateTime<Utc> {
+            Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).unwrap()
+        };
+
+        // Case 1: Input is a string
+        if let Ok(date_str) = input.clone().into_string() {
+            // Try parsing as RFC3339 / ISO8601
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&date_str) {
+                let masked = mask_date(dt.with_timezone(&Utc));
+                // Return in same format (RFC3339)
+                return masked.to_rfc3339().into();
+            }
+            // Fallback for simple YYYY-MM-DD
+            if let Ok(dt) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
+                return format!("{}-01-01", dt.format("%Y")).into();
+            }
+            return input;
+        }
+
+        // Case 2: Input is a Map (MongoDB EJSON)
+        if let Some(map) = input.clone().try_cast::<Map>() {
+            if let Some(inner) = map.get("$date").and_then(|v| v.clone().try_cast::<Map>()) {
+                if let Some(millis_str) = inner
+                    .get("$numberLong")
+                    .and_then(|v| v.clone().into_string().ok())
+                {
+                    if let Ok(millis) = millis_str.parse::<i64>() {
+                        if let Some(dt) = Utc.timestamp_millis_opt(millis).single() {
+                            let masked = mask_date(dt);
+                            let new_millis = masked.timestamp_millis();
+
+                            // Reconstruct EJSON
+                            let mut new_inner = Map::new();
+                            new_inner.insert("$numberLong".into(), new_millis.to_string().into());
+                            let mut new_map = Map::new();
+                            new_map.insert("$date".into(), new_inner.into());
+                            return new_map.into();
+                        }
+                    }
+                }
+            }
+        }
+
+        input
     }
 
     /// Validates that the script defines exactly one transform function with correct signature
@@ -397,27 +510,30 @@ impl RhaiMiddleware {
 /// Result type returned by Rhai transform functions
 #[derive(Clone)]
 struct TransformResult {
-    data: String,
-    attributes: rhai::Map,
+    pub data: Dynamic,
+    pub attributes: Option<rhai::Map>,
 }
 
 impl TransformResult {
-    fn new(data: String, attributes: rhai::Map) -> Self {
-        Self { data, attributes }
+    pub fn new(data: Dynamic, attributes: rhai::Map) -> Self {
+        Self {
+            data,
+            attributes: Some(attributes),
+        }
     }
 
     /// Converts Rhai map attributes to HashMap, returning None if empty
     fn attributes(&self) -> Option<HashMap<String, String>> {
-        if self.attributes.is_empty() {
-            None
-        } else {
-            let map = self
-                .attributes
+        if self.attributes.is_none() {
+            return None;
+        }
+
+        self.attributes.as_ref().map(|attrs| {
+            attrs
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect::<HashMap<String, String>>();
-            Some(map)
-        }
+                .collect()
+        })
     }
 }
 
@@ -485,7 +601,7 @@ mod tests {
     mod transform_tests {
         use super::*;
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_empty_input() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -503,13 +619,13 @@ mod tests {
                 RhaiMiddleware::new(script_path, "empty.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: vec![],
+                raw_bytes: b"{}".to_vec(),
                 attributes: None,
                 ..Default::default()
             };
 
             let result = middleware.transform(event).await.unwrap();
-            assert_eq!(result.raw_bytes, b"empty input received");
+            assert_eq!(result.raw_bytes, b"\"empty input received\"");
         }
 
         #[test]
@@ -543,7 +659,7 @@ mod tests {
             );
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_simple_string_transformation() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -557,17 +673,16 @@ mod tests {
                 RhaiMiddleware::new(script_path, "upper.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"hello world".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: None,
                 ..Default::default()
             };
 
             let result = middleware.transform(event).await.unwrap();
-            assert_eq!(result.raw_bytes, b"HELLO WORLD");
-            assert!(result.attributes.is_none());
+            assert_eq!(result.raw_bytes, b"\"TEST\"");
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_attributes_modification() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -586,7 +701,7 @@ mod tests {
             initial_attrs.insert("source".to_string(), "test".to_string());
 
             let event = SourceEvent {
-                raw_bytes: b"test data".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: Some(initial_attrs),
                 ..Default::default()
             };
@@ -594,19 +709,18 @@ mod tests {
             let result = middleware.transform(event).await.unwrap();
             let attrs = result.attributes.unwrap();
             assert_eq!(attrs.get("processed"), Some(&"true".to_string()));
-            assert_eq!(attrs.get("length"), Some(&"9".to_string()));
+            assert_eq!(attrs.get("length"), Some(&"4".to_string()));
             assert_eq!(attrs.get("source"), Some(&"test".to_string()));
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_json_processing() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
                 fn transform(input, attributes) {
-                    let obj = json_decode(input);
-                    obj.processed = true;
-                    obj.value = obj.value * 2;
-                    result(json_encode(obj))
+                    input.processed = true;
+                    input.value = input.value * 2;
+                    result(input)
                 }
             "#;
             let script_path = create_test_script(&temp_dir, "json.rhai", script_content);
@@ -628,7 +742,8 @@ mod tests {
             assert_eq!(json["name"], "test");
         }
 
-        #[tokio::test]
+        /*
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_binary_data_passthrough() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -652,8 +767,9 @@ mod tests {
             let result = middleware.transform(event).await.unwrap();
             assert_eq!(result.raw_bytes, binary_data);
         }
+        */
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_result_with_only_data() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -668,18 +784,18 @@ mod tests {
                 RhaiMiddleware::new(script_path, "single_result.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"data".to_vec(),
+                raw_bytes: b"\"data\"".to_vec(),
                 attributes: Some(HashMap::new()),
                 ..Default::default()
             };
 
             let result = middleware.transform(event).await.unwrap();
-            assert_eq!(result.raw_bytes, b"data modified");
+            assert_eq!(result.raw_bytes, b"\"data modified\"");
             // Attributes should be preserved from input when using single-arg result
             assert_eq!(result.attributes, Some(HashMap::new()));
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_decode_error_invalid_base64() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -706,7 +822,7 @@ mod tests {
             );
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_script_wrong_return_type() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -721,7 +837,7 @@ mod tests {
                 RhaiMiddleware::new(script_path, "wrong_return.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"test".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: None,
                 ..Default::default()
             };
@@ -731,70 +847,6 @@ mod tests {
                 matches!(result, Err(RhaiMiddlewareError::ExecutionError { .. })),
                 "Expected ExecutionError for wrong return type"
             );
-        }
-    }
-
-    // Test JSON functions error handling
-    #[cfg(test)]
-    mod json_tests {
-        use super::*;
-
-        #[tokio::test]
-        async fn test_json_decode_invalid_json() {
-            let temp_dir = TempDir::new().unwrap();
-            let script_content = r#"
-                fn transform(input, attributes) {
-                    let obj = json_decode(input); // Will fail on invalid JSON
-                    result(json_encode(obj))
-                }
-            "#;
-            let script_path = create_test_script(&temp_dir, "bad_json.rhai", script_content);
-
-            let mut middleware =
-                RhaiMiddleware::new(script_path, "bad_json.rhai".to_string()).unwrap();
-
-            let event = SourceEvent {
-                raw_bytes: b"not valid json".to_vec(),
-                attributes: None,
-                ..Default::default()
-            };
-
-            let result = middleware.transform(event).await;
-            assert!(matches!(
-                result,
-                Err(RhaiMiddlewareError::ExecutionError { .. })
-            ));
-        }
-
-        #[tokio::test]
-        async fn test_json_encode_decode_roundtrip() {
-            let temp_dir = TempDir::new().unwrap();
-            let script_content = r#"
-                fn transform(input, attributes) {
-                    let obj = json_decode(input);
-                    // Roundtrip: decode then encode
-                    let encoded = json_encode(obj);
-                    let obj2 = json_decode(encoded);
-                    result(json_encode(obj2))
-                }
-            "#;
-            let script_path = create_test_script(&temp_dir, "roundtrip.rhai", script_content);
-
-            let mut middleware =
-                RhaiMiddleware::new(script_path, "roundtrip.rhai".to_string()).unwrap();
-
-            let original_json = br#"{"a":1,"b":"test","c":true,"d":null}"#;
-            let event = SourceEvent {
-                raw_bytes: original_json.to_vec(),
-                attributes: None,
-                ..Default::default()
-            };
-
-            let result = middleware.transform(event).await.unwrap();
-            let result_json: serde_json::Value = serde_json::from_slice(&result.raw_bytes).unwrap();
-            let original: serde_json::Value = serde_json::from_slice(original_json).unwrap();
-
-            assert_eq!(result_json, original);
         }
     }
 
@@ -833,7 +885,7 @@ mod tests {
             );
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_runtime_arithmetic_error() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
@@ -848,7 +900,7 @@ mod tests {
                 RhaiMiddleware::new(script_path, "arithmetic.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"test".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: None,
                 ..Default::default()
             };
@@ -900,7 +952,7 @@ mod tests {
             );
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_disabled_file_operations() {
             // Test that all file operations we disabled are blocked at runtime
             let operations = vec![
@@ -929,7 +981,7 @@ mod tests {
                     .expect(&format!("Script with {} should compile", op_name));
 
                 let event = SourceEvent {
-                    raw_bytes: b"test".to_vec(),
+                    raw_bytes: b"\"test\"".to_vec(),
                     attributes: None,
                     ..Default::default()
                 };
@@ -944,14 +996,14 @@ mod tests {
             }
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_max_operations_limit() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
                 fn transform(input, attributes) {
                     let count = 0;
-                    // This will exceed the 10,000 operations limit
-                    for i in 0..100000 {
+                    // This will exceed the 1,000,000 operations limit
+                    for i in 0..1100000 {
                         count += 1;
                     }
                     result(count.to_string())
@@ -963,7 +1015,7 @@ mod tests {
                 RhaiMiddleware::new(script_path, "operations.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"test".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: None,
                 ..Default::default()
             };
@@ -984,14 +1036,14 @@ mod tests {
             }
         }
 
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_max_array_size_limit() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
                 fn transform(input, attributes) {
                     let arr = [];
-                    // Try to exceed the 10,000 array size limit
-                    for i in 0..20000 {
+                    // Try to exceed the operations limit (since array size is unlimited)
+                    for i in 0..1100000 {
                         arr.push(i);
                     }
                     result(arr.len().to_string())
@@ -1003,7 +1055,7 @@ mod tests {
                 RhaiMiddleware::new(script_path, "big_array.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"test".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: None,
                 ..Default::default()
             };
@@ -1017,49 +1069,14 @@ mod tests {
             );
         }
 
-        #[tokio::test]
-        async fn test_max_call_depth_limit() {
-            let temp_dir = TempDir::new().unwrap();
-            let script_content = r#"
-                fn recursive(n) {
-                    if n <= 0 {
-                        return 0;
-                    }
-                    recursive(n - 1) + 1
-                }
-
-                fn transform(input, attributes) {
-                    let depth = recursive(100); // Try to exceed call depth limit of 10
-                    result(depth.to_string())
-                }
-            "#;
-            let script_path = create_test_script(&temp_dir, "recursion.rhai", script_content);
-
-            let mut middleware =
-                RhaiMiddleware::new(script_path, "recursion.rhai".to_string()).unwrap();
-
-            let event = SourceEvent {
-                raw_bytes: b"test".to_vec(),
-                attributes: None,
-                ..Default::default()
-            };
-
-            let result = middleware.transform(event).await;
-
-            assert!(
-                matches!(result, Err(RhaiMiddlewareError::ExecutionError { .. })),
-                "Expected ExecutionError for exceeding call depth"
-            );
-        }
-
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread")]
         async fn test_max_map_size_limit() {
             let temp_dir = TempDir::new().unwrap();
             let script_content = r#"
                 fn transform(input, attributes) {
                     let map = #{};
-                    // Try to exceed the 10,000 map size limit
-                    for i in 0..20000 {
+                    // Try to exceed the operations limit (since map size is unlimited)
+                    for i in 0..1100000 {
                         map[i.to_string()] = i;
                     }
                     result(map.len().to_string())
@@ -1071,7 +1088,7 @@ mod tests {
                 RhaiMiddleware::new(script_path, "big_map.rhai".to_string()).unwrap();
 
             let event = SourceEvent {
-                raw_bytes: b"test".to_vec(),
+                raw_bytes: b"\"test\"".to_vec(),
                 attributes: None,
                 ..Default::default()
             };

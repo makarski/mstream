@@ -5,8 +5,7 @@
 //!
 //! ## Core Components
 //!
-//! - [`JsonConverter`]: Bidirectional conversion between `serde_json::Value` and Rhai `Dynamic`
-//! - [`RhaiString`]: Handles string/binary data conversion with automatic base64 encoding
+
 //! - [`RhaiMap`]: Converts between Rust `HashMap` and Rhai `Map`
 //!
 //! ## Binary Data Handling
@@ -14,25 +13,12 @@
 //! Binary data (non-UTF8 bytes) is automatically encoded as base64 with a `data:base64,`
 //! prefix when converting to strings, and decoded back when converting from strings.
 //!
-//! ## Example
-//!
-//! ```rust,ignore
-//! use mstream::middleware::udf::rhai::convert::{RhaiString, JsonConverter};
-//!
-//! // Convert binary data to Rhai string
-//! let binary = vec![0xFF, 0xFE, 0x00];
-//! let rhai_str = RhaiString::from(binary.as_slice());
-//! assert!(rhai_str.0.starts_with("data:base64,"));
-//!
-//! // Convert back to bytes
-//! let bytes: Vec<u8> = rhai_str.try_into()?;
-//! assert_eq!(bytes, binary);
-//! ```
 
-use base64::engine::{general_purpose, Engine as _};
-use rhai::{Array, Dynamic, Map};
-use serde_json::Value;
-use std::{collections::HashMap, convert::TryFrom};
+use mongodb::bson::{self, Bson, RawBsonRef, RawDocumentBuf};
+use rhai::{Array, Dynamic, EvalAltResult, Map};
+use std::{collections::HashMap, convert::TryFrom, sync::Arc};
+
+use crate::config::Encoding;
 
 /// Errors that can occur during type conversions
 #[derive(Debug, thiserror::Error)]
@@ -56,170 +42,349 @@ pub enum ConvertError {
     /// Invalid data URI format
     #[error("Invalid data URI format: expected 'data:base64,' prefix")]
     InvalidDataUri,
+
+    #[error("Failed to decode BSON: {0}")]
+    BsonDecodeError(#[from] bson::de::Error),
+
+    #[error("Failed to encode BSON: {0}")]
+    BsonEncodeError(#[from] bson::ser::Error),
+
+    #[error("Failed to decode JSON: {0}")]
+    JsonDecodeError(#[from] serde_json::Error),
+
+    #[error("Unsupported encoding: {0:?}")]
+    UnsupportedEncoding(Encoding),
+
+    #[error("Script must return a Map/Object for BSON encoding")]
+    InvalidBsonStructure,
 }
 
-/// Converter between `serde_json::Value` and Rhai `Dynamic`
-///
-/// This struct provides bidirectional conversion between JSON values and
-/// Rhai's dynamic type system, preserving structure and types where possible.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use serde_json::json;
-/// use rhai::Dynamic;
-/// use mstream::middleware::udf::rhai::convert::JsonConverter;
-///
-/// let json_value = json!({"name": "Alice", "age": 30});
-/// let converter = JsonConverter::new(json_value);
-/// let dynamic: Dynamic = converter.try_into()?;
-/// ```
-pub struct JsonConverter(serde_json::Value);
+pub trait RhaiEncodingExt {
+    /// Decodes raw bytes into a Rhai Dynamic value based on the encoding
+    fn decode_rhai(&self, bytes: &[u8], is_framed_batch: bool) -> Result<Dynamic, ConvertError>;
 
-impl TryFrom<JsonConverter> for Dynamic {
+    /// Encodes a Rhai Dynamic value back into bytes based on the encoding
+    fn encode_rhai(&self, data: Dynamic, as_framed_batch: bool) -> Result<Vec<u8>, ConvertError>;
+}
+
+impl RhaiEncodingExt for Encoding {
+    fn decode_rhai(&self, bytes: &[u8], is_framed_batch: bool) -> Result<Dynamic, ConvertError> {
+        if is_framed_batch {
+            return Self::decode_framed(bytes);
+        }
+
+        match self {
+            Encoding::Bson => {
+                let lazy = LazyBsonDocument::new(bytes.to_vec())
+                    .map_err(|_| ConvertError::InvalidBsonStructure)?;
+
+                Ok(Dynamic::from(lazy))
+            }
+            Encoding::Json => {
+                // Use native Rhai serde support (efficient)
+                serde_json::from_slice(bytes).map_err(ConvertError::from)
+            }
+            _ => Err(ConvertError::UnsupportedEncoding(self.clone())),
+        }
+    }
+
+    fn encode_rhai(&self, data: Dynamic, as_framed_batch: bool) -> Result<Vec<u8>, ConvertError> {
+        if as_framed_batch {
+            return Self::encode_framed(data, self);
+        }
+
+        match self {
+            Encoding::Bson => {
+                if data.is::<LazyBsonDocument>() {
+                    let lazy = data.cast::<LazyBsonDocument>();
+                    match lazy.state {
+                        LazyBsonState::Raw(raw) => return Ok(raw.as_bytes().to_vec()),
+                        LazyBsonState::Materialized(map) => {
+                            // if modified we serialize the map
+                            // and reuse BsonConverter logic
+                            let converter = BsonConverter::try_from(Dynamic::from(map))?;
+                            match converter.0 {
+                                Bson::Document(doc) => return Ok(mongodb::bson::to_vec(&doc)?),
+                                _ => return Err(ConvertError::InvalidBsonStructure),
+                            }
+                        }
+                    }
+                }
+
+                // Fallback: Eager conversion
+                let converter = BsonConverter::try_from(data)?;
+                match converter.0 {
+                    Bson::Document(doc) => Ok(mongodb::bson::to_vec(&doc)?),
+                    _ => Err(ConvertError::InvalidBsonStructure),
+                }
+            }
+
+            Encoding::Json => {
+                // Use native Rhai serde support
+                serde_json::to_vec(&data).map_err(ConvertError::from)
+            }
+            _ => Err(ConvertError::UnsupportedEncoding(self.clone())),
+        }
+    }
+}
+
+impl Encoding {
+    fn decode_framed(bytes: &[u8]) -> Result<Dynamic, ConvertError> {
+        use crate::encoding::framed::BatchContentType;
+
+        let (items, content_type) =
+            crate::encoding::framed::decode(bytes).map_err(|e| ConvertError::UnsupportedType {
+                type_name: format!("Framed decode error: {}", e),
+            })?;
+
+        let mut array = Vec::with_capacity(items.len());
+
+        for item in items {
+            let val = match content_type {
+                BatchContentType::Bson => {
+                    // Wrap the raw bytes in a LazyBsonDocument instead of eagerly parsing
+                    let lazy =
+                        LazyBsonDocument::new(item).map_err(|e| ConvertError::UnsupportedType {
+                            type_name: format!("Lazy BSON parse error: {}", e),
+                        })?;
+                    Dynamic::from(lazy)
+                }
+                BatchContentType::Json => {
+                    serde_json::from_slice(&item).map_err(ConvertError::from)?
+                }
+                BatchContentType::Raw => Dynamic::from_blob(item),
+                _ => {
+                    return Err(ConvertError::UnsupportedType {
+                        type_name: "Avro/Other in Framed".into(),
+                    })
+                }
+            };
+            array.push(val);
+        }
+        Ok(Dynamic::from_array(array))
+    }
+
+    fn encode_framed(data: Dynamic, target_encoding: &Encoding) -> Result<Vec<u8>, ConvertError> {
+        use crate::encoding::framed::{BatchContentType, FramedWriter};
+
+        if !data.is_array() {
+            return Err(ConvertError::UnsupportedType {
+                type_name: "Expected Array for Framed encoding".into(),
+            });
+        }
+
+        let array = data.into_array().expect("checked is_array");
+        let capacity = array.len() * 4096; // 4Kb: Heuristic pre-allocation
+
+        let content_type = match target_encoding {
+            Encoding::Json => BatchContentType::Json,
+            _ => BatchContentType::Bson,
+        };
+
+        let mut writer = FramedWriter::new(content_type, capacity);
+
+        for item in array {
+            match content_type {
+                BatchContentType::Json => {
+                    writer
+                        .add_item_with(|buf| {
+                            serde_json::to_writer(buf, &item).map_err(ConvertError::from)
+                        })
+                        .map_err(|e| ConvertError::UnsupportedType {
+                            type_name: format!("Json encode error: {}", e),
+                        })?;
+                }
+                BatchContentType::Bson => {
+                    if item.is::<LazyBsonDocument>() {
+                        let lazy = item.cast::<LazyBsonDocument>();
+                        match lazy.state {
+                            LazyBsonState::Raw(raw) => {
+                                writer
+                                    .add_item_with(|buf| {
+                                        use std::io::Write;
+                                        buf.write_all(raw.as_bytes()).map_err(|e| {
+                                            ConvertError::BsonEncodeError(
+                                                mongodb::bson::ser::Error::Io(std::sync::Arc::new(
+                                                    e,
+                                                )),
+                                            )
+                                        })
+                                    })
+                                    .map_err(|e| ConvertError::UnsupportedType {
+                                        type_name: format!("Lazy BSON write error: {}", e),
+                                    })?;
+                                continue;
+                            }
+                            LazyBsonState::Materialized(map) => {
+                                let converter = BsonConverter::try_from(Dynamic::from(map))?;
+                                match converter.0 {
+                                    Bson::Document(doc) => {
+                                        writer
+                                            .add_item_with(|buf| {
+                                                doc.to_writer(buf)
+                                                    .map_err(ConvertError::BsonEncodeError)
+                                            })
+                                            .map_err(|e| ConvertError::UnsupportedType {
+                                                type_name: format!("Bson encode error: {}", e),
+                                            })?;
+                                    }
+                                    _ => return Err(ConvertError::InvalidBsonStructure),
+                                }
+                                continue;
+                            }
+                        }
+                    }
+
+                    // fallback to eager conversion
+                    let converter = BsonConverter::try_from(item)?;
+                    match converter.0 {
+                        Bson::Document(doc) => {
+                            writer
+                                .add_item_with(|buf| {
+                                    doc.to_writer(buf).map_err(ConvertError::BsonEncodeError)
+                                })
+                                .map_err(|e| ConvertError::UnsupportedType {
+                                    type_name: format!("Bson encode error: {}", e),
+                                })?;
+                        }
+                        _ => return Err(ConvertError::InvalidBsonStructure),
+                    }
+                }
+
+                _ => {
+                    return Err(ConvertError::UnsupportedType {
+                        type_name: "Unsupported content type".into(),
+                    })
+                }
+            }
+        }
+
+        Ok(writer.finish())
+    }
+}
+
+/// Converter between `mongodb::bson::Bson` and Rhai `Dynamic`
+pub struct BsonConverter(pub Bson);
+
+impl TryFrom<BsonConverter> for Dynamic {
     type Error = ConvertError;
 
-    fn try_from(converter: JsonConverter) -> Result<Self, Self::Error> {
+    fn try_from(converter: BsonConverter) -> Result<Self, Self::Error> {
         let value = converter.0;
 
         Ok(match value {
-            Value::Null => Dynamic::UNIT,
-            Value::Bool(b) => Dynamic::from(b),
-            Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Dynamic::from(i)
-                } else if let Some(f) = n.as_f64() {
-                    Dynamic::from(f)
-                } else {
-                    return Err(ConvertError::InvalidNumber);
-                }
-            }
-            Value::String(s) => Dynamic::from(s),
-            Value::Array(arr) => {
+            Bson::Null => Dynamic::UNIT,
+            Bson::Boolean(b) => Dynamic::from(b),
+            Bson::Int32(i) => Dynamic::from(i as i64),
+            Bson::Int64(i) => Dynamic::from(i),
+            Bson::Double(f) => Dynamic::from(f),
+            Bson::String(s) => Dynamic::from(s),
+            Bson::Array(arr) => {
                 let mut rhai_arr = Array::new();
                 for item in arr {
-                    rhai_arr.push(Dynamic::try_from(JsonConverter(item))?);
+                    rhai_arr.push(Dynamic::try_from(BsonConverter(item))?);
                 }
                 Dynamic::from(rhai_arr)
             }
-            Value::Object(obj) => {
+            Bson::Document(doc) => {
                 let mut rhai_map = Map::new();
-                for (key, value) in obj {
-                    rhai_map.insert(key.into(), Dynamic::try_from(JsonConverter(value))?);
+                for (key, value) in doc {
+                    rhai_map.insert(key.into(), Dynamic::try_from(BsonConverter(value))?);
                 }
                 Dynamic::from(rhai_map)
             }
+            Bson::DateTime(dt) => {
+                // Convert to EJSON format: { "$date": { "$numberLong": "millis" } }
+                let mut inner = Map::new();
+                inner.insert(
+                    "$numberLong".into(),
+                    Dynamic::from(dt.timestamp_millis().to_string()),
+                );
+                let mut map = Map::new();
+                map.insert("$date".into(), Dynamic::from(inner));
+                Dynamic::from(map)
+            }
+            Bson::ObjectId(oid) => {
+                // Convert to EJSON format: { "$oid": "hex" }
+                let mut map = Map::new();
+                map.insert("$oid".into(), Dynamic::from(oid.to_string()));
+                Dynamic::from(map)
+            }
+            _ => Dynamic::UNIT,
         })
     }
 }
 
-impl TryFrom<Dynamic> for JsonConverter {
+impl TryFrom<Dynamic> for BsonConverter {
     type Error = ConvertError;
 
     fn try_from(dynamic: Dynamic) -> Result<Self, Self::Error> {
         let value = if dynamic.is_unit() {
-            Value::Null
+            Bson::Null
         } else if let Some(b) = dynamic.as_bool().ok() {
-            Value::Bool(b)
+            Bson::Boolean(b)
         } else if let Some(i) = dynamic.as_int().ok() {
-            Value::Number(serde_json::Number::from(i))
+            Bson::Int64(i)
         } else if let Some(f) = dynamic.as_float().ok() {
-            match serde_json::Number::from_f64(f) {
-                Some(n) => Value::Number(n),
-                None => return Err(ConvertError::InvalidFloat(f)),
-            }
+            Bson::Double(f)
         } else if let Some(s) = dynamic.clone().into_immutable_string().ok() {
-            Value::String(s.to_string())
-        } else if let Some(arr) = dynamic.clone().try_cast::<Array>() {
-            let mut json_arr = Vec::new();
-            for item in arr {
-                let converter = JsonConverter::try_from(item)?;
-                json_arr.push(converter.0);
+            Bson::String(s.to_string())
+        } else if let Some(lazy) = dynamic.clone().try_cast::<LazyBsonDocument>() {
+            match &lazy.state {
+                LazyBsonState::Raw(raw) => {
+                    let doc =
+                        bson::from_slice(raw.as_bytes()).map_err(ConvertError::BsonDecodeError)?;
+                    Bson::Document(doc)
+                }
+                LazyBsonState::Materialized(map) => {
+                    BsonConverter::try_from(Dynamic::from(map.clone()))?.0
+                }
             }
-            Value::Array(json_arr)
+        } else if let Some(arr) = dynamic.clone().try_cast::<Array>() {
+            let mut bson_arr = Vec::new();
+            for item in arr {
+                let converter = BsonConverter::try_from(item)?;
+                bson_arr.push(converter.0);
+            }
+            Bson::Array(bson_arr)
         } else if let Some(map) = dynamic.clone().try_cast::<Map>() {
-            let mut json_obj = serde_json::Map::new();
+            // Check for EJSON Date: { "$date": ... }
+            if let Some(date_val) = map.get("$date") {
+                if let Some(inner) = date_val.clone().try_cast::<Map>() {
+                    if let Some(millis_str) = inner
+                        .get("$numberLong")
+                        .and_then(|v| v.clone().into_immutable_string().ok())
+                    {
+                        if let Ok(millis) = millis_str.parse::<i64>() {
+                            return Ok(BsonConverter(Bson::DateTime(
+                                mongodb::bson::DateTime::from_millis(millis),
+                            )));
+                        }
+                    }
+                }
+            }
+
+            // Check for EJSON ObjectId: { "$oid": "hex" }
+            if let Some(oid_val) = map.get("$oid") {
+                if let Some(oid_str) = oid_val.clone().into_immutable_string().ok() {
+                    if let Ok(oid) = mongodb::bson::oid::ObjectId::parse_str(&oid_str) {
+                        return Ok(BsonConverter(Bson::ObjectId(oid)));
+                    }
+                }
+            }
+
+            let mut bson_doc = mongodb::bson::Document::new();
             for (key, value) in map {
                 let key_str = key.as_str();
-                let converter = JsonConverter::try_from(value)?;
-                json_obj.insert(key_str.to_string(), converter.0);
+                let converter = BsonConverter::try_from(value)?;
+                bson_doc.insert(key_str.to_string(), converter.0);
             }
-            Value::Object(json_obj)
+            Bson::Document(bson_doc)
         } else {
-            return Err(ConvertError::UnsupportedType {
-                type_name: dynamic.type_name().to_string(),
-            });
+            Bson::String(dynamic.to_string())
         };
 
-        Ok(JsonConverter(value))
-    }
-}
-
-impl JsonConverter {
-    /// Creates a new JsonConverter from a serde_json Value
-    pub fn new(value: serde_json::Value) -> Self {
-        Self(value)
-    }
-
-    /// Consumes the converter and returns the inner JSON value
-    pub fn into_value(self) -> serde_json::Value {
-        self.0
-    }
-}
-
-/// String wrapper that handles binary data through base64 encoding
-///
-/// When converting from bytes:
-/// - UTF-8 strings are preserved as-is
-/// - Binary data is encoded as base64 with `data:base64,` prefix
-///
-/// When converting to bytes:
-/// - Strings with `data:base64,` prefix are decoded
-/// - Strings that look like base64 are decoded
-/// - Regular strings are converted to UTF-8 bytes
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use mstream::middleware::udf::rhai::convert::RhaiString;
-///
-/// // UTF-8 string
-/// let text = "Hello, World!";
-/// let rhai_str = RhaiString::from(text.as_bytes());
-/// assert_eq!(rhai_str.0, "Hello, World!");
-///
-/// // Binary data
-/// let binary = vec![0xFF, 0xFE];
-/// let rhai_str = RhaiString::from(binary.as_slice());
-/// assert!(rhai_str.0.starts_with("data:base64,"));
-/// ```
-pub struct RhaiString(pub String);
-
-impl From<&[u8]> for RhaiString {
-    fn from(bytes: &[u8]) -> Self {
-        let str = match std::str::from_utf8(bytes) {
-            Ok(s) => s.to_string(),
-            Err(_) => format!("data:base64,{}", general_purpose::STANDARD.encode(bytes)),
-        };
-
-        RhaiString(str)
-    }
-}
-
-impl TryInto<Vec<u8>> for RhaiString {
-    type Error = ConvertError;
-
-    fn try_into(self) -> Result<Vec<u8>, Self::Error> {
-        let s = &self.0;
-        if s.starts_with("data:base64,") {
-            // Strip the data:base64, prefix and decode
-            let base64_part = &s[12..]; // "data:base64," is 12 characters
-            Ok(general_purpose::STANDARD.decode(base64_part)?)
-        } else if is_likely_base64(s) {
-            Ok(general_purpose::STANDARD.decode(s)?)
-        } else {
-            Ok(s.as_bytes().to_vec())
-        }
+        Ok(BsonConverter(value))
     }
 }
 
@@ -260,287 +425,125 @@ impl From<Option<&HashMap<String, String>>> for RhaiMap {
     }
 }
 
-/// Heuristic function to detect if a string is likely base64 encoded
-///
-/// Uses multiple heuristics to determine if a string is base64:
-/// - Character set validation
-/// - Padding rules
-/// - Length patterns
-/// - Common base64 characteristics
-///
-/// # Arguments
-///
-/// * `s` - The string to check
-///
-/// # Returns
-///
-/// `true` if the string is likely base64 encoded, `false` otherwise
-fn is_likely_base64(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
+#[derive(Clone, Debug)]
+pub enum LazyBsonState {
+    Raw(Arc<RawDocumentBuf>),
+    Materialized(Map),
+}
+
+#[derive(Clone, Debug)]
+pub struct LazyBsonDocument {
+    pub state: LazyBsonState,
+}
+
+impl std::fmt::Display for LazyBsonDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LazyBsonDocument")
+    }
+}
+
+impl LazyBsonDocument {
+    pub fn new(bytes: Vec<u8>) -> Result<Self, mongodb::bson::raw::Error> {
+        let doc = RawDocumentBuf::from_bytes(bytes)?;
+        Ok(Self {
+            state: LazyBsonState::Raw(Arc::new(doc)),
+        })
     }
 
-    // Check for valid base64 characters
-    if !s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-    {
-        return false;
-    }
-
-    // Check padding rules
-    let padding_count = s.chars().filter(|&c| c == '=').count();
-    if padding_count > 2 {
-        return false;
-    }
-
-    // If there's padding, it must be at the end
-    if padding_count > 0 {
-        let first_padding = s.find('=').unwrap();
-        if !s[first_padding..].chars().all(|c| c == '=') {
-            return false;
+    pub fn get(&mut self, key: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw(raw) => match raw.get(key) {
+                Ok(Some(raw_val)) => convert_raw_to_dynamic(raw_val),
+                Ok(None) => Ok(Dynamic::UNIT),
+                Err(e) => Err(format!("BSON error: {}", e).into()),
+            },
+            LazyBsonState::Materialized(map) => Ok(map.get(key).cloned().unwrap_or(Dynamic::UNIT)),
         }
-        // Padded base64 must be divisible by 4
-        return s.len() % 4 == 0;
     }
 
-    // For unpadded base64, apply stricter heuristics
-    let remainder = s.len() % 4;
+    pub fn set(&mut self, key: &str, value: Dynamic) -> Result<(), Box<EvalAltResult>> {
+        // If Raw, materialize first (Copy-on-Write)
+        if let LazyBsonState::Raw(raw) = &self.state {
+            let map = convert_raw_to_map(raw)?;
+            self.state = LazyBsonState::Materialized(map);
+        }
 
-    // Remainder of 1 is never valid
-    if remainder == 1 {
-        return false;
+        // Now we are Materialized
+        if let LazyBsonState::Materialized(map) = &mut self.state {
+            map.insert(key.into(), value);
+            Ok(())
+        } else {
+            unreachable!()
+        }
     }
 
-    // Short strings with remainder 2 are unlikely to be base64
-    // (like "SGVsbG" which is only 6 chars)
-    if remainder == 2 && s.len() <= 6 {
-        return false;
-    }
+    pub fn remove(&mut self, key: &str) -> Result<Dynamic, Box<EvalAltResult>> {
+        if let LazyBsonState::Raw(raw) = &self.state {
+            let map = convert_raw_to_map(raw)?;
+            self.state = LazyBsonState::Materialized(map);
+        }
 
-    // Additional heuristic: very short strings are unlikely to be base64
-    // unless they're exactly 4 chars (a complete base64 block)
-    if s.len() < 8 && s.len() != 4 {
-        return false;
+        if let LazyBsonState::Materialized(map) = &mut self.state {
+            Ok(map.remove(key).unwrap_or(Dynamic::UNIT))
+        } else {
+            unreachable!()
+        }
     }
+}
 
-    true
+fn convert_raw_to_map(raw: &RawDocumentBuf) -> Result<Map, Box<EvalAltResult>> {
+    let mut map = Map::new();
+    for elem in raw.iter() {
+        let (key, value) = elem.map_err(|e| format!("BSON error: {}", e))?;
+        map.insert(key.into(), convert_raw_to_dynamic(value)?);
+    }
+    Ok(map)
+}
+
+fn convert_raw_to_dynamic(raw: RawBsonRef) -> Result<Dynamic, Box<EvalAltResult>> {
+    match raw {
+        RawBsonRef::Double(v) => Ok(Dynamic::from(v)),
+        RawBsonRef::String(v) => Ok(Dynamic::from(v.to_string())),
+        RawBsonRef::Array(v) => {
+            let mut arr = Vec::new();
+            for item in v.into_iter() {
+                let item = item.map_err(|e| format!("BSON array error: {}", e))?;
+                arr.push(convert_raw_to_dynamic(item)?);
+            }
+            Ok(Dynamic::from(arr))
+        }
+        RawBsonRef::Document(v) => {
+            let buf = v.to_raw_document_buf();
+            Ok(Dynamic::from(LazyBsonDocument {
+                state: LazyBsonState::Raw(Arc::new(buf)),
+            }))
+        }
+        RawBsonRef::Boolean(v) => Ok(Dynamic::from(v)),
+        RawBsonRef::Null => Ok(Dynamic::UNIT),
+        RawBsonRef::Int32(v) => Ok(Dynamic::from(v as i64)),
+        RawBsonRef::Int64(v) => Ok(Dynamic::from(v)),
+        RawBsonRef::DateTime(v) => {
+            let mut inner = Map::new();
+            inner.insert(
+                "$numberLong".into(),
+                Dynamic::from(v.timestamp_millis().to_string()),
+            );
+            let mut map = Map::new();
+            map.insert("$date".into(), Dynamic::from(inner));
+            Ok(Dynamic::from(map))
+        }
+        RawBsonRef::ObjectId(v) => {
+            let mut map = Map::new();
+            map.insert("$oid".into(), Dynamic::from(v.to_string()));
+            Ok(Dynamic::from(map))
+        }
+        _ => Ok(Dynamic::UNIT),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_bytes_to_rhai_string_valid_utf8() {
-        let json_bytes = r#"{"name": "John", "age": 30}"#.as_bytes();
-        let result = RhaiString::from(json_bytes).0;
-
-        assert_eq!(result, r#"{"name": "John", "age": 30}"#);
-    }
-
-    #[test]
-    fn test_bytes_to_rhai_string_invalid_utf8() {
-        let invalid_bytes = &[0xFF, 0xFE, 0xFD];
-        let result = RhaiString::from(invalid_bytes.as_slice()).0;
-
-        assert!(result.starts_with("data:base64,"));
-
-        let expected_base64 = general_purpose::STANDARD.encode(invalid_bytes);
-        assert_eq!(result, format!("data:base64,{}", expected_base64));
-    }
-
-    #[test]
-    fn test_bytes_to_rhai_string_empty() {
-        let empty_bytes = &[];
-        let result = RhaiString::from(empty_bytes.as_slice()).0;
-
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_rhai_string_to_bytes_regular_string() {
-        let input = "Hello, World!";
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(input.to_string()).try_into();
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), input.as_bytes());
-    }
-
-    #[test]
-    fn test_rhai_string_to_bytes_json_string() {
-        let json = r#"{"name": "John", "age": 30}"#;
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(json.to_string()).try_into();
-
-        assert!(result.is_ok());
-        let bytes = result.unwrap();
-        assert_eq!(bytes, json.as_bytes());
-
-        let back_to_string = String::from_utf8(bytes).unwrap();
-        assert_eq!(back_to_string, json);
-    }
-
-    #[test]
-    fn test_rhai_string_to_bytes_data_prefix() {
-        let original_data = "Hello, World!";
-        let base64_encoded = general_purpose::STANDARD.encode(original_data);
-        let input = format!("data:base64,{}", base64_encoded);
-
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(input).try_into();
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), original_data.as_bytes());
-    }
-
-    #[test]
-    fn test_rhai_string_to_bytes_likely_base64() {
-        let original_data = "Hello, World! This is a test message.";
-        let base64_string = general_purpose::STANDARD.encode(original_data);
-
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(base64_string).try_into();
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), original_data.as_bytes());
-    }
-
-    #[test]
-    fn test_rhai_string_to_bytes_invalid_base64() {
-        let invalid_base64 = "This-is-not-base64!@#$%";
-        let result: Result<Vec<u8>, ConvertError> =
-            RhaiString(invalid_base64.to_string()).try_into();
-
-        // Should fall back to treating it as regular string
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), invalid_base64.as_bytes());
-    }
-
-    #[test]
-    fn test_rhai_string_to_bytes_invalid_base64_data_prefix() {
-        let input = "data:base64,!!!invalid!!!";
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(input.to_string()).try_into();
-
-        // Should return an error for invalid base64 after prefix
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ConvertError::Base64DecodeError(_)
-        ));
-    }
-
-    #[test]
-    fn test_is_likely_base64_valid_cases() {
-        assert!(is_likely_base64("SGVsbG8gV29ybGQ="));
-        assert!(is_likely_base64("SGVsbG8gV29ybGQ"));
-
-        let long_string = general_purpose::STANDARD
-            .encode("This is a longer test string to verify base64 detection works correctly");
-        assert!(is_likely_base64(&long_string));
-    }
-
-    #[test]
-    fn test_is_likely_base64_invalid_cases() {
-        assert!(!is_likely_base64("SGVsbG"));
-        assert!(!is_likely_base64("Hello@World!"));
-        assert!(!is_likely_base64(""));
-        assert!(!is_likely_base64("Hello World"));
-        assert!(!is_likely_base64(r#"{"name": "John"}"#));
-        assert!(!is_likely_base64("SGVsbG8==="));
-    }
-
-    #[test]
-    fn test_is_likely_base64_edge_cases() {
-        assert!(is_likely_base64("AAAA"));
-        assert!(is_likely_base64("SGk="));
-        assert!(is_likely_base64("QQ=="));
-        assert!(is_likely_base64("A+/A"));
-    }
-
-    #[test]
-    fn test_roundtrip_conversion_utf8() {
-        let original = r#"{"name": "John Doe", "age": 30, "email": "john@example.com"}"#;
-        let bytes = original.as_bytes();
-
-        let rhai_string = RhaiString::from(bytes).0;
-        assert_eq!(rhai_string, original);
-
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(rhai_string).try_into();
-        assert!(result.is_ok());
-
-        let result_bytes = result.unwrap();
-        assert_eq!(result_bytes, bytes);
-
-        let final_string = String::from_utf8(result_bytes).unwrap();
-        assert_eq!(final_string, original);
-    }
-
-    #[test]
-    fn test_roundtrip_conversion_binary() {
-        let original_bytes = &[0x00, 0x01, 0xFF, 0xFE, 0x42, 0x21];
-
-        let rhai_string = RhaiString::from(original_bytes.as_slice()).0;
-        assert!(rhai_string.starts_with("data:base64,"));
-
-        let result: Result<Vec<u8>, ConvertError> = RhaiString(rhai_string).try_into();
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), original_bytes);
-    }
-
-    #[test]
-    fn test_json_converter_basic_types() {
-        use serde_json::json;
-
-        // Null
-        let converter = JsonConverter::new(Value::Null);
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        assert!(dynamic.unwrap().is_unit());
-
-        // Boolean
-        let converter = JsonConverter::new(json!(true));
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        assert_eq!(dynamic.unwrap().as_bool().unwrap(), true);
-
-        // Integer
-        let converter = JsonConverter::new(json!(42));
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        assert_eq!(dynamic.unwrap().as_int().unwrap(), 42);
-
-        // Float
-        let converter = JsonConverter::new(json!(3.14));
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        assert!((dynamic.unwrap().as_float().unwrap() - 3.14).abs() < f64::EPSILON);
-
-        // String
-        let converter = JsonConverter::new(json!("hello"));
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        assert_eq!(
-            dynamic.unwrap().into_immutable_string().unwrap().as_str(),
-            "hello"
-        );
-    }
-
-    #[test]
-    fn test_json_converter_complex_types() {
-        use serde_json::json;
-
-        // Array
-        let converter = JsonConverter::new(json!([1, 2, 3]));
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        let arr = dynamic.unwrap().into_array().unwrap();
-        assert_eq!(arr.len(), 3);
-
-        // Object
-        let converter = JsonConverter::new(json!({"key": "value", "number": 42}));
-        let dynamic: Result<Dynamic, ConvertError> = converter.try_into();
-        assert!(dynamic.is_ok());
-        let map = dynamic.unwrap().try_cast::<Map>().unwrap();
-        assert_eq!(map.len(), 2);
-    }
 
     #[test]
     fn test_rhai_map_conversion() {

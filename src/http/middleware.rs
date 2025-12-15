@@ -26,14 +26,15 @@ impl HttpMiddleware {
                 event.raw_bytes,
                 event.encoding,
                 event.attributes.clone(),
+                event.is_framed_batch,
             )
             .await?;
 
         Ok(SourceEvent {
             raw_bytes: response.as_bytes().to_vec(),
-            document: None,
             attributes: event.attributes,
             encoding: self.output_encoding.clone(),
+            is_framed_batch: event.is_framed_batch,
         })
     }
 }

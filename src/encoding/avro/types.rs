@@ -92,24 +92,29 @@ impl TryFrom<BsonBatchBytesWithSchema<'_>> for AvroBytes {
 
 // --- AvroBatchBytesWithSchema ---
 
-pub struct AvroBatchBytesWithSchema<'a> {
-    data: Vec<Vec<u8>>,
+pub struct AvroBatchBytesWithSchema<'a, I> {
+    data: I,
     schema: &'a MstreamSchema,
 }
 
-impl<'a> AvroBatchBytesWithSchema<'a> {
-    pub fn new(data: Vec<Vec<u8>>, schema: &'a MstreamSchema) -> Self {
+impl<'a, I> AvroBatchBytesWithSchema<'a, I> {
+    pub fn new(data: I, schema: &'a MstreamSchema) -> Self {
         AvroBatchBytesWithSchema { data, schema }
     }
 }
 
-impl TryFrom<AvroBatchBytesWithSchema<'_>> for Vec<Document> {
+impl<I> TryFrom<AvroBatchBytesWithSchema<'_, I>> for Vec<Document>
+where
+    I: IntoIterator<Item = Vec<u8>>,
+{
     type Error = anyhow::Error;
 
-    fn try_from(value: AvroBatchBytesWithSchema) -> Result<Self, Self::Error> {
+    fn try_from(value: AvroBatchBytesWithSchema<I>) -> Result<Self, Self::Error> {
         let avro_schema = value.schema.try_as_avro()?;
-        let mut docs = Vec::with_capacity(value.data.len());
-        for avro_b in value.data.into_iter() {
+        let iter = value.data.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut docs = Vec::with_capacity(lower);
+        for avro_b in iter {
             let bson_doc = super::decode(&avro_b, avro_schema)
                 .context("failed to decode avro bytes into bson document")?;
 

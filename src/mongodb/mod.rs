@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use log::debug;
 use mongodb::{
-    bson::{doc, ser, Document},
+    bson::{doc, RawDocumentBuf},
     change_stream::{
         event::{ChangeStreamEvent, OperationType, ResumeToken},
         ChangeStream,
@@ -26,7 +26,7 @@ pub async fn db_client(name: String, conn_str: &str) -> anyhow::Result<Client> {
     Ok(Client::with_options(opts)?)
 }
 
-type CStream = ChangeStream<ChangeStreamEvent<Document>>;
+type CStream = ChangeStream<ChangeStreamEvent<RawDocumentBuf>>;
 
 pub struct MongoDbChangeStreamListener {
     db: Database,
@@ -65,7 +65,7 @@ impl MongoDbChangeStreamListener {
                 )
             })?;
 
-        let coll = self.db.collection::<Document>(self.db.name());
+        let coll = self.db.collection::<RawDocumentBuf>(&self.db_collection);
 
         let opts = ChangeStreamOptions::builder()
             .full_document(Some(FullDocumentType::UpdateLookup))
@@ -78,7 +78,7 @@ impl MongoDbChangeStreamListener {
 
     fn event_metadata(
         &self,
-        event: &ChangeStreamEvent<Document>,
+        event: &ChangeStreamEvent<RawDocumentBuf>,
     ) -> Option<HashMap<String, String>> {
         Some(HashMap::from([
             (
@@ -126,22 +126,15 @@ impl EventSource for MongoDbChangeStreamListener {
                 _ => None,
             };
 
-            if let Some(document) = bson_doc {
-                let bson_raw_bytes = ser::to_vec(&document).map_err(|err| {
-                    anyhow!(
-                        "failed to serialize document: {}:{}, {}",
-                        self.db_collection,
-                        self.db_name,
-                        err
-                    )
-                })?;
+            if let Some(raw_document) = bson_doc {
+                let bson_raw_bytes = raw_document.as_bytes().to_vec();
 
                 events
                     .send(SourceEvent {
                         raw_bytes: bson_raw_bytes,
-                        document: Some(document),
                         attributes,
                         encoding: Encoding::Bson,
+                        is_framed_batch: false,
                     })
                     .await?;
             }
