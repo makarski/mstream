@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Context};
-use log::debug;
 use tokio::sync::mpsc::Sender;
 use tonic::service::Interceptor;
 
@@ -48,7 +47,7 @@ impl<I: Interceptor> PubSubPublisher<I> {
 
         let req = PublishRequest {
             topic: topic.clone(),
-            messages: messages,
+            messages,
         };
 
         let response = self
