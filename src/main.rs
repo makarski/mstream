@@ -8,7 +8,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "pprof")]
     let profiler_guard = profiler::start();
 
-    let (non_blocking_logger, _guard) = tracing_appender::non_blocking(std::io::stdout());
+    let (non_blocking_logger, _log_guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
         .with_writer(non_blocking_logger)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
