@@ -175,11 +175,18 @@ impl EventSource for KafkaConsumer {
                     let payload_vec = payload.to_vec();
                     let encoding = self.encoding.clone();
 
+                    let attr = HashMap::from([
+                        ("origin".to_string(), "kafka".to_string()),
+                        ("topic".to_string(), msg.topic().to_string()),
+                        ("partition".to_string(), msg.partition().to_string()),
+                        ("offset".to_string(), msg.offset().to_string()),
+                    ]);
+
                     tokio::spawn(async move {
                         if let Err(err) = sender
                             .send(SourceEvent {
                                 raw_bytes: payload_vec,
-                                attributes: None,
+                                attributes: Some(attr),
                                 encoding,
                                 is_framed_batch: false,
                             })

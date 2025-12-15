@@ -42,8 +42,9 @@ impl SourceEvent {
         schema: &Schema,
     ) -> anyhow::Result<Self> {
         let target_encoding = target_encoding.unwrap_or(&self.encoding);
-        SchemaEncoder::new_event(self.raw_bytes)
-            .apply_schema(&self.encoding, target_encoding, schema)
+
+        SchemaEncoder::new(&self.encoding, target_encoding, schema)
+            .apply(self.raw_bytes, self.is_framed_batch)
             .map(|b| SourceEvent {
                 raw_bytes: b,
                 attributes: self.attributes,

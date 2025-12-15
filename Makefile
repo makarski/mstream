@@ -79,21 +79,28 @@ integration-tests: ## Runs the integration tests
 unit-tests: ## Runs the unit tests
 	RUST_LOG=info cargo test -- --nocapture
 
-.PHONY: kafka-topics
-kafka-topics: ## Lists the kafka topics
-	@docker exec -it kafka /opt/bitnami/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
-
-	# @docker exec kafka kafka-topics --create --topic employees --partitions 1 --replication-factor 1 --if-not-exists --bootstrap-server localhost:9092
+ASK_TOPIC = topic=test; \
+	read -p "> Enter topic name (default is $$topic): " user_topic; \
+	if [ -n "$$user_topic" ]; then \
+		topic=$$user_topic; \
+	fi
 
 .PHONY: kafka-publish
 kafka-publish: ## Publishes a message to the kafka topic
-	@for i in $(shell seq 1 5); do \
-		echo "$$i: Hello, World!" | docker exec -i kafka /opt/bitnami/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic test; \
+	@$(ASK_TOPIC); \
+	for i in $(shell seq 1 5); do \
+		echo "$$i: Hello, World!" | docker exec -i kafka-mstream /bin/kafka-console-producer --bootstrap-server localhost:9092 --topic $$topic; \
 	done
 
 .PHONY: kafka-consume
 kafka-consume: ## Consumes messages from the kafka topic
-	@docker exec -it kafka /opt/bitnami/kafka/bin/kafka-console-consumer.sh --consumer.config /opt/bitnami/kafka/config/consumer.properties --bootstrap-server localhost:9092 --topic test --from-beginning
+	@$(ASK_TOPIC); \
+	docker exec -it kafka-mstream /bin/kafka-console-consumer --consumer.config /etc/kafka/consumer.properties --bootstrap-server localhost:9092 --topic $$topic --from-beginning
 
 kafka-create-topic:
-	@docker exec kafka /opt/bitnami/kafka/bin/kafka-topics.sh --create --topic test --partitions 1 --replication-factor 1 --if-not-exists --bootstrap-server localhost:9092
+	@$(ASK_TOPIC); \
+	docker exec kafka-mstream /bin/kafka-topics --create --topic $$topic --partitions 1 --replication-factor 1 --if-not-exists --bootstrap-server localhost:9092
+
+kafka-delete-topic:
+	@$(ASK_TOPIC); \
+	docker exec kafka-mstream /bin/kafka-topics --delete --topic $$topic --bootstrap-server localhost:9092

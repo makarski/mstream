@@ -94,21 +94,19 @@ impl EventHandler {
         let attributes = batch[0].attributes.clone();
         let payloads: Vec<Vec<u8>> = batch.drain(..).map(|event| event.raw_bytes).collect();
 
-        let schema_encoder = SchemaEncoder::new_batch(payloads);
-
         let batch_event = block_in_place(|| {
-            schema_encoder
-                .apply_schema(
-                    &source_encoding,
-                    &self.source_output_encoding,
-                    &self.source_schema,
-                )
-                .map(|payload| SourceEvent {
-                    raw_bytes: payload,
-                    attributes: attributes,
-                    encoding: self.source_output_encoding.clone(),
-                    is_framed_batch: true,
-                })
+            SchemaEncoder::new(
+                &source_encoding,
+                &self.source_output_encoding,
+                &self.source_schema,
+            )
+            .apply_to_items(payloads)
+            .map(|payload| SourceEvent {
+                raw_bytes: payload,
+                attributes: attributes,
+                encoding: self.source_output_encoding.clone(),
+                is_framed_batch: true,
+            })
         })?;
 
         debug!(
