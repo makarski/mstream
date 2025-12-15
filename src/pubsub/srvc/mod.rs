@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Context};
-use log::debug;
 use tokio::sync::mpsc::Sender;
 use tonic::service::Interceptor;
 
@@ -10,6 +9,7 @@ use super::api::subscriber_client::SubscriberClient;
 use super::api::StreamingPullRequest;
 use super::{tls_transport, Channel, InterceptedService};
 use crate::config::Encoding;
+use crate::encoding::framed;
 use crate::pubsub::api::publisher_client::PublisherClient;
 use crate::pubsub::api::schema_service_client::SchemaServiceClient;
 use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
@@ -34,36 +34,67 @@ impl<I: Interceptor> PubSubPublisher<I> {
     pub async fn publish(
         &mut self,
         topic: String,
-        b: Vec<u8>,
+        data: Vec<u8>,
         key: Option<&str>,
         attributes: Option<HashMap<String, String>>,
+        is_batch: bool,
     ) -> anyhow::Result<String> {
-        let mut msg = PubsubMessage {
-            data: b,
-            ..Default::default()
+        let messages = if is_batch {
+            Self::create_ps_batch_message(data, key, attributes)?
+        } else {
+            vec![Self::create_ps_message(data, key, &attributes)]
         };
-
-        if let Some(k) = key {
-            k.clone_into(&mut msg.ordering_key)
-        }
-
-        if let Some(attr) = attributes {
-            msg.attributes = attr;
-        }
 
         let req = PublishRequest {
             topic: topic.clone(),
-            messages: vec![msg],
+            messages,
         };
 
-        let msg = self
+        let response = self
             .client
             .publish(req)
             .await
             .map_err(|err| anyhow!("{}. topic: {}", err.message(), &topic))?;
 
-        let msg = msg.into_inner().message_ids[0].clone();
-        Ok(msg)
+        let count = response.into_inner().message_ids.len();
+        Ok(format!("{}", count))
+    }
+
+    fn create_ps_message(
+        b: Vec<u8>,
+        key: Option<&str>,
+        attributes: &Option<HashMap<String, String>>,
+    ) -> PubsubMessage {
+        let mut ps_msg = PubsubMessage {
+            data: b,
+            ..Default::default()
+        };
+
+        if let Some(k) = key {
+            k.clone_into(&mut ps_msg.ordering_key)
+        }
+
+        if let Some(attr) = attributes.as_ref() {
+            ps_msg.attributes = attr.clone();
+        }
+
+        ps_msg
+    }
+
+    fn create_ps_batch_message(
+        data: Vec<u8>,
+        key: Option<&str>,
+        attributes: Option<HashMap<String, String>>,
+    ) -> anyhow::Result<Vec<PubsubMessage>> {
+        let (msgs, _) = framed::decode(&data)?;
+        let mut req_msgs = Vec::with_capacity(msgs.len());
+
+        for item in msgs {
+            let ps_msg = Self::create_ps_message(item, key, &attributes);
+            req_msgs.push(ps_msg);
+        }
+
+        Ok(req_msgs)
     }
 }
 
@@ -182,14 +213,11 @@ impl<I: Interceptor> PubSubSubscriber<I> {
 
         let mut response_stream = self.client.streaming_pull(stream).await?.into_inner();
         while let Some(msg) = response_stream.message().await? {
-            debug!("received message: {:?}", msg);
-
             let mut ack_ids = Vec::new();
             for m in msg.received_messages {
-                debug!("message: {:?}", m);
                 ack_ids.push(m.ack_id.clone());
                 if let Some(payload) = m.message {
-                    log::info!("received pubsub message: {:?}", payload);
+                    log::debug!("received pubsub message: {}", payload.message_id);
                     let source_event = SourceEvent {
                         raw_bytes: payload.data,
                         attributes: Some(payload.attributes),
@@ -199,8 +227,6 @@ impl<I: Interceptor> PubSubSubscriber<I> {
                     events.send(source_event).await?;
                 }
             }
-
-            log::info!("acknowledging messages: {:?}", ack_ids);
 
             if !ack_ids.is_empty() {
                 let count = ack_ids.len();

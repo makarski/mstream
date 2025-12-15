@@ -255,13 +255,7 @@ impl<'a> ServiceFactory<'a> {
             Service::MongoDb { .. } => {
                 return Ok(Encoding::Bson);
             }
-            Service::Http { .. } => {
-                bail!(
-                    "initializing source provider: unsupported service: {}",
-                    service_config.name()
-                )
-            }
-            _ => {
+            Service::Http { .. } | Service::Udf { .. } => {
                 bail!(
                     "initializing source provider: unsupported service: {}",
                     service_config.name()

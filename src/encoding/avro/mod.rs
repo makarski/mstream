@@ -8,25 +8,12 @@ use crate::encoding::avro::types::{avro_to_bson, AvroValue, BsonWithSchema};
 pub(crate) mod types;
 pub mod validate;
 
-pub fn encode_many(docs: Vec<Document>, item_schema: &Schema) -> anyhow::Result<Vec<u8>> {
-    let mut records = Vec::with_capacity(docs.len());
-    let batch_schema = Schema::Array(Box::new(item_schema.clone()));
-
-    for doc in docs.into_iter() {
-        let record = transform_document_to_avro_record(doc, &item_schema)?;
-        let avro_val: AvroVal = record.into();
-        records.push(avro_val);
-    }
-
-    Ok(to_avro_datum(&batch_schema, AvroVal::Array(records))?)
-}
-
 pub fn encode(mongo_doc: Document, schema: &Schema) -> anyhow::Result<Vec<u8>> {
     let record = transform_document_to_avro_record(mongo_doc, schema)?;
     Ok(to_avro_datum(&schema, record)?)
 }
 
-fn transform_document_to_avro_record(doc: Document, schema: &Schema) -> anyhow::Result<Record> {
+fn transform_document_to_avro_record(doc: Document, schema: &Schema) -> anyhow::Result<Record<'_>> {
     match schema {
         Schema::Record { ref fields, .. } => {
             let mut record = Record::new(&schema).context("failed to create record")?;

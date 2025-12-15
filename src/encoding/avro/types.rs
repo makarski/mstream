@@ -4,10 +4,7 @@ use anyhow::{anyhow, bail, Context, Ok};
 use apache_avro::{schema::SchemaKind, types::Value as AvroTypeValue, Decimal, Schema};
 use mongodb::bson::{Bson, Decimal128, Document};
 
-use crate::encoding::xson::{
-    BsonBatchBytes, BsonBatchBytesWithSchema, BsonBytes, BsonBytesWithSchema, JsonBatchBytes,
-    JsonBatchBytesWithSchema, JsonBytes, JsonBytesWithSchema,
-};
+use crate::encoding::xson::{BsonBytes, BsonBytesWithSchema, JsonBytes, JsonBytesWithSchema};
 use crate::schema::Schema as MstreamSchema;
 
 // --- AvroBytes ---
@@ -42,50 +39,6 @@ impl TryFrom<BsonBytesWithSchema<'_>> for AvroBytes {
         BsonBytes(value.data)
             .try_into()
             .and_then(|doc: Document| super::encode(doc, avro_schema))
-            .map(|avro_bytes| AvroBytes(avro_bytes))
-    }
-}
-
-impl TryFrom<JsonBatchBytesWithSchema<'_>> for AvroBytes {
-    type Error = anyhow::Error;
-
-    /// Converts a batch of JSON document raw bytes with schema into Avro bytes.
-    ///
-    /// The JSON documents are expected to be in a format that matches the provided Avro schema.
-    fn try_from(value: JsonBatchBytesWithSchema) -> Result<Self, Self::Error> {
-        let avro_schema = value.schema.try_as_avro()?;
-
-        let json_b = value
-            .data
-            .into_iter()
-            .map(|json_bytes| JsonBytes(json_bytes.data))
-            .collect::<Vec<_>>();
-
-        JsonBatchBytes(json_b)
-            .try_into()
-            .and_then(|docs: Vec<Document>| super::encode_many(docs, avro_schema))
-            .map(|avro_bytes| AvroBytes(avro_bytes))
-    }
-}
-
-impl TryFrom<BsonBatchBytesWithSchema<'_>> for AvroBytes {
-    type Error = anyhow::Error;
-
-    /// Converts a batch of BSON document raw bytes with schema into Avro bytes.
-    ///
-    /// The BSON documents are expected to be in a format that matches the provided Avro schema.
-    fn try_from(value: BsonBatchBytesWithSchema) -> Result<Self, Self::Error> {
-        let avro_schema = value.schema.try_as_avro()?;
-
-        let bson_b = value
-            .data
-            .into_iter()
-            .map(|bson_bytes| BsonBytes(bson_bytes.data))
-            .collect::<Vec<_>>();
-
-        BsonBatchBytes(bson_b)
-            .try_into()
-            .and_then(|docs: Vec<Document>| super::encode_many(docs, avro_schema))
             .map(|avro_bytes| AvroBytes(avro_bytes))
     }
 }

@@ -24,6 +24,8 @@
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
+use crate::config::Encoding;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum BatchContentType {
@@ -43,6 +45,16 @@ impl TryFrom<u8> for BatchContentType {
             2 => Ok(BatchContentType::Bson),
             3 => Ok(BatchContentType::Avro),
             _ => Err(anyhow::anyhow!("unknown batch content type: {}", v)),
+        }
+    }
+}
+
+impl From<&Encoding> for BatchContentType {
+    fn from(enc: &Encoding) -> Self {
+        match enc {
+            Encoding::Json => BatchContentType::Json,
+            Encoding::Bson => BatchContentType::Bson,
+            Encoding::Avro => BatchContentType::Avro,
         }
     }
 }
