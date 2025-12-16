@@ -22,10 +22,7 @@ pub struct EventHandler {
 
 impl EventHandler {
     /// Listen to source streams and publish the events to the configured sinks
-    pub(super) async fn listen(
-        &mut self,
-        mut events_rx: Receiver<SourceEvent>,
-    ) -> anyhow::Result<()> {
+    pub async fn listen(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
         loop {
             match events_rx.recv().await {
                 Some(event) => {
@@ -51,7 +48,7 @@ impl EventHandler {
         Ok(())
     }
 
-    pub(super) async fn listen_batch(
+    pub async fn listen_batch(
         &mut self,
         mut events_rx: Receiver<SourceEvent>,
         batch_size: usize,

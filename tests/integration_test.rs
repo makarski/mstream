@@ -23,7 +23,7 @@ async fn test_created_updated_db_to_pubsub() {
     let coll = db.collection(setup::DB_COLLECTION);
 
     // spawn change stream listener
-    let (tx, _) = mpsc::channel::<String>(1);
+    let (tx, _) = mpsc::unbounded_channel::<String>();
     start_app_listener(tx).await;
 
     info!("setting up db, sleeping for 10 secs");

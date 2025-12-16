@@ -1,6 +1,9 @@
+use std::{env, sync::Arc};
+
 use anyhow::Context;
 use log::{debug, warn};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+use tracing::{error, info};
 
 mod encoding;
 mod http;
@@ -8,8 +11,10 @@ mod kafka;
 mod mongodb;
 mod sink;
 
+pub mod api;
 pub mod cmd;
 pub mod config;
+pub mod job_manager;
 pub mod middleware;
 pub mod pubsub;
 pub mod schema;
@@ -19,15 +24,32 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path).with_context(|| "failed to load config")?;
     debug!("config: {:?}", config);
 
-    let worker_count = config.connectors.len();
-    let (tx, mut rx) = mpsc::channel::<String>(worker_count);
+    let api_port = env::var("MSTREAM_API_PORT")
+        .ok()
+        .and_then(|port_str| port_str.parse::<u16>().ok())
+        .unwrap_or(8080);
 
-    cmd::listen_streams(tx, config).await?;
-    for _ in 0..worker_count {
-        match rx.recv().await {
-            Some(cnt_name) => warn!("stream listener exited: {}", cnt_name),
-            None => warn!("stream listener exited: None"),
+    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let jm = cmd::listen_streams(tx, config).await?;
+    info!(
+        "running jobs: {}",
+        jm.list_jobs()
+            .iter()
+            .map(|metadata| metadata.id.clone())
+            .collect::<Vec<String>>()
+            .join("; ")
+    );
+
+    let shared_jm = Arc::new(Mutex::new(jm));
+
+    tokio::spawn(async move {
+        if let Err(err) = api::start_server(shared_jm, api_port).await {
+            error!("failed to start API server: {}", err);
         }
+    });
+
+    while let Some(job_name) = rx.recv().await {
+        warn!("stream listener exited: {}", job_name)
     }
 
     warn!("all stream listeners exited");

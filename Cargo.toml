@@ -1,6 +1,6 @@
 [package]
 name = "mstream"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2021"
 authors = ["Simon Makarski"]
 
@@ -35,10 +35,12 @@ rhai = { version = "1.23.4", features = ["sync", "serde"] }
 base64 = "0.22.1"
 pprof = { version = "0.14", features = ["flamegraph", "protobuf", "protobuf-codec"], optional = true }
 sha2 = "0.10.9"
-chrono = "0.4.42"
+chrono = { version = "0.4.42", features = ["serde"] }
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 tracing-appender = "0.2.4"
+tokio-util = { version = "0.7.17", features = ["full"] }
+axum = "0.8.7"
 
 [build-dependencies]
 tonic-build = "0.13"
