@@ -74,7 +74,7 @@ async fn create_job(
     State(state): State<AppState>,
     Json(conn_cfg): Json<Connector>,
 ) -> Json<Message<JobMetadata>> {
-    info!("creating new job");
+    info!("creating new job: {}", conn_cfg.name);
 
     let mut jm = state.job_manager.lock().await;
     match jm.start_job(conn_cfg, state.done_ch).await {
