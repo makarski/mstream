@@ -39,7 +39,7 @@ async fn list_jobs(State(state): State<AppState>) -> Json<Vec<JobMetadata>> {
     Json(jobs)
 }
 
-/// DELETE /jobs/:name
+/// DELETE /jobs/{id}
 async fn stop_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
