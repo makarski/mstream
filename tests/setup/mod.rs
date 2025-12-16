@@ -32,7 +32,7 @@ pub struct Employee {
     pub rating: f64,
 }
 
-pub async fn start_app_listener(done_ch: mpsc::Sender<String>) {
+pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
     use mstream::cmd;
     use mstream::config::{Config, Connector};
 

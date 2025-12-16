@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use anyhow::bail;
@@ -27,15 +28,15 @@ use crate::schema::{mongo::MongoDbSchemaProvider, SchemaProvider};
 use crate::sink::SinkProvider;
 use crate::source::SourceProvider;
 
-pub(crate) struct ServiceFactory<'a> {
-    config: &'a Config,
+pub struct ServiceFactory {
+    config: Arc<Config>,
     mongo_clients: HashMap<String, Client>,
     gcp_token_providers: HashMap<String, ServiceAccountAuth>,
     http_services: HashMap<String, http::HttpService>,
 }
 
-impl<'a> ServiceFactory<'a> {
-    pub async fn new(config: &'a Config) -> anyhow::Result<ServiceFactory<'a>> {
+impl ServiceFactory {
+    pub async fn new(config: Config) -> anyhow::Result<ServiceFactory> {
         let mut mongo_clients = HashMap::new();
         if config.has_mongo_db() {
             for service in config.services.iter() {
@@ -89,7 +90,7 @@ impl<'a> ServiceFactory<'a> {
         }
 
         Ok(ServiceFactory {
-            config,
+            config: Arc::new(config),
             mongo_clients,
             gcp_token_providers,
             http_services,
