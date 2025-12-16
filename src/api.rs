@@ -1,26 +1,37 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::config::Connector;
 use crate::job_manager::{JobManager, JobMetadata};
 
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     job_manager: Arc<Mutex<JobManager>>,
+    done_ch: UnboundedSender<String>,
 }
 
-pub async fn start_server(jb: Arc<Mutex<JobManager>>, port: u16) -> anyhow::Result<()> {
-    let state = AppState { job_manager: jb };
+impl AppState {
+    pub fn new(jb: Arc<Mutex<JobManager>>, done_ch: UnboundedSender<String>) -> Self {
+        Self {
+            job_manager: jb,
+            done_ch,
+        }
+    }
+}
 
+pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/jobs", get(list_jobs))
         .route("/jobs/{id}", delete(stop_job))
+        .route("/jobs", post(create_job))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -53,6 +64,26 @@ async fn stop_job(
         }),
         Err(e) => Json(Message {
             message: format!("failed to stop job {}: {}", id, e),
+            item: None,
+        }),
+    }
+}
+
+/// POST /jobs
+async fn create_job(
+    State(state): State<AppState>,
+    Json(conn_cfg): Json<Connector>,
+) -> Json<Message<JobMetadata>> {
+    info!("creating new job");
+
+    let mut jm = state.job_manager.lock().await;
+    match jm.start_job(conn_cfg, state.done_ch).await {
+        Ok(job_metadata) => Json(Message {
+            message: "job created successfully".to_string(),
+            item: Some(job_metadata),
+        }),
+        Err(e) => Json(Message {
+            message: format!("failed to create job: {}", e),
             item: None,
         }),
     }

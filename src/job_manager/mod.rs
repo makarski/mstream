@@ -60,19 +60,22 @@ impl JobManager {
         id: String,
         join_handle: JoinHandle<()>,
         cancel_token: CancellationToken,
-    ) {
+    ) -> JobMetadata {
+        let metadata = JobMetadata {
+            id: id.clone(),
+            started_at: chrono::Utc::now(),
+            stopped_at: None,
+            state: JobState::Running,
+        };
+
         let job_container = JobContainer {
             join_handle,
             cancel_token,
-            metadata: JobMetadata {
-                id: id.clone(),
-                started_at: chrono::Utc::now(),
-                stopped_at: None,
-                state: JobState::Running,
-            },
+            metadata: metadata.clone(),
         };
 
         self.running_jobs.insert(id, job_container);
+        metadata
     }
 
     pub async fn stop_job(&mut self, id: &str) -> anyhow::Result<JobMetadata> {
@@ -105,7 +108,11 @@ impl JobManager {
         &mut self,
         conn_cfg: Connector,
         done_ch: UnboundedSender<String>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<JobMetadata> {
+        if self.running_jobs.contains_key(&conn_cfg.name) {
+            bail!("job already running: {}", conn_cfg.name);
+        }
+
         let schemas = init_schemas(conn_cfg.schemas.as_ref(), &self.service_factory).await?;
         let source_schema = find_schema(conn_cfg.source.schema_id.clone(), schemas.as_ref());
 
@@ -197,9 +204,7 @@ impl JobManager {
             }
         });
 
-        self.register_job(job_name, join_handle, job_cancel);
-
-        Ok(())
+        Ok(self.register_job(job_name, join_handle, job_cancel))
     }
 }
 
