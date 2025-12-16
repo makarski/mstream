@@ -5,6 +5,8 @@ use log::{debug, warn};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{error, info};
 
+use crate::api::AppState;
+
 mod encoding;
 mod http;
 mod kafka;
@@ -30,7 +32,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         .unwrap_or(8080);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    let jm = cmd::listen_streams(tx, config).await?;
+    let jm = cmd::listen_streams(tx.clone(), config).await?;
     info!(
         "running jobs: {}",
         jm.list_jobs()
@@ -41,9 +43,10 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     );
 
     let shared_jm = Arc::new(Mutex::new(jm));
+    let api_app_state = AppState::new(shared_jm, tx);
 
     tokio::spawn(async move {
-        if let Err(err) = api::start_server(shared_jm, api_port).await {
+        if let Err(err) = api::start_server(api_app_state, api_port).await {
             error!("failed to start API server: {}", err);
         }
     });
