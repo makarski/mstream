@@ -1,5 +1,3 @@
-pub mod event_handler;
-
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config::Config;

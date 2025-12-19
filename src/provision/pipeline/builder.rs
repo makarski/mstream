@@ -27,7 +27,8 @@ impl PipelineBuilder {
             name: connector.name.clone(),
             batch_size,
             is_batching_enabled,
-            source: None,
+            source_provider: None,
+            source_out_encoding: connector.source.output_encoding.clone(),
             source_schema: Schema::default(),
             middlewares: Vec::new(),
             schemas: Vec::new(),
@@ -60,7 +61,8 @@ impl PipelineBuilder {
 
     async fn init_source(&mut self) -> anyhow::Result<()> {
         let source = self.source_builder.build(&self.pipeline.schemas).await?;
-        self.pipeline.source = Some(source);
+        self.pipeline.source_provider = Some(source.source_provider);
+        self.pipeline.source_schema = source.schema;
         Ok(())
     }
 
