@@ -1,14 +1,15 @@
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use tokio::{
     select,
-    sync::mpsc::{Sender, UnboundedSender},
+    sync::mpsc::{Receiver, Sender, UnboundedSender},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     cmd::event_handler::EventHandler,
+    config::Encoding,
     provision::pipeline::{
         middleware::MiddlewareDefinition, schema::SchemaDefinition, sink::SinkDefinition,
         source::SourceDefinition,
@@ -23,7 +24,6 @@ pub mod schema;
 pub mod sink;
 pub mod source;
 
-#[derive(Default)]
 pub struct Pipeline {
     pub name: String,
     pub source: Option<SourceDefinition>,
@@ -37,50 +37,93 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub async fn run(
-        self,
+        mut self,
         cancel_token: CancellationToken,
         exit_tx: UnboundedSender<String>,
-    ) -> anyhow::Result<(String, JoinHandle<()>)> {
-        let source_def = self.source.ok_or_else(|| {
+    ) -> anyhow::Result<(String, JoinHandle<()>, JoinHandle<()>)> {
+        let source_def = self.source.take().ok_or_else(|| {
             anyhow!(
                 "no source provider initialized for connector: {}",
                 self.name
             )
         })?;
 
-        // channel buffer size is the same as the batch size
-        // if the buffer is full, the source listener will block
-        let (events_tx, events_rx) = tokio::sync::mpsc::channel(self.batch_size);
-        if let Err(err) =
-            listen_source(self.name.clone(), source_def.source_provider, events_tx).await
-        {
-            bail!("failed to spawn source listener: {}", err);
-        }
-
         let job_name = self.name.clone();
+        let runtime = PipelineRuntime::new(self.batch_size, cancel_token.clone());
 
-        let join_handle = tokio::spawn(async move {
-            let cnt_name = self.name.clone();
+        let source_handle = runtime.listen_source(self.name.clone(), source_def.source_provider);
+        let work_handle = runtime.do_work(self, exit_tx, source_def.out_encoding);
+
+        Ok((job_name, work_handle, source_handle))
+    }
+}
+
+struct PipelineRuntime {
+    events_tx: Sender<SourceEvent>,
+    events_rx: Receiver<SourceEvent>,
+    cancel_token: CancellationToken,
+}
+
+impl PipelineRuntime {
+    pub fn new(buffer_size: usize, cancel_token: CancellationToken) -> Self {
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(buffer_size);
+        Self {
+            events_tx,
+            events_rx,
+            cancel_token,
+        }
+    }
+
+    fn listen_source(&self, name: String, mut source_provider: SourceProvider) -> JoinHandle<()> {
+        let events_tx = self.events_tx.clone();
+        let cancel_token = self.cancel_token.clone();
+
+        tokio::spawn(async move {
+            info!("spawning a listener for connector: {}", name);
+
+            select! {
+                _ = cancel_token.cancelled() => {
+                    warn!("cancelling source listener for connector: {}", name);
+                }
+                res = source_provider.listen(events_tx) => {
+                    if let Err(err) = res {
+                        error!("source listener failed. connector: {}: {}", name, err)
+                    }
+                }
+            }
+        })
+    }
+
+    fn do_work(
+        self,
+        pipeline: Pipeline,
+        exit_tx: UnboundedSender<String>,
+        out_encoding: Encoding,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let cnt_name = pipeline.name;
 
             // todo: consider reusing pipeline entity instead of event handler
             let mut event_handler = EventHandler {
-                connector_name: self.name.clone(),
-                source_schema: self.source_schema,
-                source_output_encoding: source_def.out_encoding,
-                sinks: self.sinks,
-                middlewares: self.middlewares,
+                connector_name: cnt_name.clone(),
+                source_schema: pipeline.source_schema,
+                source_output_encoding: out_encoding,
+                sinks: pipeline.sinks,
+                middlewares: pipeline.middlewares,
             };
 
             let work = async {
-                if self.is_batching_enabled {
-                    event_handler.listen_batch(events_rx, self.batch_size).await
+                if pipeline.is_batching_enabled {
+                    event_handler
+                        .listen_batch(self.events_rx, pipeline.batch_size)
+                        .await
                 } else {
-                    event_handler.listen(events_rx).await
+                    event_handler.listen(self.events_rx).await
                 }
             };
 
             select! {
-                _ = cancel_token.cancelled() => {
+                _ = self.cancel_token.cancelled() => {
                     info!("cancelling job: {}", cnt_name);
                 }
                 res = work => {
@@ -97,35 +140,18 @@ impl Pipeline {
                     err, cnt_name
                 );
             }
-        });
-        Ok((job_name, join_handle))
+        })
     }
-}
-
-async fn listen_source(
-    cnt_name: String,
-    mut source_provider: SourceProvider,
-    events_tx: Sender<SourceEvent>,
-) -> anyhow::Result<()> {
-    tokio::spawn(async move {
-        info!("spawning a listener for connector: {}", cnt_name);
-        if let Err(err) = source_provider.listen(events_tx).await {
-            error!("source listener failed. connector: {}:{}", cnt_name, err)
-        }
-    });
-    Ok(())
 }
 
 pub fn find_schema(schema_id: Option<String>, schema_definitions: &[SchemaDefinition]) -> Schema {
-    let has_schemas = !schema_definitions.is_empty();
-    if !has_schemas || schema_id.is_none() {
-        return Schema::Undefined;
-    }
-    let schema_id = schema_id.unwrap();
-
-    schema_definitions
-        .into_iter()
-        .find(|&schema| schema.schema_id == schema_id)
-        .map(|s| s.schema.clone())
+    schema_id
+        .as_ref()
+        .and_then(|id| {
+            schema_definitions
+                .iter()
+                .find(|&schema| &schema.schema_id == id)
+                .map(|s| s.schema.clone())
+        })
         .unwrap_or_else(|| Schema::Undefined)
 }

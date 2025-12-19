@@ -4,7 +4,7 @@ use anyhow::bail;
 use serde::Serialize;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::{
     config::Connector,
@@ -19,7 +19,8 @@ pub struct JobManager {
 }
 
 struct JobContainer {
-    join_handle: JoinHandle<()>,
+    work_handle: JoinHandle<()>,
+    source_handle: JoinHandle<()>,
     cancel_token: CancellationToken,
     metadata: JobMetadata,
 }
@@ -54,7 +55,8 @@ impl JobManager {
     fn register_job(
         &mut self,
         id: String,
-        join_handle: JoinHandle<()>,
+        work_handle: JoinHandle<()>,
+        source_handle: JoinHandle<()>,
         cancel_token: CancellationToken,
     ) -> JobMetadata {
         let metadata = JobMetadata {
@@ -65,7 +67,8 @@ impl JobManager {
         };
 
         let job_container = JobContainer {
-            join_handle,
+            work_handle,
+            source_handle,
             cancel_token,
             metadata: metadata.clone(),
         };
@@ -78,8 +81,17 @@ impl JobManager {
         if let Some(jc) = self.running_jobs.remove(id) {
             info!("stopping job: {}", id);
             jc.cancel_token.cancel();
+
             // wait for the job to finish
-            jc.join_handle.await?;
+            let (work_res, source_res) = tokio::join!(jc.work_handle, jc.source_handle);
+            if let Err(err) = work_res {
+                error!("job work task panicked: {}: {}", err, id);
+            }
+
+            if let Err(err) = source_res {
+                error!("job source task panicked: {}: {}", err, id);
+            }
+
             info!("job stopped: {}", id);
 
             let mut metadata = jc.metadata;
@@ -107,13 +119,15 @@ impl JobManager {
 
         let pipeline_builder =
             PipelineBuilder::new(self.services_registry.clone(), conn_cfg.clone());
+
         let pipeline = pipeline_builder.build().await?;
 
         let job_cancel = self.cancel_all.child_token();
         let task_cancel = job_cancel.clone();
 
-        let (job_name, join_handle) = pipeline.run(task_cancel, self.exit_tx.clone()).await?;
+        let (job_name, work_handle, source_handle) =
+            pipeline.run(task_cancel, self.exit_tx.clone()).await?;
 
-        Ok(self.register_job(job_name, join_handle, job_cancel))
+        Ok(self.register_job(job_name, work_handle, source_handle, job_cancel))
     }
 }

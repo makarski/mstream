@@ -9,6 +9,7 @@ use crate::{
         },
         registry::ServiceRegistry,
     },
+    schema::Schema,
 };
 
 pub struct PipelineBuilder {
@@ -26,11 +27,15 @@ impl PipelineBuilder {
             name: connector.name.clone(),
             batch_size,
             is_batching_enabled,
-            ..Default::default()
+            source: None,
+            source_schema: Schema::default(),
+            middlewares: Vec::new(),
+            schemas: Vec::new(),
+            sinks: Vec::new(),
         };
 
         Self {
-            pipeline: pipeline,
+            pipeline,
             source_builder: SourceBuilder::new(registry.clone(), connector.source.clone()),
             schema_builder: SchemaBuilder::new(registry.clone(), &connector.schemas),
             middleware_builder: MiddlewareBuilder::new(registry.clone(), &connector.middlewares),
