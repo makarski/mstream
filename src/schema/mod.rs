@@ -24,8 +24,9 @@ impl SchemaRegistry for SchemaProvider {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Schema {
+    #[default]
     Undefined,
     Avro(AvroSchema),
     // Json(String),

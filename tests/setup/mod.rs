@@ -5,8 +5,9 @@ use anyhow::anyhow;
 use apache_avro::AvroSchema;
 use mongodb::bson::{doc, Document};
 use mongodb::Collection;
+use mstream::config::service_config::{GcpAuthConfig, MongoDbConfig, PubSubConfig};
 use mstream::config::{
-    Encoding, GcpAuthConfig, SchemaServiceConfigReference, Service, ServiceConfigReference,
+    Encoding, SchemaServiceConfigReference, Service, ServiceConfigReference,
     SourceServiceConfigReference,
 };
 use serde::{Deserialize, Serialize};
@@ -39,17 +40,17 @@ pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
     tokio::spawn(async move {
         let config = Config {
             services: vec![
-                Service::PubSub {
+                Service::PubSub(PubSubConfig {
                     name: "pubsub".to_owned(),
                     auth: GcpAuthConfig::StaticToken {
                         env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
                     },
-                },
-                Service::MongoDb {
+                }),
+                Service::MongoDb(MongoDbConfig {
                     name: "mongodb".to_owned(),
                     connection_string: env::var(DB_CONNECTION_ENV).unwrap(),
                     db_name: DB_NAME.to_owned(),
-                },
+                }),
             ],
             connectors: vec![Connector {
                 enabled: true,

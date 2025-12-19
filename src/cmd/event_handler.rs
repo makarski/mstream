@@ -5,10 +5,10 @@ use log::{debug, error, info};
 use tokio::{sync::mpsc::Receiver, task::block_in_place};
 
 use crate::{
-    config::{Encoding, ServiceConfigReference},
-    middleware::MiddlewareProvider,
+    config::Encoding,
+    provision::pipeline::{middleware::MiddlewareDefinition, sink::SinkDefinition},
     schema::{encoding::SchemaEncoder, Schema},
-    sink::{encoding::SinkEvent, EventSink, SinkProvider},
+    sink::{encoding::SinkEvent, EventSink},
     source::SourceEvent,
 };
 
@@ -16,8 +16,8 @@ pub struct EventHandler {
     pub connector_name: String,
     pub source_schema: Schema,
     pub source_output_encoding: Encoding,
-    pub publishers: Vec<(ServiceConfigReference, SinkProvider, Schema)>,
-    pub middlewares: Option<Vec<(ServiceConfigReference, MiddlewareProvider, Schema)>>,
+    pub sinks: Vec<SinkDefinition>,
+    pub middlewares: Vec<MiddlewareDefinition>,
 }
 
 impl EventHandler {
@@ -121,29 +121,33 @@ impl EventHandler {
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
         let mut transformed_source_event = source_event;
 
-        if let Some(middlewares) = &mut self.middlewares {
-            for (mdlw_cfg, middleware, schema) in middlewares.iter_mut() {
-                transformed_source_event = middleware.transform(transformed_source_event).await?;
+        for middleware_def in self.middlewares.iter_mut() {
+            transformed_source_event = middleware_def
+                .provider
+                .transform(transformed_source_event)
+                .await?;
 
-                transformed_source_event = block_in_place(|| {
-                    transformed_source_event.apply_schema(Some(&mdlw_cfg.output_encoding), &schema)
-                })
-                .map_err(|err| {
-                    anyhow!(
-                        "middleware: {}:{}. schema: {:?}: {}",
-                        mdlw_cfg.service_name,
-                        mdlw_cfg.resource,
-                        mdlw_cfg.schema_id,
-                        err
-                    )
-                })?;
-            }
+            transformed_source_event = block_in_place(|| {
+                transformed_source_event.apply_schema(
+                    Some(&middleware_def.config.output_encoding),
+                    &middleware_def.schema,
+                )
+            })
+            .map_err(|err| {
+                anyhow!(
+                    "middleware: {}:{}. schema: {:?}: {}",
+                    middleware_def.config.service_name,
+                    middleware_def.config.resource,
+                    middleware_def.config.schema_id,
+                    err
+                )
+            })?;
         }
 
         let mut event_holder = Some(transformed_source_event);
-        let publishers_len = self.publishers.len();
+        let publishers_len = self.sinks.len();
 
-        for (i, (sink_cfg, publisher, schema)) in self.publishers.iter_mut().enumerate() {
+        for (i, sink_def) in self.sinks.iter_mut().enumerate() {
             let sink_event_result = block_in_place(|| {
                 let event = if i == publishers_len - 1 {
                     // move the last event to avoid clone
@@ -157,7 +161,7 @@ impl EventHandler {
                 };
 
                 // apply sink schema
-                event.apply_schema(Some(&sink_cfg.output_encoding), &schema)
+                event.apply_schema(Some(&sink_def.config.output_encoding), &sink_def.schema)
             });
 
             let sink_event: SinkEvent = match sink_event_result {
@@ -168,27 +172,34 @@ impl EventHandler {
                 Err(err) => {
                     error!(
                         "sink: {}, resource: {}, schema: {:?}, {}",
-                        &sink_cfg.service_name, &sink_cfg.resource, &sink_cfg.schema_id, err
+                        &sink_def.config.service_name,
+                        &sink_def.config.resource,
+                        &sink_def.config.schema_id,
+                        err
                     );
                     continue;
                 }
             };
 
             // maybe we need a config in publisher, ie explode batch
-            match publisher
-                .publish(sink_event, sink_cfg.resource.clone(), None)
+            match sink_def
+                .sink
+                .publish(sink_event, sink_def.config.resource.clone(), None)
                 .await
             {
                 Ok(message) => {
                     info!(
                         "published a message to: {}:{}. stream: {}. resource: {}",
-                        sink_cfg.service_name, message, &self.connector_name, sink_cfg.resource,
+                        sink_def.config.service_name,
+                        message,
+                        &self.connector_name,
+                        sink_def.config.resource,
                     );
                 }
                 Err(err) => {
                     error!(
                         "failed to publish message to sink: {}:{}, {}",
-                        &sink_cfg.service_name, &sink_cfg.resource, err
+                        &sink_def.config.service_name, &sink_def.config.resource, err
                     );
                     continue;
                 }
