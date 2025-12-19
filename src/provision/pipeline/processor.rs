@@ -11,13 +11,41 @@ use crate::{
     source::SourceEvent,
 };
 
-pub struct EventHandler {
-    pub(crate) pipeline: Pipeline,
+pub(super) struct EventHandler {
+    pipeline: Pipeline,
 }
 
 impl EventHandler {
-    /// Listen to source streams and publish the events to the configured sinks
-    pub async fn listen(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
+    pub fn new(pipeline: Pipeline) -> Self {
+        Self { pipeline }
+    }
+
+    /// Entry point for the pipeline's event processing logic.
+    ///
+    /// Determines the appropriate processing strategy (streaming or batching) based on
+    /// the pipeline configuration and begins consuming the event stream.
+    pub async fn handle(&mut self, events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
+        if self.pipeline.is_batching_enabled {
+            let batch_size = self.pipeline.batch_size;
+            info!(
+                "starting batch EventHandler listener. connector: {}, batch size: {}",
+                self.pipeline.name, batch_size
+            );
+            self.run_batch_loop(events_rx, batch_size).await
+        } else {
+            info!(
+                "starting EventHandler listener. connector: {}",
+                self.pipeline.name
+            );
+            self.run_event_loop(events_rx).await
+        }
+    }
+
+    /// Runs the main processing loop for individual events.
+    ///
+    /// Consumes the stream until exhaustion, applying schema validation and
+    /// routing each event through the configured middleware and sinks.
+    async fn run_event_loop(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
         loop {
             match events_rx.recv().await {
                 Some(event) => {
@@ -46,7 +74,12 @@ impl EventHandler {
         Ok(())
     }
 
-    pub async fn listen_batch(
+    /// Runs the main processing loop for batched events.
+    ///
+    /// Aggregates incoming events into batches of the configured size before
+    /// processing them as a single unit. This improves throughput by reducing
+    /// overhead per event.
+    async fn run_batch_loop(
         &mut self,
         mut events_rx: Receiver<SourceEvent>,
         batch_size: usize,

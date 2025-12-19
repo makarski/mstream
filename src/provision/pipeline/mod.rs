@@ -96,23 +96,13 @@ impl PipelineRuntime {
     fn do_work(self, pipeline: Pipeline, exit_tx: UnboundedSender<String>) -> JoinHandle<()> {
         tokio::spawn(async move {
             let cnt_name = pipeline.name.clone();
-
-            let mut eh = EventHandler { pipeline };
-
-            let work = async {
-                if eh.pipeline.is_batching_enabled {
-                    eh.listen_batch(self.events_rx, eh.pipeline.batch_size)
-                        .await
-                } else {
-                    eh.listen(self.events_rx).await
-                }
-            };
+            let mut eh = EventHandler::new(pipeline);
 
             select! {
                 _ = self.cancel_token.cancelled() => {
                     info!("cancelling job: {}", cnt_name);
                 }
-                res = work => {
+                res = eh.handle(self.events_rx) => {
                     if let Err(err) = res {
                         error!("job {} failed: {}", cnt_name, err);
                     }
