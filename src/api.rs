@@ -5,7 +5,6 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex;
 use tracing::info;
 
@@ -15,15 +14,11 @@ use crate::job_manager::{JobManager, JobMetadata};
 #[derive(Clone)]
 pub struct AppState {
     job_manager: Arc<Mutex<JobManager>>,
-    done_ch: UnboundedSender<String>,
 }
 
 impl AppState {
-    pub fn new(jb: Arc<Mutex<JobManager>>, done_ch: UnboundedSender<String>) -> Self {
-        Self {
-            job_manager: jb,
-            done_ch,
-        }
+    pub fn new(jb: Arc<Mutex<JobManager>>) -> Self {
+        Self { job_manager: jb }
     }
 }
 
@@ -77,7 +72,7 @@ async fn create_job(
     info!("creating new job: {}", conn_cfg.name);
 
     let mut jm = state.job_manager.lock().await;
-    match jm.start_job(conn_cfg, state.done_ch).await {
+    match jm.start_job(conn_cfg).await {
         Ok(job_metadata) => Json(Message {
             message: "job created successfully".to_string(),
             item: Some(job_metadata),

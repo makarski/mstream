@@ -1,19 +1,23 @@
-use std::sync::Arc;
+use anyhow::{anyhow, bail};
+use tokio::{
+    select,
+    sync::mpsc::{Sender, UnboundedSender},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
 
 use crate::{
-    config::Connector,
-    provision::{
-        pipeline::{
-            middleware::{MiddlewareBuilder, MiddlewareDefinition},
-            schema::{SchemaBuilder, SchemaDefinition},
-            sink::{SinkBuilder, SinkDefinition},
-            source::{SourceBuilder, SourceDefinition},
-        },
-        registry::ServiceRegistry,
+    cmd::event_handler::EventHandler,
+    provision::pipeline::{
+        middleware::MiddlewareDefinition, schema::SchemaDefinition, sink::SinkDefinition,
+        source::SourceDefinition,
     },
     schema::Schema,
+    source::{EventSource, SourceEvent, SourceProvider},
 };
 
+pub mod builder;
 pub mod middleware;
 pub mod schema;
 pub mod sink;
@@ -21,6 +25,7 @@ pub mod source;
 
 #[derive(Default)]
 pub struct Pipeline {
+    pub name: String,
     pub source: Option<SourceDefinition>,
     pub source_schema: Schema,
     pub middlewares: Vec<MiddlewareDefinition>,
@@ -30,68 +35,85 @@ pub struct Pipeline {
     pub is_batching_enabled: bool,
 }
 
-pub struct PipelineBuilder {
-    source_builder: SourceBuilder,
-    schema_builder: SchemaBuilder,
-    middleware_builder: MiddlewareBuilder,
-    sink_builder: SinkBuilder,
-    pipeline: Pipeline,
+impl Pipeline {
+    pub async fn run(
+        self,
+        cancel_token: CancellationToken,
+        exit_tx: UnboundedSender<String>,
+    ) -> anyhow::Result<(String, JoinHandle<()>)> {
+        let source_def = self.source.ok_or_else(|| {
+            anyhow!(
+                "no source provider initialized for connector: {}",
+                self.name
+            )
+        })?;
+
+        // channel buffer size is the same as the batch size
+        // if the buffer is full, the source listener will block
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(self.batch_size);
+        if let Err(err) =
+            listen_source(self.name.clone(), source_def.source_provider, events_tx).await
+        {
+            bail!("failed to spawn source listener: {}", err);
+        }
+
+        let job_name = self.name.clone();
+
+        let join_handle = tokio::spawn(async move {
+            let cnt_name = self.name.clone();
+
+            // todo: consider reusing pipeline entity instead of event handler
+            let mut event_handler = EventHandler {
+                connector_name: self.name.clone(),
+                source_schema: self.source_schema,
+                source_output_encoding: source_def.out_encoding,
+                sinks: self.sinks,
+                middlewares: self.middlewares,
+            };
+
+            let work = async {
+                if self.is_batching_enabled {
+                    event_handler.listen_batch(events_rx, self.batch_size).await
+                } else {
+                    event_handler.listen(events_rx).await
+                }
+            };
+
+            select! {
+                _ = cancel_token.cancelled() => {
+                    info!("cancelling job: {}", cnt_name);
+                }
+                res = work => {
+                    if let Err(err) = res {
+                        error!("job {} failed: {}", cnt_name, err);
+                    }
+                }
+            }
+
+            // send done signal
+            if let Err(err) = exit_tx.send(cnt_name.clone()) {
+                error!(
+                    "failed to send done signal: {}: connector: {}",
+                    err, cnt_name
+                );
+            }
+        });
+        Ok((job_name, join_handle))
+    }
 }
 
-impl PipelineBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, connector: Connector) -> Self {
-        let (batch_size, is_batching_enabled) = connector.batch_config();
-        let pipeline = Pipeline {
-            batch_size,
-            is_batching_enabled,
-            ..Default::default()
-        };
-
-        Self {
-            pipeline: pipeline,
-            source_builder: SourceBuilder::new(registry.clone(), connector.source.clone()),
-            schema_builder: SchemaBuilder::new(registry.clone(), &connector.schemas),
-            middleware_builder: MiddlewareBuilder::new(registry.clone(), &connector.middlewares),
-            sink_builder: SinkBuilder::new(registry.clone(), connector.sinks.clone()),
+async fn listen_source(
+    cnt_name: String,
+    mut source_provider: SourceProvider,
+    events_tx: Sender<SourceEvent>,
+) -> anyhow::Result<()> {
+    tokio::spawn(async move {
+        info!("spawning a listener for connector: {}", cnt_name);
+        if let Err(err) = source_provider.listen(events_tx).await {
+            error!("source listener failed. connector: {}:{}", cnt_name, err)
         }
-    }
-
-    pub async fn build(mut self) -> anyhow::Result<Pipeline> {
-        self.init_schemas().await?;
-        self.init_middlewares().await?;
-        self.init_source().await?;
-        self.init_sinks().await?;
-
-        Ok(self.pipeline)
-    }
-
-    async fn init_schemas(&mut self) -> anyhow::Result<()> {
-        let schemas = self.schema_builder.build().await?;
-        self.pipeline.schemas = schemas;
-        Ok(())
-    }
-
-    async fn init_source(&mut self) -> anyhow::Result<()> {
-        let source = self.source_builder.build(&self.pipeline.schemas).await?;
-        self.pipeline.source = Some(source);
-        Ok(())
-    }
-
-    async fn init_middlewares(&mut self) -> anyhow::Result<()> {
-        let middlewares = self
-            .middleware_builder
-            .build(&self.pipeline.schemas)
-            .await?;
-
-        self.pipeline.middlewares = middlewares;
-        Ok(())
-    }
-
-    async fn init_sinks(&mut self) -> anyhow::Result<()> {
-        let sinks = self.sink_builder.build(&self.pipeline.schemas).await?;
-        self.pipeline.sinks = sinks;
-        Ok(())
-    }
+    });
+    Ok(())
 }
 
 pub fn find_schema(schema_id: Option<String>, schema_definitions: &[SchemaDefinition]) -> Schema {
