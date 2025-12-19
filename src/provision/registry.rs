@@ -117,10 +117,10 @@ impl ServiceRegistry {
         }
 
         match &service_cfg {
-            Service::MongoDb { .. } => self.init_mongo(&service_cfg).await?,
-            Service::PubSub { .. } => self.init_pubsub(&service_cfg).await?,
-            Service::Http { .. } => self.init_http(&service_cfg).await?,
-            Service::Udf { .. } => self.init_udf(&service_cfg).await?,
+            Service::MongoDb(_) => self.init_mongo(&service_cfg).await?,
+            Service::PubSub(_) => self.init_pubsub(&service_cfg).await?,
+            Service::Http(_) => self.init_http(&service_cfg).await?,
+            Service::Udf(_) => self.init_udf(&service_cfg).await?,
             _ => {}
         }
 

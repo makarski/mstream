@@ -7,7 +7,7 @@ pub struct KafkaConfig {
     pub name: String,
     pub offset_seek_back_seconds: Option<u64>,
     #[serde(flatten)]
-    #[serde(deserialize_with = "deserialize_hasmap_with_env_vals")]
+    #[serde(deserialize_with = "deserialize_hashmap_with_env_vals")]
     pub config: HashMap<String, String>,
 }
 
@@ -60,7 +60,7 @@ pub enum GcpAuthConfig {
     ServiceAccount { account_key_path: String },
 }
 
-fn deserialize_hasmap_with_env_vals<'de, D>(
+fn deserialize_hashmap_with_env_vals<'de, D>(
     deserializer: D,
 ) -> Result<HashMap<String, String>, D::Error>
 where
@@ -97,7 +97,7 @@ impl<'a> TryFrom<&'a super::Service> for &'a KafkaConfig {
         match service {
             super::Service::Kafka(cfg) => Ok(cfg),
             _ => anyhow::bail!(
-                "expected KafkaConfig service defintion, found: {}",
+                "expected KafkaConfig service definition, found: {}",
                 service.name()
             ),
         }
@@ -111,7 +111,7 @@ impl<'a> TryFrom<&'a super::Service> for &'a UdfConfig {
         match service {
             super::Service::Udf(cfg) => Ok(cfg),
             _ => anyhow::bail!(
-                "expected UdfConfig service defintion, found: {}",
+                "expected UdfConfig service definition, found: {}",
                 service.name()
             ),
         }
@@ -125,7 +125,7 @@ impl<'a> TryFrom<&'a super::Service> for &'a MongoDbConfig {
         match service {
             super::Service::MongoDb(cfg) => Ok(cfg),
             _ => anyhow::bail!(
-                "expected MongoDbConfig service defintion, found: {}",
+                "expected MongoDbConfig service definition, found: {}",
                 service.name()
             ),
         }
@@ -138,7 +138,7 @@ impl<'a> TryFrom<&'a super::Service> for &'a HttpConfig {
         match service {
             super::Service::Http(cfg) => Ok(cfg),
             _ => anyhow::bail!(
-                "expected HttpConfig service defintion, found: {}",
+                "expected HttpConfig service definition, found: {}",
                 service.name()
             ),
         }
@@ -152,7 +152,7 @@ impl<'a> TryFrom<&'a super::Service> for &'a PubSubConfig {
         match service {
             super::Service::PubSub(cfg) => Ok(cfg),
             _ => anyhow::bail!(
-                "expected PubSubConfig service defintion, found: {}",
+                "expected PubSubConfig service definition, found: {}",
                 service.name()
             ),
         }

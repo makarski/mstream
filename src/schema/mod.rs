@@ -36,7 +36,7 @@ impl Schema {
     pub fn parse(definition: &str, encoding: Encoding) -> anyhow::Result<Self> {
         let parsed = match encoding {
             Encoding::Avro => Self::Avro(AvroSchema::parse_str(definition)?),
-            // Encoding::Json => Self::Json(defintion.to_string()),
+            // Encoding::Json => Self::Json(definition.to_string()),
             _ => Self::Undefined,
         };
 

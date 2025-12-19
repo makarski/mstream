@@ -32,7 +32,7 @@ impl SourceBuilder {
             .registry
             .service_definition(&self.config.service_name)
             .await
-            .context("sink_service")?;
+            .context("source service")?;
 
         let schema = super::find_schema(self.config.schema_id.clone(), schemas);
         let source_provider = self.source(service_config).await?;
@@ -85,7 +85,7 @@ impl SourceBuilder {
         cfg: &SourceServiceConfigReference,
     ) -> anyhow::Result<Encoding> {
         match service_config {
-            Service::Kafka { .. } | Service::PubSub { .. } => match cfg.input_encoding.as_ref() {
+            Service::Kafka(_) | Service::PubSub(_) => match cfg.input_encoding.as_ref() {
                 Some(encoding) => Ok(encoding.clone()),
                 None => {
                     bail!(
@@ -95,10 +95,10 @@ impl SourceBuilder {
                     )
                 }
             },
-            Service::MongoDb { .. } => {
+            Service::MongoDb(_) => {
                 return Ok(Encoding::Bson);
             }
-            Service::Http { .. } | Service::Udf { .. } => {
+            Service::Http(_) | Service::Udf(_) => {
                 bail!(
                     "initializing source provider: unsupported service: {}",
                     service_config.name()
