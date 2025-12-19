@@ -18,6 +18,7 @@ pub mod cmd;
 pub mod config;
 pub mod job_manager;
 pub mod middleware;
+pub mod provision;
 pub mod pubsub;
 pub mod schema;
 pub mod source;

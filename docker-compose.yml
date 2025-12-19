@@ -20,25 +20,6 @@ services:
     networks:
       - mongoCluster
 
-  mongo-init:
-    image: *mongo_image
-    container_name: mongo-init
-    depends_on:
-      - mongo1
-    networks:
-      - mongoCluster
-    volumes:
-      - ./local/scripts:/opt/scripts
-    command: >
-      bash -c "
-        echo 'Waiting for mongo1...'
-        until mongosh --host mongo1 --eval 'quit(db.runCommand({ ping: 1 }).ok ? 0 : 1)' &>/dev/null; do
-          sleep 2
-        done
-        echo 'Running init script...'
-        bash /opt/scripts/init_replica_set.sh
-      "
-
   mstream:
     container_name: mstream
     build: .

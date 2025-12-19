@@ -6,4 +6,3 @@ src/pubsub/api/*
 mstream-config.toml
 mstream-config.toml.bak
 .env.test
-local/scripts/mongo-keyfile
