@@ -17,10 +17,9 @@ pub(super) struct SourceBuilder {
     config: SourceServiceConfigReference,
 }
 
-pub struct SourceDefinition {
+pub(super) struct SourceDefinition {
     pub source_provider: SourceProvider,
     pub schema: Schema,
-    pub out_encoding: Encoding,
 }
 
 impl SourceBuilder {
@@ -41,7 +40,6 @@ impl SourceBuilder {
         Ok(SourceDefinition {
             source_provider,
             schema,
-            out_encoding: self.config.output_encoding.clone(),
         })
     }
 

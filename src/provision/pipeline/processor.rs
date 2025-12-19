@@ -5,24 +5,47 @@ use log::{debug, error, info};
 use tokio::{sync::mpsc::Receiver, task::block_in_place};
 
 use crate::{
-    config::Encoding,
-    provision::pipeline::{middleware::MiddlewareDefinition, sink::SinkDefinition},
-    schema::{encoding::SchemaEncoder, Schema},
+    provision::pipeline::Pipeline,
+    schema::encoding::SchemaEncoder,
     sink::{encoding::SinkEvent, EventSink},
     source::SourceEvent,
 };
 
-pub struct EventHandler {
-    pub connector_name: String,
-    pub source_schema: Schema,
-    pub source_output_encoding: Encoding,
-    pub sinks: Vec<SinkDefinition>,
-    pub middlewares: Vec<MiddlewareDefinition>,
+pub(super) struct EventHandler {
+    pipeline: Pipeline,
 }
 
 impl EventHandler {
-    /// Listen to source streams and publish the events to the configured sinks
-    pub async fn listen(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
+    pub fn new(pipeline: Pipeline) -> Self {
+        Self { pipeline }
+    }
+
+    /// Entry point for the pipeline's event processing logic.
+    ///
+    /// Determines the appropriate processing strategy (streaming or batching) based on
+    /// the pipeline configuration and begins consuming the event stream.
+    pub async fn handle(&mut self, events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
+        if self.pipeline.is_batching_enabled {
+            let batch_size = self.pipeline.batch_size;
+            info!(
+                "starting batch EventHandler listener. connector: {}, batch size: {}",
+                self.pipeline.name, batch_size
+            );
+            self.run_batch_loop(events_rx, batch_size).await
+        } else {
+            info!(
+                "starting EventHandler listener. connector: {}",
+                self.pipeline.name
+            );
+            self.run_event_loop(events_rx).await
+        }
+    }
+
+    /// Runs the main processing loop for individual events.
+    ///
+    /// Consumes the stream until exhaustion, applying schema validation and
+    /// routing each event through the configured middleware and sinks.
+    async fn run_event_loop(&mut self, mut events_rx: Receiver<SourceEvent>) -> anyhow::Result<()> {
         loop {
             match events_rx.recv().await {
                 Some(event) => {
@@ -30,16 +53,19 @@ impl EventHandler {
 
                     let event = block_in_place(|| {
                         event
-                            .apply_schema(Some(&self.source_output_encoding), &self.source_schema)
+                            .apply_schema(
+                                Some(&self.pipeline.source_out_encoding),
+                                &self.pipeline.source_schema,
+                            )
                             .map_err(|err| anyhow!("failed to apply source schema: {}", err))
                     })?;
 
                     if let Err(err) = self.process_event(event).await {
-                        error!("{}: failed to process event: {}", &self.connector_name, err)
+                        error!("{}: failed to process event: {}", &self.pipeline.name, err)
                     }
                 }
                 None => {
-                    info!("source listener exited. connector: {}", self.connector_name);
+                    info!("source listener exited. connector: {}", self.pipeline.name);
                     break;
                 }
             }
@@ -48,7 +74,12 @@ impl EventHandler {
         Ok(())
     }
 
-    pub async fn listen_batch(
+    /// Runs the main processing loop for batched events.
+    ///
+    /// Aggregates incoming events into batches of the configured size before
+    /// processing them as a single unit. This improves throughput by reducing
+    /// overhead per event.
+    async fn run_batch_loop(
         &mut self,
         mut events_rx: Receiver<SourceEvent>,
         batch_size: usize,
@@ -64,7 +95,7 @@ impl EventHandler {
                 if event_count == 0 {
                     bail!(
                         "batch EventHandler listener exited. connector: {}",
-                        self.connector_name
+                        self.pipeline.name
                     );
                 }
 
@@ -76,7 +107,7 @@ impl EventHandler {
             if let Err(err) = self.process_event_batch(&mut batch).await {
                 error!(
                     "{}: failed to process batch event: {}",
-                    &self.connector_name, err
+                    &self.pipeline.name, err
                 )
             }
         }
@@ -94,14 +125,14 @@ impl EventHandler {
         let batch_event = block_in_place(|| {
             SchemaEncoder::new(
                 &source_encoding,
-                &self.source_output_encoding,
-                &self.source_schema,
+                &self.pipeline.source_out_encoding,
+                &self.pipeline.source_schema,
             )
             .apply_to_items(payloads)
             .map(|payload| SourceEvent {
                 raw_bytes: payload,
                 attributes: attributes,
-                encoding: self.source_output_encoding.clone(),
+                encoding: self.pipeline.source_out_encoding.clone(),
                 is_framed_batch: true,
             })
         })?;
@@ -112,7 +143,7 @@ impl EventHandler {
         );
 
         if let Err(err) = self.process_event(batch_event).await {
-            error!("{}: failed to process event: {}", &self.connector_name, err)
+            error!("{}: failed to process event: {}", &self.pipeline.name, err)
         }
 
         Ok(())
@@ -121,7 +152,7 @@ impl EventHandler {
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
         let mut transformed_source_event = source_event;
 
-        for middleware_def in self.middlewares.iter_mut() {
+        for middleware_def in self.pipeline.middlewares.iter_mut() {
             transformed_source_event = middleware_def
                 .provider
                 .transform(transformed_source_event)
@@ -145,9 +176,9 @@ impl EventHandler {
         }
 
         let mut event_holder = Some(transformed_source_event);
-        let publishers_len = self.sinks.len();
+        let publishers_len = self.pipeline.sinks.len();
 
-        for (i, sink_def) in self.sinks.iter_mut().enumerate() {
+        for (i, sink_def) in self.pipeline.sinks.iter_mut().enumerate() {
             let sink_event_result = block_in_place(|| {
                 let event = if i == publishers_len - 1 {
                     // move the last event to avoid clone
@@ -192,7 +223,7 @@ impl EventHandler {
                         "published a message to: {}:{}. stream: {}. resource: {}",
                         sink_def.config.service_name,
                         message,
-                        &self.connector_name,
+                        &self.pipeline.name,
                         sink_def.config.resource,
                     );
                 }

@@ -8,11 +8,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
-    cmd::event_handler::EventHandler,
     config::Encoding,
     provision::pipeline::{
-        middleware::MiddlewareDefinition, schema::SchemaDefinition, sink::SinkDefinition,
-        source::SourceDefinition,
+        middleware::MiddlewareDefinition, processor::EventHandler, schema::SchemaDefinition,
+        sink::SinkDefinition,
     },
     schema::Schema,
     source::{EventSource, SourceEvent, SourceProvider},
@@ -20,13 +19,15 @@ use crate::{
 
 pub mod builder;
 pub mod middleware;
+mod processor;
 pub mod schema;
 pub mod sink;
 pub mod source;
 
 pub struct Pipeline {
     pub name: String,
-    pub source: Option<SourceDefinition>,
+    pub source_provider: Option<SourceProvider>,
+    pub source_out_encoding: Encoding,
     pub source_schema: Schema,
     pub middlewares: Vec<MiddlewareDefinition>,
     pub schemas: Vec<SchemaDefinition>,
@@ -41,18 +42,16 @@ impl Pipeline {
         cancel_token: CancellationToken,
         exit_tx: UnboundedSender<String>,
     ) -> anyhow::Result<(String, JoinHandle<()>, JoinHandle<()>)> {
-        let source_def = self.source.take().ok_or_else(|| {
-            anyhow!(
-                "no source provider initialized for connector: {}",
-                self.name
-            )
-        })?;
+        let source_provider = self
+            .source_provider
+            .take()
+            .ok_or_else(|| anyhow!("source provider is not defined for pipeline: {}", self.name))?;
 
         let job_name = self.name.clone();
         let runtime = PipelineRuntime::new(self.batch_size, cancel_token.clone());
 
-        let source_handle = runtime.listen_source(self.name.clone(), source_def.source_provider);
-        let work_handle = runtime.do_work(self, exit_tx, source_def.out_encoding);
+        let source_handle = runtime.listen_source(self.name.clone(), source_provider);
+        let work_handle = runtime.do_work(self, exit_tx);
 
         Ok((job_name, work_handle, source_handle))
     }
@@ -94,39 +93,16 @@ impl PipelineRuntime {
         })
     }
 
-    fn do_work(
-        self,
-        pipeline: Pipeline,
-        exit_tx: UnboundedSender<String>,
-        out_encoding: Encoding,
-    ) -> JoinHandle<()> {
+    fn do_work(self, pipeline: Pipeline, exit_tx: UnboundedSender<String>) -> JoinHandle<()> {
         tokio::spawn(async move {
-            let cnt_name = pipeline.name;
-
-            // todo: consider reusing pipeline entity instead of event handler
-            let mut event_handler = EventHandler {
-                connector_name: cnt_name.clone(),
-                source_schema: pipeline.source_schema,
-                source_output_encoding: out_encoding,
-                sinks: pipeline.sinks,
-                middlewares: pipeline.middlewares,
-            };
-
-            let work = async {
-                if pipeline.is_batching_enabled {
-                    event_handler
-                        .listen_batch(self.events_rx, pipeline.batch_size)
-                        .await
-                } else {
-                    event_handler.listen(self.events_rx).await
-                }
-            };
+            let cnt_name = pipeline.name.clone();
+            let mut eh = EventHandler::new(pipeline);
 
             select! {
                 _ = self.cancel_token.cancelled() => {
                     info!("cancelling job: {}", cnt_name);
                 }
-                res = work => {
+                res = eh.handle(self.events_rx) => {
                     if let Err(err) = res {
                         error!("job {} failed: {}", cnt_name, err);
                     }
