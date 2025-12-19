@@ -32,8 +32,8 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         .and_then(|port_str| port_str.parse::<u16>().ok())
         .unwrap_or(8080);
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    let jm = cmd::listen_streams(tx.clone(), config).await?;
+    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<String>();
+    let jm = cmd::listen_streams(exit_tx, config).await?;
     info!(
         "running jobs: {}",
         jm.list_jobs()
@@ -44,7 +44,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     );
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let api_app_state = AppState::new(shared_jm, tx);
+    let api_app_state = AppState::new(shared_jm);
 
     tokio::spawn(async move {
         if let Err(err) = api::start_server(api_app_state, api_port).await {
@@ -52,7 +52,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         }
     });
 
-    while let Some(job_name) = rx.recv().await {
+    while let Some(job_name) = exit_rx.recv().await {
         warn!("stream listener exited: {}", job_name)
     }
 

@@ -1,26 +1,31 @@
-use std::sync::Arc;
+use anyhow::anyhow;
+use tokio::{
+    select,
+    sync::mpsc::{Receiver, Sender, UnboundedSender},
+    task::JoinHandle,
+};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
 use crate::{
-    config::Connector,
-    provision::{
-        pipeline::{
-            middleware::{MiddlewareBuilder, MiddlewareDefinition},
-            schema::{SchemaBuilder, SchemaDefinition},
-            sink::{SinkBuilder, SinkDefinition},
-            source::{SourceBuilder, SourceDefinition},
-        },
-        registry::ServiceRegistry,
+    cmd::event_handler::EventHandler,
+    config::Encoding,
+    provision::pipeline::{
+        middleware::MiddlewareDefinition, schema::SchemaDefinition, sink::SinkDefinition,
+        source::SourceDefinition,
     },
     schema::Schema,
+    source::{EventSource, SourceEvent, SourceProvider},
 };
 
+pub mod builder;
 pub mod middleware;
 pub mod schema;
 pub mod sink;
 pub mod source;
 
-#[derive(Default)]
 pub struct Pipeline {
+    pub name: String,
     pub source: Option<SourceDefinition>,
     pub source_schema: Schema,
     pub middlewares: Vec<MiddlewareDefinition>,
@@ -30,80 +35,123 @@ pub struct Pipeline {
     pub is_batching_enabled: bool,
 }
 
-pub struct PipelineBuilder {
-    source_builder: SourceBuilder,
-    schema_builder: SchemaBuilder,
-    middleware_builder: MiddlewareBuilder,
-    sink_builder: SinkBuilder,
-    pipeline: Pipeline,
+impl Pipeline {
+    pub async fn run(
+        mut self,
+        cancel_token: CancellationToken,
+        exit_tx: UnboundedSender<String>,
+    ) -> anyhow::Result<(String, JoinHandle<()>, JoinHandle<()>)> {
+        let source_def = self.source.take().ok_or_else(|| {
+            anyhow!(
+                "no source provider initialized for connector: {}",
+                self.name
+            )
+        })?;
+
+        let job_name = self.name.clone();
+        let runtime = PipelineRuntime::new(self.batch_size, cancel_token.clone());
+
+        let source_handle = runtime.listen_source(self.name.clone(), source_def.source_provider);
+        let work_handle = runtime.do_work(self, exit_tx, source_def.out_encoding);
+
+        Ok((job_name, work_handle, source_handle))
+    }
 }
 
-impl PipelineBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, connector: Connector) -> Self {
-        let (batch_size, is_batching_enabled) = connector.batch_config();
-        let pipeline = Pipeline {
-            batch_size,
-            is_batching_enabled,
-            ..Default::default()
-        };
+struct PipelineRuntime {
+    events_tx: Sender<SourceEvent>,
+    events_rx: Receiver<SourceEvent>,
+    cancel_token: CancellationToken,
+}
 
+impl PipelineRuntime {
+    pub fn new(buffer_size: usize, cancel_token: CancellationToken) -> Self {
+        let (events_tx, events_rx) = tokio::sync::mpsc::channel(buffer_size);
         Self {
-            pipeline: pipeline,
-            source_builder: SourceBuilder::new(registry.clone(), connector.source.clone()),
-            schema_builder: SchemaBuilder::new(registry.clone(), &connector.schemas),
-            middleware_builder: MiddlewareBuilder::new(registry.clone(), &connector.middlewares),
-            sink_builder: SinkBuilder::new(registry.clone(), connector.sinks.clone()),
+            events_tx,
+            events_rx,
+            cancel_token,
         }
     }
 
-    pub async fn build(mut self) -> anyhow::Result<Pipeline> {
-        self.init_schemas().await?;
-        self.init_middlewares().await?;
-        self.init_source().await?;
-        self.init_sinks().await?;
+    fn listen_source(&self, name: String, mut source_provider: SourceProvider) -> JoinHandle<()> {
+        let events_tx = self.events_tx.clone();
+        let cancel_token = self.cancel_token.clone();
 
-        Ok(self.pipeline)
+        tokio::spawn(async move {
+            info!("spawning a listener for connector: {}", name);
+
+            select! {
+                _ = cancel_token.cancelled() => {
+                    warn!("cancelling source listener for connector: {}", name);
+                }
+                res = source_provider.listen(events_tx) => {
+                    if let Err(err) = res {
+                        error!("source listener failed. connector: {}: {}", name, err)
+                    }
+                }
+            }
+        })
     }
 
-    async fn init_schemas(&mut self) -> anyhow::Result<()> {
-        let schemas = self.schema_builder.build().await?;
-        self.pipeline.schemas = schemas;
-        Ok(())
-    }
+    fn do_work(
+        self,
+        pipeline: Pipeline,
+        exit_tx: UnboundedSender<String>,
+        out_encoding: Encoding,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let cnt_name = pipeline.name;
 
-    async fn init_source(&mut self) -> anyhow::Result<()> {
-        let source = self.source_builder.build(&self.pipeline.schemas).await?;
-        self.pipeline.source = Some(source);
-        Ok(())
-    }
+            // todo: consider reusing pipeline entity instead of event handler
+            let mut event_handler = EventHandler {
+                connector_name: cnt_name.clone(),
+                source_schema: pipeline.source_schema,
+                source_output_encoding: out_encoding,
+                sinks: pipeline.sinks,
+                middlewares: pipeline.middlewares,
+            };
 
-    async fn init_middlewares(&mut self) -> anyhow::Result<()> {
-        let middlewares = self
-            .middleware_builder
-            .build(&self.pipeline.schemas)
-            .await?;
+            let work = async {
+                if pipeline.is_batching_enabled {
+                    event_handler
+                        .listen_batch(self.events_rx, pipeline.batch_size)
+                        .await
+                } else {
+                    event_handler.listen(self.events_rx).await
+                }
+            };
 
-        self.pipeline.middlewares = middlewares;
-        Ok(())
-    }
+            select! {
+                _ = self.cancel_token.cancelled() => {
+                    info!("cancelling job: {}", cnt_name);
+                }
+                res = work => {
+                    if let Err(err) = res {
+                        error!("job {} failed: {}", cnt_name, err);
+                    }
+                }
+            }
 
-    async fn init_sinks(&mut self) -> anyhow::Result<()> {
-        let sinks = self.sink_builder.build(&self.pipeline.schemas).await?;
-        self.pipeline.sinks = sinks;
-        Ok(())
+            // send done signal
+            if let Err(err) = exit_tx.send(cnt_name.clone()) {
+                error!(
+                    "failed to send done signal: {}: connector: {}",
+                    err, cnt_name
+                );
+            }
+        })
     }
 }
 
 pub fn find_schema(schema_id: Option<String>, schema_definitions: &[SchemaDefinition]) -> Schema {
-    let has_schemas = !schema_definitions.is_empty();
-    if !has_schemas || schema_id.is_none() {
-        return Schema::Undefined;
-    }
-    let schema_id = schema_id.unwrap();
-
-    schema_definitions
-        .into_iter()
-        .find(|&schema| schema.schema_id == schema_id)
-        .map(|s| s.schema.clone())
+    schema_id
+        .as_ref()
+        .and_then(|id| {
+            schema_definitions
+                .iter()
+                .find(|&schema| &schema.schema_id == id)
+                .map(|s| s.schema.clone())
+        })
         .unwrap_or_else(|| Schema::Undefined)
 }
