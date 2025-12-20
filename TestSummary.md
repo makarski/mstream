@@ -136,46 +136,54 @@ source/                           0      No tests
 
 ### High Priority
 
-1. **Add Mocking for External Services**
+1.**Add Mocking for External Services**
+
    - Use testcontainers for MongoDB and Kafka
    - Create in-memory alternatives or mock implementations
    - Enable unit testing without external dependencies
 
-2. **Test Critical Untested Modules**
+2.**Test Critical Untested Modules**
+
    - `job_manager/` - Job lifecycle and error recovery
    - `provision/` - Pipeline provisioning and registry
    - `sink/` and `source/` - Abstraction layer testing
 
-3. **Increase Async Test Coverage**
+3.**Increase Async Test Coverage**
+
    - Test concurrent pipeline operations
    - Add race condition and deadlock tests
    - Test timeout and cancellation scenarios
 
 ### Medium Priority
 
-4. **Create Shared Test Utilities**
+4.**Create Shared Test Utilities**
+
    - Centralized test fixtures and helpers
    - Common mock data factories
    - Reusable assertion utilities
 
-5. **Add Property-Based Testing**
+5.**Add Property-Based Testing**
+
    - Encoding/decoding operations
    - Schema validation edge cases
    - Roundtrip invariants
 
-6. **Improve Integration Tests**
+6.**Improve Integration Tests**
+
    - Reduce test execution time (avoid long sleeps)
    - Make tests more deterministic
    - Add more end-to-end scenarios
 
 ### Low Priority
 
-7. **Document Test Requirements**
+7.**Document Test Requirements**
+
    - README section on running tests
    - Integration test setup guide
    - Environment variable documentation
 
-8. **Add Test Categories**
+8.**Add Test Categories**
+
    - Feature flags for different test sets
    - Separate quick tests from slow tests
    - Enable selective test execution
