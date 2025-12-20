@@ -71,7 +71,7 @@ impl SourceBuilder {
                 let subscriber =
                     PubSubSubscriber::new(tp.clone(), self.config.resource.clone(), input_encoding)
                         .await?;
-                Ok(SourceProvider::PubSub(subscriber))
+                Ok(SourceProvider::PubSub(Box::new(subscriber)))
             }
             _ => bail!(
                 "source_provider: unsupported service: {}",

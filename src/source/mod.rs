@@ -4,8 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::Encoding;
-use crate::pubsub::srvc::PubSubSubscriber;
-use crate::pubsub::ServiceAccountAuth;
+use crate::pubsub::srvc::PubSubSubscriberTrait;
 use crate::schema::encoding::SchemaEncoder;
 use crate::schema::Schema;
 use crate::{kafka::consumer::KafkaConsumer, mongodb::MongoDbChangeStreamListener};
@@ -57,7 +56,7 @@ impl SourceEvent {
 pub enum SourceProvider {
     MongoDb(MongoDbChangeStreamListener),
     Kafka(KafkaConsumer),
-    PubSub(PubSubSubscriber<ServiceAccountAuth>),
+    PubSub(Box<dyn PubSubSubscriberTrait>),
 }
 
 #[async_trait]

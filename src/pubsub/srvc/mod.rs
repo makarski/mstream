@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Context};
+use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 use tonic::service::Interceptor;
 
@@ -16,6 +17,35 @@ use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasRespon
 use crate::pubsub::api::{PublishRequest, PubsubMessage};
 use crate::schema::Schema;
 use crate::source::SourceEvent;
+
+/// Trait for publishing messages to PubSub
+/// Enables mocking and testing without real GCP connection
+#[async_trait]
+pub trait PubSubPublisherTrait: Send + Sync {
+    async fn publish(
+        &mut self,
+        topic: String,
+        data: Vec<u8>,
+        key: Option<&str>,
+        attributes: Option<HashMap<String, String>>,
+        is_batch: bool,
+    ) -> anyhow::Result<String>;
+}
+
+/// Trait for subscribing to PubSub messages
+/// Enables mocking and testing without real GCP connection
+#[async_trait]
+pub trait PubSubSubscriberTrait: Send + Sync {
+    async fn subscribe(&mut self, events: Sender<SourceEvent>) -> anyhow::Result<()>;
+}
+
+/// Trait for PubSub schema service operations
+/// Enables mocking and testing without real GCP connection
+#[async_trait]
+pub trait SchemaServiceTrait: Send + Sync {
+    async fn list_schemas(&mut self, parent: String) -> anyhow::Result<ListSchemasResponse>;
+    async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema>;
+}
 
 pub struct PubSubPublisher<I> {
     client: PublisherClient<InterceptedService<Channel, I>>,
@@ -98,6 +128,21 @@ impl<I: Interceptor> PubSubPublisher<I> {
     }
 }
 
+// Implement the trait for PubSubPublisher
+#[async_trait]
+impl<I: Interceptor + Send + Sync> PubSubPublisherTrait for PubSubPublisher<I> {
+    async fn publish(
+        &mut self,
+        topic: String,
+        data: Vec<u8>,
+        key: Option<&str>,
+        attributes: Option<HashMap<String, String>>,
+        is_batch: bool,
+    ) -> anyhow::Result<String> {
+        self.publish(topic, data, key, attributes, is_batch).await
+    }
+}
+
 pub struct SchemaService<I> {
     client: SchemaServiceClient<InterceptedService<Channel, I>>,
     cache: HashMap<String, Schema>,
@@ -160,6 +205,18 @@ impl<I: Interceptor> SchemaService<I> {
             .get(&id)
             .cloned()
             .ok_or_else(|| anyhow!("schema not found"))
+    }
+}
+
+// Implement the trait for SchemaService
+#[async_trait]
+impl<I: Interceptor + Send + Sync> SchemaServiceTrait for SchemaService<I> {
+    async fn list_schemas(&mut self, parent: String) -> anyhow::Result<ListSchemasResponse> {
+        self.list_schemas(parent).await
+    }
+
+    async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
+        self.get_schema(id).await
     }
 }
 
@@ -243,5 +300,361 @@ impl<I: Interceptor> PubSubSubscriber<I> {
         }
 
         Ok(())
+    }
+}
+
+// Implement the trait for PubSubSubscriber
+#[async_trait]
+impl<I: Interceptor + Send + Sync> PubSubSubscriberTrait for PubSubSubscriber<I> {
+    async fn subscribe(&mut self, events: Sender<SourceEvent>) -> anyhow::Result<()> {
+        self.subscribe(events).await
+    }
+}
+
+// ============================================================================
+// Mock Implementations for Testing
+// ============================================================================
+
+#[cfg(test)]
+pub mod mocks {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    /// Mock PubSub publisher for testing
+    /// Records all published messages for verification
+    #[derive(Clone)]
+    pub struct MockPubSubPublisher {
+        pub published: Arc<Mutex<Vec<PublishedMessage>>>,
+        pub should_fail: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct PublishedMessage {
+        pub topic: String,
+        pub data: Vec<u8>,
+        pub key: Option<String>,
+        pub attributes: Option<HashMap<String, String>>,
+        pub is_batch: bool,
+    }
+
+    impl MockPubSubPublisher {
+        pub fn new() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+                should_fail: false,
+            }
+        }
+
+        pub fn with_failure() -> Self {
+            Self {
+                published: Arc::new(Mutex::new(Vec::new())),
+                should_fail: true,
+            }
+        }
+
+        pub async fn get_published(&self) -> Vec<PublishedMessage> {
+            self.published.lock().await.clone()
+        }
+
+        pub async fn clear(&self) {
+            self.published.lock().await.clear();
+        }
+    }
+
+    #[async_trait]
+    impl PubSubPublisherTrait for MockPubSubPublisher {
+        async fn publish(
+            &mut self,
+            topic: String,
+            data: Vec<u8>,
+            key: Option<&str>,
+            attributes: Option<HashMap<String, String>>,
+            is_batch: bool,
+        ) -> anyhow::Result<String> {
+            if self.should_fail {
+                anyhow::bail!("Mock publisher configured to fail");
+            }
+
+            let message = PublishedMessage {
+                topic: topic.clone(),
+                data: data.clone(),
+                key: key.map(|s| s.to_string()),
+                attributes: attributes.clone(),
+                is_batch,
+            };
+
+            self.published.lock().await.push(message);
+
+            Ok("1".to_string())
+        }
+    }
+
+    /// Mock PubSub subscriber for testing
+    /// Can be pre-loaded with messages to deliver
+    pub struct MockPubSubSubscriber {
+        pub messages: Arc<Mutex<Vec<SourceEvent>>>,
+        pub should_fail: bool,
+    }
+
+    impl MockPubSubSubscriber {
+        pub fn new() -> Self {
+            Self {
+                messages: Arc::new(Mutex::new(Vec::new())),
+                should_fail: false,
+            }
+        }
+
+        pub fn with_failure() -> Self {
+            Self {
+                messages: Arc::new(Mutex::new(Vec::new())),
+                should_fail: true,
+            }
+        }
+
+        pub async fn add_message(&self, event: SourceEvent) {
+            self.messages.lock().await.push(event);
+        }
+
+        pub async fn add_messages(&self, events: Vec<SourceEvent>) {
+            self.messages.lock().await.extend(events);
+        }
+    }
+
+    #[async_trait]
+    impl PubSubSubscriberTrait for MockPubSubSubscriber {
+        async fn subscribe(&mut self, events: Sender<SourceEvent>) -> anyhow::Result<()> {
+            if self.should_fail {
+                anyhow::bail!("Mock subscriber configured to fail");
+            }
+
+            let messages = self.messages.lock().await.clone();
+            for message in messages {
+                events.send(message).await?;
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Mock schema service for testing
+    /// Can be pre-loaded with schemas
+    pub struct MockSchemaService {
+        pub schemas: Arc<Mutex<HashMap<String, Schema>>>,
+        pub should_fail: bool,
+    }
+
+    impl MockSchemaService {
+        pub fn new() -> Self {
+            Self {
+                schemas: Arc::new(Mutex::new(HashMap::new())),
+                should_fail: false,
+            }
+        }
+
+        pub fn with_failure() -> Self {
+            Self {
+                schemas: Arc::new(Mutex::new(HashMap::new())),
+                should_fail: true,
+            }
+        }
+
+        pub async fn add_schema(&self, id: String, schema: Schema) {
+            self.schemas.lock().await.insert(id, schema);
+        }
+    }
+
+    #[async_trait]
+    impl SchemaServiceTrait for MockSchemaService {
+        async fn list_schemas(&mut self, _parent: String) -> anyhow::Result<ListSchemasResponse> {
+            if self.should_fail {
+                anyhow::bail!("Mock schema service configured to fail");
+            }
+
+            Ok(ListSchemasResponse {
+                schemas: vec![],
+                next_page_token: String::new(),
+            })
+        }
+
+        async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
+            if self.should_fail {
+                anyhow::bail!("Mock schema service configured to fail");
+            }
+
+            self.schemas
+                .lock()
+                .await
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| anyhow!("Schema not found: {}", id))
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::config::Encoding;
+
+        #[tokio::test]
+        async fn test_mock_publisher_success() {
+            let mut mock = MockPubSubPublisher::new();
+
+            let result = mock
+                .publish(
+                    "test-topic".to_string(),
+                    b"test data".to_vec(),
+                    Some("key1"),
+                    Some(
+                        [("attr1".to_string(), "value1".to_string())]
+                            .iter()
+                            .cloned()
+                            .collect(),
+                    ),
+                    false,
+                )
+                .await;
+
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "1");
+
+            let published = mock.get_published().await;
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].topic, "test-topic");
+            assert_eq!(published[0].data, b"test data");
+            assert_eq!(published[0].key, Some("key1".to_string()));
+            assert!(!published[0].is_batch);
+        }
+
+        #[tokio::test]
+        async fn test_mock_publisher_failure() {
+            let mut mock = MockPubSubPublisher::with_failure();
+
+            let result = mock
+                .publish(
+                    "test-topic".to_string(),
+                    b"test data".to_vec(),
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "Mock publisher configured to fail"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_mock_subscriber_success() {
+            let mut mock = MockPubSubSubscriber::new();
+
+            // Pre-load some messages
+            mock.add_message(SourceEvent {
+                raw_bytes: b"message 1".to_vec(),
+                attributes: None,
+                encoding: Encoding::Json,
+                is_framed_batch: false,
+            })
+            .await;
+
+            mock.add_message(SourceEvent {
+                raw_bytes: b"message 2".to_vec(),
+                attributes: Some(
+                    [("key".to_string(), "value".to_string())]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                ),
+                encoding: Encoding::Json,
+                is_framed_batch: false,
+            })
+            .await;
+
+            // Create a channel to receive events
+            let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+            // Subscribe
+            let result = mock.subscribe(tx).await;
+            assert!(result.is_ok());
+
+            // Verify we received the messages
+            let msg1 = rx.recv().await.unwrap();
+            assert_eq!(msg1.raw_bytes, b"message 1");
+
+            let msg2 = rx.recv().await.unwrap();
+            assert_eq!(msg2.raw_bytes, b"message 2");
+            assert!(msg2.attributes.is_some());
+        }
+
+        #[tokio::test]
+        async fn test_mock_subscriber_failure() {
+            let mut mock = MockPubSubSubscriber::with_failure();
+            let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+            let result = mock.subscribe(tx).await;
+            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "Mock subscriber configured to fail"
+            );
+        }
+
+        #[tokio::test]
+        async fn test_mock_schema_service() {
+            let mut mock = MockSchemaService::new();
+
+            // Add a test schema
+            let schema = Schema::parse(
+                r#"{"type": "record", "name": "Test", "fields": [{"name": "id", "type": "int"}]}"#,
+                Encoding::Avro,
+            )
+            .unwrap();
+
+            mock.add_schema("test-schema-id".to_string(), schema.clone())
+                .await;
+
+            // Get the schema
+            let result = mock.get_schema("test-schema-id".to_string()).await;
+            assert!(result.is_ok());
+
+            // Try to get a non-existent schema
+            let result = mock.get_schema("non-existent".to_string()).await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_sink_provider_with_mock() {
+            use crate::sink::{encoding::SinkEvent, EventSink, SinkProvider};
+
+            let mock = MockPubSubPublisher::new();
+            let mut sink = SinkProvider::PubSub(Box::new(mock.clone()));
+
+            let sink_event = SinkEvent {
+                raw_bytes: b"test payload".to_vec(),
+                attributes: Some(
+                    [("source".to_string(), "test".to_string())]
+                        .iter()
+                        .cloned()
+                        .collect(),
+                ),
+                encoding: Encoding::Json,
+                is_framed_batch: false,
+            };
+
+            let result = sink
+                .publish(sink_event, "my-topic".to_string(), Some("key123"))
+                .await;
+
+            assert!(result.is_ok());
+
+            // Verify the message was published
+            let published = mock.get_published().await;
+            assert_eq!(published.len(), 1);
+            assert_eq!(published[0].topic, "my-topic");
+            assert_eq!(published[0].key, Some("key123".to_string()));
+        }
     }
 }

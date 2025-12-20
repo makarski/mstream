@@ -425,11 +425,13 @@ async fn test_with_pubsub_container() {
 
 For this project, we recommend a **hybrid approach**:
 
-1. **For unit tests**: Use **Option 3 (Trait-Based Abstraction)**
+1.**For unit tests**: Use **Option 3 (Trait-Based Abstraction)**
+   
    - Fast, no external dependencies
    - Perfect for testing business logic
 
-2. **For integration tests**: Use **Option 1 (PubSub Emulator)**
+2.**For integration tests**: Use **Option 1 (PubSub Emulator)**
+   
    - High fidelity with real PubSub behavior
    - Can run in Docker for CI/CD
    - Test actual serialization/deserialization

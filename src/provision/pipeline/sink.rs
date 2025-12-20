@@ -57,9 +57,9 @@ impl SinkBuilder {
             Service::Kafka(k_conf) => Ok(SinkProvider::Kafka(KafkaProducer::new(&k_conf.config)?)),
             Service::PubSub(ps_conf) => {
                 let tp = self.registry.gcp_auth(&ps_conf.name).await?;
-                Ok(SinkProvider::PubSub(
+                Ok(SinkProvider::PubSub(Box::new(
                     PubSubPublisher::with_interceptor(tp.clone()).await?,
-                ))
+                )))
             }
             Service::MongoDb(mongo_cfg) => {
                 let mgo_client = self.registry.mongodb_client(&mongo_cfg.name).await?;
