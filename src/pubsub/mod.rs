@@ -12,6 +12,10 @@ pub mod api {
 }
 pub mod srvc;
 
+// Mock server is available for all builds to support integration tests
+// The mock server implementations are only used in test code
+pub mod mock_server;
+
 const ENDPOINT: &str = "https://pubsub.googleapis.com:443";
 pub const SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/pubsub"];
 
