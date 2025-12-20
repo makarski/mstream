@@ -98,3 +98,26 @@ pub async fn tls_transport() -> anyhow::Result<Channel> {
         }
     }
 }
+
+/// Creates a connection to the PubSub emulator for testing
+/// Default endpoint is http://localhost:8085 but can be overridden with PUBSUB_EMULATOR_HOST env var
+pub async fn emulator_transport() -> anyhow::Result<Channel> {
+    let endpoint = std::env::var("PUBSUB_EMULATOR_HOST")
+        .unwrap_or_else(|_| "http://localhost:8085".to_string());
+
+    Channel::from_shared(endpoint)?
+        .connect()
+        .await
+        .map_err(|err| anyhow!("failed to connect to PubSub emulator: {}", err))
+}
+
+/// NoAuth interceptor for use with PubSub emulator (no authentication required)
+#[derive(Clone, Debug)]
+pub struct NoAuth;
+
+impl Interceptor for NoAuth {
+    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        // Pass through without adding auth headers for emulator
+        Ok(request)
+    }
+}
