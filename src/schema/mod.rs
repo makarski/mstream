@@ -10,7 +10,7 @@ pub mod encoding;
 pub mod mongo;
 
 pub enum SchemaProvider {
-    PubSub(SchemaService<ServiceAccountAuth>),
+    PubSub(Box<dyn crate::pubsub::srvc::SchemaServiceTrait>),
     MongoDb(MongoDbSchemaProvider),
 }
 

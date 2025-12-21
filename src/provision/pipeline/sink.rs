@@ -56,10 +56,25 @@ impl SinkBuilder {
         match service_config {
             Service::Kafka(k_conf) => Ok(SinkProvider::Kafka(KafkaProducer::new(&k_conf.config)?)),
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.gcp_auth(&ps_conf.name).await?;
-                Ok(SinkProvider::PubSub(Box::new(
-                    PubSubPublisher::with_interceptor(tp.clone()).await?,
-                )))
+                use crate::config::service_config::GcpAuthConfig;
+                use crate::pubsub::NoAuth;
+
+                // Check if using emulator (no auth) or real GCP
+                match &ps_conf.auth {
+                    GcpAuthConfig::NoAuth => {
+                        // Use NoAuth interceptor for emulator
+                        Ok(SinkProvider::PubSub(Box::new(
+                            PubSubPublisher::with_interceptor(NoAuth).await?,
+                        )))
+                    }
+                    _ => {
+                        // Use ServiceAccountAuth for real GCP
+                        let tp = self.registry.gcp_auth(&ps_conf.name).await?;
+                        Ok(SinkProvider::PubSub(Box::new(
+                            PubSubPublisher::with_interceptor(tp.clone()).await?,
+                        )))
+                    }
+                }
             }
             Service::MongoDb(mongo_cfg) => {
                 let mgo_client = self.registry.mongodb_client(&mongo_cfg.name).await?;

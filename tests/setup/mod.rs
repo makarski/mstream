@@ -33,18 +33,32 @@ pub struct Employee {
     pub rating: f64,
 }
 
+/// Helper to check if emulator mode is enabled
+fn use_emulator() -> bool {
+    env::var("USE_PUBSUB_EMULATOR")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false)
+}
+
 pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
     use mstream::cmd;
     use mstream::config::{Config, Connector};
 
     tokio::spawn(async move {
+        // Choose auth config based on whether we're using the emulator
+        let auth_config = if use_emulator() {
+            GcpAuthConfig::NoAuth
+        } else {
+            GcpAuthConfig::StaticToken {
+                env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
+            }
+        };
+
         let config = Config {
             services: vec![
                 Service::PubSub(PubSubConfig {
                     name: "pubsub".to_owned(),
-                    auth: GcpAuthConfig::StaticToken {
-                        env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
-                    },
+                    auth: auth_config,
                 }),
                 Service::MongoDb(MongoDbConfig {
                     name: "mongodb".to_owned(),
@@ -117,13 +131,6 @@ async fn subscriber<I: Interceptor>(interceptor: I) -> anyhow::Result<Subscriber
         tls_transport().await?
     };
     Ok(SubscriberClient::with_interceptor(channel, interceptor))
-}
-
-/// Check if we should use the PubSub emulator instead of real GCP
-fn use_emulator() -> bool {
-    env::var("USE_PUBSUB_EMULATOR")
-        .map(|v| v.to_lowercase() == "true" || v == "1")
-        .unwrap_or(false)
 }
 
 pub fn generate_pubsub_attributes(op_type: &str) -> HashMap<String, String> {

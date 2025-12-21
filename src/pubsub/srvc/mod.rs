@@ -53,9 +53,21 @@ pub struct PubSubPublisher<I> {
 
 impl<I: Interceptor> PubSubPublisher<I> {
     pub async fn with_interceptor(interceptor: I) -> anyhow::Result<Self> {
-        let channel = tls_transport()
-            .await
-            .with_context(|| "failed to create tls transport for pubsub publisher")?;
+        // Check if we should use the PubSub emulator
+        let use_emulator = std::env::var("USE_PUBSUB_EMULATOR")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+
+        let channel = if use_emulator {
+            crate::pubsub::emulator_transport()
+                .await
+                .with_context(|| "failed to connect to PubSub emulator")?
+        } else {
+            tls_transport()
+                .await
+                .with_context(|| "failed to create tls transport for pubsub publisher")?
+        };
+
         Ok(Self {
             client: PublisherClient::with_interceptor(channel, interceptor),
         })
@@ -150,9 +162,20 @@ pub struct SchemaService<I> {
 
 impl<I: Interceptor> SchemaService<I> {
     pub async fn with_interceptor(interceptor: I) -> anyhow::Result<Self> {
-        let channel = tls_transport()
-            .await
-            .with_context(|| "failed to create tls transport for pubsub schema service")?;
+        // Check if we should use the PubSub emulator
+        let use_emulator = std::env::var("USE_PUBSUB_EMULATOR")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+
+        let channel = if use_emulator {
+            crate::pubsub::emulator_transport()
+                .await
+                .with_context(|| "failed to connect to PubSub emulator")?
+        } else {
+            tls_transport()
+                .await
+                .with_context(|| "failed to create tls transport for pubsub schema service")?
+        };
 
         let client = SchemaServiceClient::with_interceptor(channel, interceptor);
 
@@ -232,9 +255,20 @@ impl<I: Interceptor> PubSubSubscriber<I> {
         subscription: String,
         encoding: Encoding,
     ) -> anyhow::Result<Self> {
-        let channel = tls_transport()
-            .await
-            .with_context(|| "failed to create tls transport for pubsub subscriber")?;
+        // Check if we should use the PubSub emulator
+        let use_emulator = std::env::var("USE_PUBSUB_EMULATOR")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(false);
+
+        let channel = if use_emulator {
+            crate::pubsub::emulator_transport()
+                .await
+                .with_context(|| "failed to connect to PubSub emulator")?
+        } else {
+            tls_transport()
+                .await
+                .with_context(|| "failed to create tls transport for pubsub subscriber")?
+        };
 
         let client = SubscriberClient::with_interceptor(channel, interceptor);
 
