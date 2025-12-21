@@ -124,8 +124,15 @@ curl http://localhost:8085
 
 **Create topics and subscriptions:**
 ```bash
-export PUBSUB_EMULATOR_HOST=localhost:8085
+# Using REST API (recommended - works without gcloud auth)
+curl -X PUT "http://localhost:8085/v1/projects/test-project/topics/test-topic"
 
+curl -X PUT "http://localhost:8085/v1/projects/test-project/subscriptions/test-subscription" \
+  -H "Content-Type: application/json" \
+  -d '{"topic":"projects/test-project/topics/test-topic"}'
+
+# Alternative: Using gcloud (requires auth configuration)
+export PUBSUB_EMULATOR_HOST=localhost:8085
 gcloud pubsub topics create test-topic --project=test-project
 gcloud pubsub subscriptions create test-subscription \
   --topic=test-topic \

@@ -6,10 +6,16 @@
 //      gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
 //      gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
 //
-// 2. Run the test:
-//    USE_PUBSUB_EMULATOR=true cargo test --test pubsub_emulator_test
+// 2. Create topics and subscriptions using REST API:
+//    curl -X PUT "http://localhost:8085/v1/projects/test-project/topics/test-topic"
+//    curl -X PUT "http://localhost:8085/v1/projects/test-project/subscriptions/test-subscription" \
+//      -H "Content-Type: application/json" \
+//      -d '{"topic":"projects/test-project/topics/test-topic"}'
 //
-// 3. Cleanup:
+// 3. Run the test:
+//    USE_PUBSUB_EMULATOR=true cargo test --test pubsub_emulator_test -- --ignored
+//
+// 4. Cleanup:
 //    docker stop pubsub-emulator && docker rm pubsub-emulator
 
 #[cfg(test)]

@@ -255,12 +255,26 @@ else
     exit 1
 fi
 
-# Create topics and subscriptions
+# Create topics and subscriptions using REST API
 print_step "Creating PubSub topics and subscriptions..."
-docker exec pubsub-emulator gcloud pubsub topics create test-topic --project=test-project > /dev/null 2>&1 || true
-docker exec pubsub-emulator gcloud pubsub subscriptions create test-subscription \
-    --topic=test-topic --project=test-project > /dev/null 2>&1 || true
-print_success "PubSub resources created"
+
+# Create topic
+if curl -s -X PUT "http://localhost:8085/v1/projects/test-project/topics/test-topic" > /dev/null 2>&1; then
+    print_success "Topic created"
+else
+    print_error "Failed to create topic"
+    exit 1
+fi
+
+# Create subscription
+if curl -s -X PUT "http://localhost:8085/v1/projects/test-project/subscriptions/test-subscription" \
+    -H "Content-Type: application/json" \
+    -d '{"topic":"projects/test-project/topics/test-topic"}' > /dev/null 2>&1; then
+    print_success "Subscription created"
+else
+    print_error "Failed to create subscription"
+    exit 1
+fi
 
 # ============================================================================
 # 2. RUN UNIT TESTS
