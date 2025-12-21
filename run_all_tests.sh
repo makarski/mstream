@@ -176,17 +176,58 @@ sleep 3
 
 print_step "Initializing MongoDB replica set..."
 sleep 2  # Give MongoDB time to start
-if make db-init-rpl-set 2>&1; then
+
+# Try to initialize replica set
+INIT_OUTPUT=$(make db-init-rpl-set 2>&1)
+INIT_EXIT_CODE=$?
+
+if echo "$INIT_OUTPUT" | grep -qi "authentication failed"; then
+    print_error "Authentication failed - MongoDB needs fresh start"
+    print_step "Cleaning MongoDB and restarting with fresh volumes..."
+
+    # Stop and clean MongoDB
+    docker stop mongo1 2>/dev/null || true
+    docker rm mongo1 2>/dev/null || true
+    docker volume rm mstream_mongovol1 mstream_mongovol2 mstream_mongovol3 2>/dev/null || true
+
+    # Restart MongoDB
+    print_step "Starting MongoDB with fresh volume..."
+    docker-compose up -d mongo1
+    sleep 10
+
+    # Try initialization again
+    print_step "Initializing replica set (attempt 2)..."
+    if make db-init-rpl-set 2>&1; then
+        print_success "MongoDB replica set initialized"
+    else
+        print_error "Failed to initialize replica set after clean start"
+        exit 1
+    fi
+elif [ $INIT_EXIT_CODE -eq 0 ]; then
     print_success "MongoDB replica set initialized"
 else
-    print_error "Failed to initialize replica set (may already be initialized)"
+    # Check if already initialized
+    if docker exec mongo1 mongosh --username admin --password adminpassword --authenticationDatabase admin --quiet --eval "rs.status()" 2>/dev/null | grep -q "ok"; then
+        print_success "MongoDB replica set already initialized"
+    else
+        print_error "Failed to initialize replica set"
+        echo "$INIT_OUTPUT"
+        exit 1
+    fi
 fi
 
-print_step "Checking MongoDB status..."
-if make db-check > /dev/null 2>&1; then
-    print_success "MongoDB is ready"
+print_step "Verifying MongoDB replica set status..."
+MONGO_STATE=$(docker exec mongo1 mongosh \
+    --username admin \
+    --password adminpassword \
+    --authenticationDatabase admin \
+    --quiet \
+    --eval "rs.status().members[0].stateStr" 2>/dev/null || echo "UNKNOWN")
+
+if [ "$MONGO_STATE" = "PRIMARY" ]; then
+    print_success "MongoDB is ready (state: PRIMARY)"
 else
-    print_error "MongoDB health check failed"
+    print_error "MongoDB state: $MONGO_STATE (expected: PRIMARY)"
     exit 1
 fi
 
