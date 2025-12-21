@@ -30,9 +30,15 @@ cleanup() {
     fi
 
     # Stop MongoDB (optional - user might want to keep it running)
+    # Set STOP_MONGODB=true to stop MongoDB after tests
     if [ "${STOP_MONGODB:-false}" = "true" ]; then
         echo "Stopping MongoDB..."
-        make db-stop 2>/dev/null || true
+        if docker ps --format '{{.Names}}' | grep -q "^mongo1$"; then
+            docker stop mongo1 2>/dev/null || true
+            echo "MongoDB container stopped"
+        fi
+    else
+        echo "MongoDB container left running (set STOP_MONGODB=true to stop it)"
     fi
 
     echo -e "${GREEN}Cleanup complete${NC}\n"
@@ -118,13 +124,37 @@ print_success "All prerequisites found"
 print_header "1. Setting Up Services"
 
 # Start MongoDB
-print_step "Starting MongoDB..."
-if ! make docker-db-up 2>&1 | grep -q "Error"; then
-    print_success "MongoDB started"
+print_step "Checking MongoDB status..."
+
+# Check if MongoDB container is already running
+if docker ps --format '{{.Names}}' | grep -q "^mongo1$"; then
+    print_success "MongoDB container is already running"
 else
-    print_error "Failed to start MongoDB"
-    exit 1
+    print_step "MongoDB not running, checking if container exists but is stopped..."
+
+    # Check if container exists but is stopped
+    if docker ps -a --format '{{.Names}}' | grep -q "^mongo1$"; then
+        print_step "Starting existing MongoDB container..."
+        if docker start mongo1 > /dev/null 2>&1; then
+            print_success "MongoDB container started"
+        else
+            print_error "Failed to start existing MongoDB container"
+            exit 1
+        fi
+    else
+        print_step "Starting MongoDB from docker-compose.yml..."
+        if docker-compose up -d mongo1 2>&1; then
+            print_success "MongoDB started from docker-compose"
+        else
+            print_error "Failed to start MongoDB from docker-compose"
+            exit 1
+        fi
+    fi
 fi
+
+# Wait for MongoDB to be ready
+print_step "Waiting for MongoDB to be ready..."
+sleep 3
 
 print_step "Initializing MongoDB replica set..."
 sleep 2  # Give MongoDB time to start
