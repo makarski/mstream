@@ -123,6 +123,24 @@ print_success "All prerequisites found"
 
 print_header "1. Setting Up Services"
 
+# Fix MongoDB keyfile permissions if needed
+KEYFILE_PATH="local/scripts/mongo-keyfile"
+if [ -f "$KEYFILE_PATH" ]; then
+    print_step "Checking MongoDB keyfile permissions..."
+    CURRENT_PERMS=$(stat -f "%Lp" "$KEYFILE_PATH" 2>/dev/null || stat -c "%a" "$KEYFILE_PATH" 2>/dev/null)
+
+    if [ "$CURRENT_PERMS" != "400" ] && [ "$CURRENT_PERMS" != "600" ]; then
+        print_step "Fixing keyfile permissions (current: $CURRENT_PERMS, required: 400)..."
+        chmod 400 "$KEYFILE_PATH"
+        print_success "Keyfile permissions fixed"
+    else
+        print_success "Keyfile permissions are correct ($CURRENT_PERMS)"
+    fi
+else
+    print_error "MongoDB keyfile not found at $KEYFILE_PATH"
+    exit 1
+fi
+
 # Start MongoDB
 print_step "Checking MongoDB status..."
 
