@@ -6,3 +6,10 @@ src/pubsub/api/*
 mstream-config.toml
 mstream-config.toml.bak
 .env.test
+.idea/
+MOCK.md
+TESTING_GUIDE.md
+MONGODB_SETUP.md
+EMULATOR_TESTING.md
+TEST_QUALITY_REPORT.md 
+TestSummary.md
