@@ -78,16 +78,30 @@ pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
                     schema_id: None,
                 },
                 middlewares: None,
-                schemas: Some(vec![SchemaServiceConfigReference {
-                    id: "pubsub-schema-id".to_owned(),
-                    service_name: "pubsub".to_owned(),
-                    resource: env::var("PUBSUB_SCHEMA").unwrap(),
-                }]),
+                // Skip schemas when using emulator (emulator doesn't support schemas)
+                schemas: if use_emulator() {
+                    None
+                } else {
+                    Some(vec![SchemaServiceConfigReference {
+                        id: "pubsub-schema-id".to_owned(),
+                        service_name: "pubsub".to_owned(),
+                        resource: env::var("PUBSUB_SCHEMA").unwrap(),
+                    }])
+                },
                 sinks: vec![ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
                     resource: env::var("PUBSUB_TOPIC").unwrap(),
-                    output_encoding: Encoding::Avro,
-                    schema_id: Some("pubsub-schema-id".to_owned()),
+                    // Use JSON encoding with emulator (Avro requires schemas)
+                    output_encoding: if use_emulator() {
+                        Encoding::Json
+                    } else {
+                        Encoding::Avro
+                    },
+                    schema_id: if use_emulator() {
+                        None
+                    } else {
+                        Some("pubsub-schema-id".to_owned())
+                    },
                 }],
             }],
             ..Default::default()
@@ -179,7 +193,6 @@ async fn pull_and_process_messages<I: Interceptor>(
         .await
         .map_err(|err| anyhow!("failed to pull from pubsub: {}", err))?;
 
-    let avro_schema = Employee::get_schema();
     let mut employees = vec![];
 
     for message in response.into_inner().received_messages {
@@ -187,10 +200,18 @@ async fn pull_and_process_messages<I: Interceptor>(
             .message
             .ok_or_else(|| anyhow!("message not found"))?;
 
-        let mut buffer = msg.data.as_slice();
-        let avro_value = apache_avro::from_avro_datum(&avro_schema, &mut buffer, None)?;
+        // Deserialize based on encoding (Avro for real GCP, JSON for emulator)
+        let employee: Employee = if use_emulator() {
+            // Emulator uses JSON encoding
+            serde_json::from_slice(&msg.data)?
+        } else {
+            // Real GCP uses Avro encoding
+            let avro_schema = Employee::get_schema();
+            let mut buffer = msg.data.as_slice();
+            let avro_value = apache_avro::from_avro_datum(&avro_schema, &mut buffer, None)?;
+            apache_avro::from_value(&avro_value)?
+        };
 
-        let employee: Employee = apache_avro::from_value(&avro_value)?;
         employees.push((msg.attributes, employee));
 
         ps_subscriber
