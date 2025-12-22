@@ -259,6 +259,137 @@ make unit-tests
 make integration-tests
 ```
 
+## 🧪 Testing
+
+mstream provides comprehensive testing support including unit tests, integration tests, and the ability to test with Google Cloud PubSub emulator without requiring GCP credentials.
+
+### Running Unit Tests
+
+Run the standard unit test suite:
+
+```bash
+# Using Makefile
+make unit-tests
+
+# Or directly with cargo
+cargo test --lib
+```
+
+### Testing with PubSub Emulator (Recommended)
+
+The PubSub emulator allows you to test PubSub functionality locally without GCP credentials or network access.
+
+#### Quick Start with Emulator
+
+**1. Start the emulator:**
+```bash
+docker run -d -p 8085:8085 --name pubsub-emulator \
+  gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+  gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+```
+
+**2. Create topics and subscriptions:**
+```bash
+export PUBSUB_EMULATOR_HOST=localhost:8085
+
+gcloud pubsub topics create test-topic --project=test-project
+gcloud pubsub subscriptions create test-subscription \
+  --topic=test-topic \
+  --project=test-project
+```
+
+**3. Run tests:**
+```bash
+USE_PUBSUB_EMULATOR=true \
+PUBSUB_SUBSCRIPTION="projects/test-project/subscriptions/test-subscription" \
+cargo test --test pubsub_emulator_test -- --ignored
+```
+
+**4. Cleanup:**
+```bash
+docker stop pubsub-emulator && docker rm pubsub-emulator
+```
+
+#### Environment Variables for Testing
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `USE_PUBSUB_EMULATOR` | Yes | `false` | Set to `true` to use emulator instead of real GCP |
+| `PUBSUB_EMULATOR_HOST` | No | `http://localhost:8085` | Override emulator endpoint |
+| `PUBSUB_SUBSCRIPTION` | Yes | N/A | Subscription name (e.g., `projects/test-project/subscriptions/test-sub`) |
+| `PUBSUB_TOPIC` | Yes* | N/A | Topic name (*only for integration tests) |
+| `MONGO_URI` | Yes* | N/A | MongoDB connection string (*only for integration tests) |
+
+### Running Integration Tests
+
+Integration tests require a running MongoDB instance and either real GCP credentials or the PubSub emulator.
+
+#### With Real GCP (Full Integration)
+
+```bash
+# Set up environment
+export MONGO_URI="mongodb://localhost:27017/?replicaSet=rs0"
+export MSTREAM_TEST_AUTH_TOKEN="your-gcp-bearer-token"
+export PUBSUB_TOPIC="projects/your-project/topics/test-topic"
+export PUBSUB_SUBSCRIPTION="projects/your-project/subscriptions/test-sub"
+export PUBSUB_SCHEMA="projects/your-project/schemas/test-schema"
+
+# Run integration tests
+make integration-tests
+# Or: cargo test --test integration_test -- --ignored
+```
+
+#### With PubSub Emulator (Partial Integration)
+
+```bash
+# Start MongoDB
+make db-up
+
+# Start PubSub emulator
+docker run -d -p 8085:8085 --name pubsub-emulator \
+  gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+  gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+
+# Set environment
+export USE_PUBSUB_EMULATOR=true
+export MONGO_URI="mongodb://localhost:27017/?replicaSet=rs0"
+export PUBSUB_SUBSCRIPTION="projects/test-project/subscriptions/test-subscription"
+
+# Run tests
+cargo test --test integration_test -- --ignored
+```
+
+**Note:** The app listener in integration tests still connects to real GCP. Full emulator support for the app would require additional refactoring. See `EMULATOR_TESTING.md` for details.
+
+### Additional Testing Resources
+
+For detailed testing documentation, see:
+- **[EMULATOR_TESTING.md](EMULATOR_TESTING.md)** - Complete guide to PubSub emulator setup and usage
+- **[MOCK.md](MOCK.md)** - Comprehensive mocking strategies and implementation options
+- **[TestSummary.md](TestSummary.md)** - Current test coverage analysis and recommendations
+
+### CI/CD Integration
+
+Example GitHub Actions workflow for testing with emulator:
+
+```yaml
+- name: Start PubSub Emulator
+  run: |
+    docker run -d -p 8085:8085 --name pubsub-emulator \
+      gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+      gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+    sleep 5
+
+- name: Run Tests
+  env:
+    USE_PUBSUB_EMULATOR: true
+  run: cargo test --test pubsub_emulator_test
+
+- name: Cleanup
+  if: always()
+  run: docker stop pubsub-emulator && docker rm pubsub-emulator
+```
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

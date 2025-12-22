@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tonic::service::Interceptor;
 
 use mstream::pubsub::api::{AcknowledgeRequest, PullRequest};
-use mstream::pubsub::{ServiceAccountAuth, StaticAccessToken};
+use mstream::pubsub::{NoAuth, ServiceAccountAuth, StaticAccessToken};
 
 // DB constants
 const CONNECTOR_NAME: &str = "employee-stream-test";
@@ -33,18 +33,32 @@ pub struct Employee {
     pub rating: f64,
 }
 
+/// Helper to check if emulator mode is enabled
+fn use_emulator() -> bool {
+    env::var("USE_PUBSUB_EMULATOR")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false)
+}
+
 pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
     use mstream::cmd;
     use mstream::config::{Config, Connector};
 
     tokio::spawn(async move {
+        // Choose auth config based on whether we're using the emulator
+        let auth_config = if use_emulator() {
+            GcpAuthConfig::NoAuth
+        } else {
+            GcpAuthConfig::StaticToken {
+                env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
+            }
+        };
+
         let config = Config {
             services: vec![
                 Service::PubSub(PubSubConfig {
                     name: "pubsub".to_owned(),
-                    auth: GcpAuthConfig::StaticToken {
-                        env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
-                    },
+                    auth: auth_config,
                 }),
                 Service::MongoDb(MongoDbConfig {
                     name: "mongodb".to_owned(),
@@ -64,16 +78,30 @@ pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
                     schema_id: None,
                 },
                 middlewares: None,
-                schemas: Some(vec![SchemaServiceConfigReference {
-                    id: "pubsub-schema-id".to_owned(),
-                    service_name: "pubsub".to_owned(),
-                    resource: env::var("PUBSUB_SCHEMA").unwrap(),
-                }]),
+                // Skip schemas when using emulator (emulator doesn't support schemas)
+                schemas: if use_emulator() {
+                    None
+                } else {
+                    Some(vec![SchemaServiceConfigReference {
+                        id: "pubsub-schema-id".to_owned(),
+                        service_name: "pubsub".to_owned(),
+                        resource: env::var("PUBSUB_SCHEMA").unwrap(),
+                    }])
+                },
                 sinks: vec![ServiceConfigReference {
                     service_name: "pubsub".to_owned(),
                     resource: env::var("PUBSUB_TOPIC").unwrap(),
-                    output_encoding: Encoding::Avro,
-                    schema_id: Some("pubsub-schema-id".to_owned()),
+                    // Use JSON encoding with emulator (Avro requires schemas)
+                    output_encoding: if use_emulator() {
+                        Encoding::Json
+                    } else {
+                        Encoding::Avro
+                    },
+                    schema_id: if use_emulator() {
+                        None
+                    } else {
+                        Some("pubsub-schema-id".to_owned())
+                    },
                 }],
             }],
             ..Default::default()
@@ -109,8 +137,13 @@ use tonic::transport::Channel;
 type SubscriberService<I> = SubscriberClient<InterceptedService<Channel, I>>;
 
 async fn subscriber<I: Interceptor>(interceptor: I) -> anyhow::Result<SubscriberService<I>> {
-    use mstream::pubsub::tls_transport;
-    let channel = tls_transport().await?;
+    let channel = if use_emulator() {
+        use mstream::pubsub::emulator_transport;
+        emulator_transport().await?
+    } else {
+        use mstream::pubsub::tls_transport;
+        tls_transport().await?
+    };
     Ok(SubscriberClient::with_interceptor(channel, interceptor))
 }
 
@@ -126,17 +159,30 @@ pub fn generate_pubsub_attributes(op_type: &str) -> HashMap<String, String> {
 pub async fn pull_from_pubsub(
     msg_number: i32,
 ) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
-    let static_token = StaticAccessToken(
-        env::var("MSTREAM_TEST_AUTH_TOKEN")
-            .map_err(|err| anyhow!("env var MSTREAM_TEST_AUTH_TOKEN is not set: {}", err))?,
-    );
+    if use_emulator() {
+        log::info!("Using PubSub emulator for testing");
+        let mut ps_subscriber = subscriber(NoAuth).await?;
+        pull_and_process_messages(&mut ps_subscriber, msg_number).await
+    } else {
+        log::info!("Using real GCP PubSub");
+        let static_token = StaticAccessToken(
+            env::var("MSTREAM_TEST_AUTH_TOKEN")
+                .map_err(|err| anyhow!("env var MSTREAM_TEST_AUTH_TOKEN is not set: {}", err))?,
+        );
+        let auth_interceptor = ServiceAccountAuth::new(static_token);
+        let mut ps_subscriber = subscriber(auth_interceptor).await?;
+        pull_and_process_messages(&mut ps_subscriber, msg_number).await
+    }
+}
 
-    let auth_interceptor = ServiceAccountAuth::new(static_token);
-    let mut ps_subscriber = subscriber(auth_interceptor.clone()).await?;
-
+async fn pull_and_process_messages<I: Interceptor>(
+    ps_subscriber: &mut SubscriberService<I>,
+    msg_number: i32,
+) -> anyhow::Result<Vec<(HashMap<String, String>, Employee)>> {
     log::info!("pulling from pubsub...");
 
-    let subscription = env::var("PUBSUB_SUBSCRIPTION").unwrap();
+    let subscription = env::var("PUBSUB_SUBSCRIPTION")
+        .unwrap_or_else(|_| "projects/test-project/subscriptions/test-subscription".to_string());
 
     let response = ps_subscriber
         .pull(PullRequest {
@@ -147,7 +193,6 @@ pub async fn pull_from_pubsub(
         .await
         .map_err(|err| anyhow!("failed to pull from pubsub: {}", err))?;
 
-    let avro_schema = Employee::get_schema();
     let mut employees = vec![];
 
     for message in response.into_inner().received_messages {
@@ -155,10 +200,18 @@ pub async fn pull_from_pubsub(
             .message
             .ok_or_else(|| anyhow!("message not found"))?;
 
-        let mut buffer = msg.data.as_slice();
-        let avro_value = apache_avro::from_avro_datum(&avro_schema, &mut buffer, None)?;
+        // Deserialize based on encoding (Avro for real GCP, JSON for emulator)
+        let employee: Employee = if use_emulator() {
+            // Emulator uses JSON encoding
+            serde_json::from_slice(&msg.data)?
+        } else {
+            // Real GCP uses Avro encoding
+            let avro_schema = Employee::get_schema();
+            let mut buffer = msg.data.as_slice();
+            let avro_value = apache_avro::from_avro_datum(&avro_schema, &mut buffer, None)?;
+            apache_avro::from_value(&avro_value)?
+        };
 
-        let employee: Employee = apache_avro::from_value(&avro_value)?;
         employees.push((msg.attributes, employee));
 
         ps_subscriber

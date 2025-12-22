@@ -58,6 +58,8 @@ pub enum GcpAuthConfig {
     StaticToken { env_token_name: String },
     #[serde(rename = "service_account")]
     ServiceAccount { account_key_path: String },
+    #[serde(rename = "no_auth")]
+    NoAuth,
 }
 
 fn deserialize_hashmap_with_env_vals<'de, D>(

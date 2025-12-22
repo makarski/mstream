@@ -67,11 +67,33 @@ impl SourceBuilder {
                 Ok(SourceProvider::Kafka(consumer))
             }
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.gcp_auth(&ps_conf.name).await?;
-                let subscriber =
-                    PubSubSubscriber::new(tp.clone(), self.config.resource.clone(), input_encoding)
+                use crate::config::service_config::GcpAuthConfig;
+                use crate::pubsub::NoAuth;
+
+                // Check if using emulator (no auth) or real GCP
+                match &ps_conf.auth {
+                    GcpAuthConfig::NoAuth => {
+                        // Use NoAuth interceptor for emulator
+                        let subscriber = PubSubSubscriber::new(
+                            NoAuth,
+                            self.config.resource.clone(),
+                            input_encoding,
+                        )
                         .await?;
-                Ok(SourceProvider::PubSub(subscriber))
+                        Ok(SourceProvider::PubSub(Box::new(subscriber)))
+                    }
+                    _ => {
+                        // Use ServiceAccountAuth for real GCP
+                        let tp = self.registry.gcp_auth(&ps_conf.name).await?;
+                        let subscriber = PubSubSubscriber::new(
+                            tp.clone(),
+                            self.config.resource.clone(),
+                            input_encoding,
+                        )
+                        .await?;
+                        Ok(SourceProvider::PubSub(Box::new(subscriber)))
+                    }
+                }
             }
             _ => bail!(
                 "source_provider: unsupported service: {}",

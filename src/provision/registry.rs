@@ -61,11 +61,14 @@ impl ServiceRegistry {
     async fn init_pubsub(&self, service_cfg: &Service) -> anyhow::Result<()> {
         let ps_cfg: &PubSubConfig = service_cfg.try_into()?;
 
-        let tp = Self::create_gcp_token_provider(&ps_cfg.auth).await?;
-        self.gcp_token_providers
-            .write()
-            .await
-            .insert(ps_cfg.name.clone(), tp);
+        // Only create token provider for auth methods that require it (not NoAuth)
+        if !matches!(ps_cfg.auth, GcpAuthConfig::NoAuth) {
+            let tp = Self::create_gcp_token_provider(&ps_cfg.auth).await?;
+            self.gcp_token_providers
+                .write()
+                .await
+                .insert(ps_cfg.name.clone(), tp);
+        }
         Ok(())
     }
 
@@ -185,6 +188,9 @@ impl ServiceRegistry {
 
                 let tp = StaticAccessToken(token);
                 Ok(ServiceAccountAuth::new(tp))
+            }
+            GcpAuthConfig::NoAuth => {
+                bail!("NoAuth should not be used with create_gcp_token_provider - use NoAuth interceptor directly")
             }
         }
     }

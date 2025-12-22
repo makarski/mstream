@@ -12,6 +12,10 @@ pub mod api {
 }
 pub mod srvc;
 
+// Mock server is available for all builds to support integration tests
+// The mock server implementations are only used in test code
+pub mod mock_server;
+
 const ENDPOINT: &str = "https://pubsub.googleapis.com:443";
 pub const SCOPES: [&str; 1] = ["https://www.googleapis.com/auth/pubsub"];
 
@@ -96,5 +100,28 @@ pub async fn tls_transport() -> anyhow::Result<Channel> {
 
             return Err(anyhow!("failed to initiate tls_transport: {}", err));
         }
+    }
+}
+
+/// Creates a connection to the PubSub emulator for testing
+/// Default endpoint is http://localhost:8085 but can be overridden with PUBSUB_EMULATOR_HOST env var
+pub async fn emulator_transport() -> anyhow::Result<Channel> {
+    let endpoint = std::env::var("PUBSUB_EMULATOR_HOST")
+        .unwrap_or_else(|_| "http://localhost:8085".to_string());
+
+    Channel::from_shared(endpoint)?
+        .connect()
+        .await
+        .map_err(|err| anyhow!("failed to connect to PubSub emulator: {}", err))
+}
+
+/// NoAuth interceptor for use with PubSub emulator (no authentication required)
+#[derive(Clone, Debug)]
+pub struct NoAuth;
+
+impl Interceptor for NoAuth {
+    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        // Pass through without adding auth headers for emulator
+        Ok(request)
     }
 }

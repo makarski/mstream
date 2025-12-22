@@ -10,6 +10,19 @@ use setup::{
     fixtures, generate_pubsub_attributes, pull_from_pubsub, setup_db, start_app_listener, Employee,
 };
 
+// Integration test that can run with either:
+// 1. Real GCP PubSub (requires MSTREAM_TEST_AUTH_TOKEN and other GCP env vars)
+// 2. PubSub Emulator (set USE_PUBSUB_EMULATOR=true)
+//
+// To run with emulator:
+//   docker run -d -p 8085:8085 --name pubsub-emulator \
+//     gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators \
+//     gcloud beta emulators pubsub start --host-port=0.0.0.0:8085
+//
+//   USE_PUBSUB_EMULATOR=true cargo test --test integration_test -- --ignored
+//
+// Note: The app listener still connects to real GCP. Full emulator support for the
+// app would require additional refactoring of the provision/registry code.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "Integration test - requires a running mongodb in docker and connection to GCP pubsub"]
 async fn test_created_updated_db_to_pubsub() {

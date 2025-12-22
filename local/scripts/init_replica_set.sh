@@ -12,11 +12,12 @@ for i in {1..30}; do
 done
 
 echo "Configuring replica set..."
+# Use localhost instead of mongo1 so it's accessible from host machine
 mongosh --host mongo1 "${AUTH_ARGS[@]}" --eval '
     rs.initiate({
         _id: "mstream_db_replica_set",
         members: [
-            { _id: 0, host: "mongo1:27017" }
+            { _id: 0, host: "localhost:27017" }
         ]
     })
 '
