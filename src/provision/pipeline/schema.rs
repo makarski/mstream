@@ -4,7 +4,7 @@ use anyhow::{bail, Context};
 
 use crate::{
     config::{SchemaServiceConfigReference, Service},
-    provision::registry::ServiceRegistry,
+    provision::{pipeline::builder::ComponentBuilder, registry::ServiceRegistry},
     pubsub::srvc::SchemaService,
     schema::{mongo::MongoDbSchemaProvider, Schema, SchemaProvider, SchemaRegistry},
 };
@@ -19,20 +19,11 @@ pub struct SchemaDefinition {
     pub schema: Schema,
 }
 
-impl SchemaBuilder {
-    pub fn new(
-        registry: Arc<ServiceRegistry>,
-        configs: &Option<Vec<SchemaServiceConfigReference>>,
-    ) -> Self {
-        let configs = match configs {
-            Some(cfgs) => cfgs.clone(),
-            None => Vec::new(),
-        };
+#[async_trait::async_trait]
+impl ComponentBuilder for SchemaBuilder {
+    type Output = Vec<SchemaDefinition>;
 
-        Self { registry, configs }
-    }
-
-    pub async fn build(&self) -> anyhow::Result<Vec<SchemaDefinition>> {
+    async fn build(&self, _schemas: &[SchemaDefinition]) -> anyhow::Result<Vec<SchemaDefinition>> {
         if self.configs.is_empty() {
             return Ok(Vec::new());
         }
@@ -54,6 +45,32 @@ impl SchemaBuilder {
             });
         }
         Ok(result)
+    }
+
+    fn service_deps(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .configs
+            .iter()
+            .map(|cfg| cfg.service_name.clone())
+            .collect();
+
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+}
+
+impl SchemaBuilder {
+    pub fn new(
+        registry: Arc<ServiceRegistry>,
+        configs: &Option<Vec<SchemaServiceConfigReference>>,
+    ) -> Self {
+        let configs = match configs {
+            Some(cfgs) => cfgs.clone(),
+            None => Vec::new(),
+        };
+
+        Self { registry, configs }
     }
 
     async fn schema(&self, cfg: &SchemaServiceConfigReference) -> anyhow::Result<SchemaProvider> {

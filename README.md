@@ -73,11 +73,18 @@ sinks = [
 Run mstream with your configuration:
 
 ```bash
-# Run binary
+# All together
+cargo build --release
+cp target/release/mstream .
+cp mstream-config.toml.example ./mstream-config.toml
+# update the config as needed
 RUST_LOG=info ./mstream
 
 # Or run with Docker Compose (recommended)
-docker-compose up --build
+cp mstream-config.toml.example ./mstream-config.toml
+# update the config as needed
+make docker-up
+make db-init-rpl-set
 ```
 
 ## 📚 Core Concepts
@@ -131,11 +138,10 @@ sinks = [
 ```
 
 **Important Considerations:**
-- **MongoDB Optimizations**: Batch processing is heavily optimized for MongoDB using framed BSON structures. This enables zero-copy processing but restricts the inner item encoding to `bson`.
-- **Encoding Compatibility**: Due to internal optimizations, mixing incompatible output encodings for different sinks (e.g., `bson` vs `json`) is not supported in batch mode. All sinks must accept the optimized batch format.
-- **Sink Limitations**: The framed content format used for optimized batches is not supported by PubSub or Kafka sinks.
+- **MongoDB Requirements**: When using batching with a MongoDB sink, the output encoding must be set to `bson` to enable optimized bulk writes.
+- **General Batching**: Batching is supported for all sinks. For non-MongoDB sinks (Kafka, PubSub), the batch is typically emitted as an array of events in the configured output encoding (e.g., JSON array).
 - **Middleware**: Middleware services must be capable of handling batched data (arrays) in the format provided.
-- **Schema Validation**: Schema validation is applied to each event in the batch individually before passing to middleware.
+- **Schema Validation**: Schema validation is applied to each event in the batch individually before passing over.
 - **Resource Usage**: The batch size directly affects memory usage and should be tuned based on available resources.
 - **Latency**: For time-sensitive events, lower batch sizes may be preferable to reduce latency.
 
@@ -195,6 +201,41 @@ fn transform(data, attributes) {
 | **Sink** | Google PubSub | Publisher |
 | **Sink** | HTTP | POST requests |
 
+## Management API
+
+mstream exposes a REST API for monitoring and management (default port: `8787`).
+
+### Job Management
+
+- `GET /jobs`: List all running jobs.
+- `POST /jobs`: Start a new job by providing a connector configuration.
+- `DELETE /jobs/:id`: Stop a running job.
+
+### List Services
+- `GET /services`: List all configured services and their usage
+
+**Response Example:**
+```json
+[
+  {
+    "provider": "mongodb",
+    "name": "etl-test-data",
+    "connection_string": "*****",
+    "db_name": "etl-tests",
+    "used_by_jobs": [
+      "integration-test"
+    ]
+  },
+  {
+    "provider": "kafka",
+    "name": "kafka-prod",
+    "bootstrap.servers": "kafka:9092",
+    "sasl.password": "*****",
+    "used_by_jobs": []
+  }
+]
+```
+
 ## Technical Reference
 
 ### PubSub Message Structure
@@ -246,7 +287,7 @@ The `schema_id` field is optional in most cases and follows these rules:
 
 ```bash
 # Spawn mongo cluster in docker
-make db-up
+make docker-db-up
 make db-check
 
 # Run the app with debug logging

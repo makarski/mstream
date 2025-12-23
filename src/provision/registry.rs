@@ -197,4 +197,8 @@ impl ServiceRegistry {
             .cloned()
             .ok_or_else(|| anyhow!("service config not found for: {}", service_name))
     }
+
+    pub async fn all_service_definitions(&self) -> Vec<Service> {
+        self.config.read().await.services.clone()
+    }
 }

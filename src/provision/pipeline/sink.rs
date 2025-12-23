@@ -6,7 +6,10 @@ use crate::{
     config::{Service, ServiceConfigReference},
     kafka::producer::KafkaProducer,
     mongodb::persister::MongoDbPersister,
-    provision::{pipeline::SchemaDefinition, registry::ServiceRegistry},
+    provision::{
+        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        registry::ServiceRegistry,
+    },
     pubsub::srvc::PubSubPublisher,
     schema::Schema,
     sink::SinkProvider,
@@ -23,12 +26,11 @@ pub struct SinkDefinition {
     pub schema: Schema,
 }
 
-impl SinkBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, configs: Vec<ServiceConfigReference>) -> Self {
-        Self { registry, configs }
-    }
+#[async_trait::async_trait]
+impl ComponentBuilder for SinkBuilder {
+    type Output = Vec<SinkDefinition>;
 
-    pub async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<Vec<SinkDefinition>> {
+    async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<Vec<SinkDefinition>> {
         let mut sinks = Vec::with_capacity(self.configs.len());
         for sink_cfg in self.configs.iter() {
             let publisher = self.publisher(&sink_cfg).await?;
@@ -46,7 +48,25 @@ impl SinkBuilder {
         Ok(sinks)
     }
 
-    pub async fn publisher(&self, cfg: &ServiceConfigReference) -> anyhow::Result<SinkProvider> {
+    fn service_deps(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .configs
+            .iter()
+            .map(|cfg| cfg.service_name.clone())
+            .collect();
+
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+}
+
+impl SinkBuilder {
+    pub fn new(registry: Arc<ServiceRegistry>, configs: Vec<ServiceConfigReference>) -> Self {
+        Self { registry, configs }
+    }
+
+    async fn publisher(&self, cfg: &ServiceConfigReference) -> anyhow::Result<SinkProvider> {
         let service_config = self
             .registry
             .service_definition(&cfg.service_name)
