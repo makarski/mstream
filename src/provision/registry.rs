@@ -111,7 +111,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn add_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
+    pub async fn add_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
         if self.config.read().await.has_service(service_cfg.name()) {
             bail!("service with name '{}' already exists", service_cfg.name());
         }
@@ -127,6 +127,24 @@ impl ServiceRegistry {
         self.config.write().await.services.push(service_cfg);
 
         Ok(())
+    }
+
+    pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
+        let mut config = self.config.write().await;
+        if let Some(pos) = config
+            .services
+            .iter()
+            .position(|s| s.name() == service_name)
+        {
+            config.services.remove(pos);
+            self.mongo_clients.write().await.remove(service_name);
+            self.gcp_token_providers.write().await.remove(service_name);
+            self.http_services.write().await.remove(service_name);
+            self.udf_middlewares.write().await.remove(service_name);
+            Ok(())
+        } else {
+            Err(anyhow!("service with name '{}' not found", service_name))
+        }
     }
 
     pub async fn udf_middleware(&self, name: &str) -> anyhow::Result<RhaiMiddlewareBuilder> {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail};
+use tokio::sync::RwLock;
 
 use crate::{
     config::{SchemaServiceConfigReference, Service},
@@ -10,7 +11,7 @@ use crate::{
 };
 
 pub(super) struct SchemaBuilder {
-    registry: Arc<ServiceRegistry>,
+    registry: Arc<RwLock<ServiceRegistry>>,
     configs: Vec<SchemaServiceConfigReference>,
 }
 
@@ -62,7 +63,7 @@ impl ComponentBuilder for SchemaBuilder {
 
 impl SchemaBuilder {
     pub fn new(
-        registry: Arc<ServiceRegistry>,
+        registry: Arc<RwLock<ServiceRegistry>>,
         configs: &Option<Vec<SchemaServiceConfigReference>>,
     ) -> Self {
         let configs = match configs {
@@ -76,19 +77,26 @@ impl SchemaBuilder {
     async fn schema(&self, cfg: &SchemaServiceConfigReference) -> anyhow::Result<SchemaProvider> {
         let service_config = self
             .registry
+            .read()
+            .await
             .service_definition(&cfg.service_name)
             .await
-            .context("schema_provider")?;
+            .map_err(|err| anyhow!("failed to initialize a schema: {}", err))?;
 
         match service_config {
             Service::PubSub(gcp_conf) => {
-                let tp = self.registry.gcp_auth(&gcp_conf.name).await?;
+                let tp = self.registry.read().await.gcp_auth(&gcp_conf.name).await?;
                 Ok(SchemaProvider::PubSub(
                     SchemaService::with_interceptor(tp.clone()).await?,
                 ))
             }
             Service::MongoDb(mongo_cfg) => {
-                let mgo_client = self.registry.mongodb_client(&mongo_cfg.name).await?;
+                let mgo_client = self
+                    .registry
+                    .read()
+                    .await
+                    .mongodb_client(&mongo_cfg.name)
+                    .await?;
                 let schema_collection = cfg.resource.clone();
 
                 Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(

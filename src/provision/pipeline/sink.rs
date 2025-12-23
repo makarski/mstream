@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Ok};
+use anyhow::{anyhow, bail};
+use tokio::sync::RwLock;
 
 use crate::{
     config::{Service, ServiceConfigReference},
@@ -16,7 +17,7 @@ use crate::{
 };
 
 pub(crate) struct SinkBuilder {
-    registry: Arc<ServiceRegistry>,
+    registry: Arc<RwLock<ServiceRegistry>>,
     configs: Vec<ServiceConfigReference>,
 }
 
@@ -62,32 +63,47 @@ impl ComponentBuilder for SinkBuilder {
 }
 
 impl SinkBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, configs: Vec<ServiceConfigReference>) -> Self {
+    pub fn new(
+        registry: Arc<RwLock<ServiceRegistry>>,
+        configs: Vec<ServiceConfigReference>,
+    ) -> Self {
         Self { registry, configs }
     }
 
     async fn publisher(&self, cfg: &ServiceConfigReference) -> anyhow::Result<SinkProvider> {
         let service_config = self
             .registry
+            .read()
+            .await
             .service_definition(&cfg.service_name)
             .await
-            .context("publisher_service")?;
+            .map_err(|err| anyhow!("failed to initialize a sink: {}", err))?;
 
         match service_config {
             Service::Kafka(k_conf) => Ok(SinkProvider::Kafka(KafkaProducer::new(&k_conf.config)?)),
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.gcp_auth(&ps_conf.name).await?;
+                let tp = self.registry.read().await.gcp_auth(&ps_conf.name).await?;
                 Ok(SinkProvider::PubSub(
                     PubSubPublisher::with_interceptor(tp.clone()).await?,
                 ))
             }
             Service::MongoDb(mongo_cfg) => {
-                let mgo_client = self.registry.mongodb_client(&mongo_cfg.name).await?;
+                let mgo_client = self
+                    .registry
+                    .read()
+                    .await
+                    .mongodb_client(&mongo_cfg.name)
+                    .await?;
                 let db = mgo_client.database(&mongo_cfg.db_name);
                 Ok(SinkProvider::MongoDb(MongoDbPersister::new(db)))
             }
             Service::Http(http_config) => {
-                let http_service = self.registry.http_client(&http_config.name).await?;
+                let http_service = self
+                    .registry
+                    .read()
+                    .await
+                    .http_client(&http_config.name)
+                    .await?;
                 Ok(SinkProvider::Http(http_service.clone()))
             }
             _ => bail!(

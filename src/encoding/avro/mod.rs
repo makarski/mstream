@@ -1,9 +1,9 @@
-use anyhow::{anyhow, bail, Context, Ok};
+use anyhow::{Context, Ok, anyhow, bail};
 use apache_avro::types::Value as AvroVal;
-use apache_avro::{from_avro_datum, to_avro_datum, types::Record, Schema};
+use apache_avro::{Schema, from_avro_datum, to_avro_datum, types::Record};
 use mongodb::bson::Document;
 
-use crate::encoding::avro::types::{avro_to_bson, AvroValue, BsonWithSchema};
+use crate::encoding::avro::types::{AvroValue, BsonWithSchema, avro_to_bson};
 
 pub(crate) mod types;
 pub mod validate;
@@ -15,7 +15,7 @@ pub fn encode(mongo_doc: Document, schema: &Schema) -> anyhow::Result<Vec<u8>> {
 
 fn transform_document_to_avro_record(doc: Document, schema: &Schema) -> anyhow::Result<Record<'_>> {
     match schema {
-        Schema::Record { ref fields, .. } => {
+        Schema::Record { fields, .. } => {
             let mut record = Record::new(&schema).context("failed to create record")?;
             for field in fields.iter() {
                 let field_name = &field.name;
@@ -68,7 +68,7 @@ mod tests {
     };
     use anyhow::Context;
     use apache_avro::Schema;
-    use mongodb::bson::{doc, Decimal128, Document};
+    use mongodb::bson::{Decimal128, Document, doc};
 
     #[test]
     fn encode_with_valid_schema_and_valid_payload() -> anyhow::Result<()> {

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::RwLock;
 
 use crate::{
     config::Connector,
@@ -36,7 +37,7 @@ pub struct PipelineBuilder {
 }
 
 impl PipelineBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, connector: Connector) -> Self {
+    pub fn new(registry: Arc<RwLock<ServiceRegistry>>, connector: Connector) -> Self {
         let (batch_size, is_batching_enabled) = connector.batch_config();
         let pipeline = Pipeline {
             name: connector.name.clone(),

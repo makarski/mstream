@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail};
+use tokio::sync::RwLock;
 
 use crate::{
     config::{Encoding, Service, SourceServiceConfigReference},
@@ -16,7 +17,7 @@ use crate::{
 };
 
 pub(super) struct SourceBuilder {
-    registry: Arc<ServiceRegistry>,
+    registry: Arc<RwLock<ServiceRegistry>>,
     config: SourceServiceConfigReference,
 }
 
@@ -32,9 +33,11 @@ impl ComponentBuilder for SourceBuilder {
     async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<SourceDefinition> {
         let service_config = self
             .registry
+            .read()
+            .await
             .service_definition(&self.config.service_name)
             .await
-            .context("source service")?;
+            .map_err(|err| anyhow!("failed to initialize a source: {}", err))?;
 
         let schema = super::find_schema(self.config.schema_id.clone(), schemas);
         let source_provider = self.source(service_config).await?;
@@ -51,7 +54,10 @@ impl ComponentBuilder for SourceBuilder {
 }
 
 impl SourceBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, config: SourceServiceConfigReference) -> Self {
+    pub fn new(
+        registry: Arc<RwLock<ServiceRegistry>>,
+        config: SourceServiceConfigReference,
+    ) -> Self {
         SourceBuilder { registry, config }
     }
 
@@ -60,7 +66,12 @@ impl SourceBuilder {
 
         match service_config {
             Service::MongoDb(mongo_conf) => {
-                let mongo_client = self.registry.mongodb_client(&mongo_conf.name).await?;
+                let mongo_client = self
+                    .registry
+                    .read()
+                    .await
+                    .mongodb_client(&mongo_conf.name)
+                    .await?;
                 let db = mongo_client.database(&mongo_conf.db_name);
                 Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
                     db,
@@ -79,7 +90,7 @@ impl SourceBuilder {
                 Ok(SourceProvider::Kafka(consumer))
             }
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.gcp_auth(&ps_conf.name).await?;
+                let tp = self.registry.read().await.gcp_auth(&ps_conf.name).await?;
                 let subscriber =
                     PubSubSubscriber::new(tp.clone(), self.config.resource.clone(), input_encoding)
                         .await?;

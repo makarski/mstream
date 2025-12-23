@@ -5,7 +5,10 @@ use std::{
 
 use anyhow::bail;
 use serde::Serialize;
-use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
+use tokio::{
+    sync::{mpsc::UnboundedSender, RwLock},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
@@ -15,7 +18,7 @@ use crate::{
 };
 
 pub struct JobManager {
-    services_registry: Arc<ServiceRegistry>,
+    services_registry: Arc<RwLock<ServiceRegistry>>,
     cancel_all: CancellationToken,
     running_jobs: HashMap<String, JobContainer>,
     service_consumers: HashMap<String, HashSet<String>>,
@@ -52,7 +55,7 @@ pub enum JobState {
 impl JobManager {
     pub fn new(service_registry: ServiceRegistry, exit_tx: UnboundedSender<String>) -> JobManager {
         Self {
-            services_registry: Arc::new(service_registry),
+            services_registry: Arc::new(RwLock::new(service_registry)),
             cancel_all: CancellationToken::new(),
             running_jobs: HashMap::new(),
             service_consumers: HashMap::new(),
@@ -152,7 +155,12 @@ impl JobManager {
     }
 
     pub async fn list_services(&self) -> Vec<ServiceStatus> {
-        let all_conf_services = self.services_registry.all_service_definitions().await;
+        let all_conf_services = self
+            .services_registry
+            .read()
+            .await
+            .all_service_definitions()
+            .await;
 
         all_conf_services
             .into_iter()
@@ -170,6 +178,37 @@ impl JobManager {
                 }
             })
             .collect()
+    }
+
+    pub async fn create_service(&self, service_cfg: Service) -> anyhow::Result<()> {
+        let service_name = service_cfg.name().to_string();
+        self.services_registry
+            .write()
+            .await
+            .add_service(service_cfg)
+            .await?;
+
+        info!("service '{}' created", service_name);
+        Ok(())
+    }
+
+    pub async fn remove_service(&self, service_name: &str) -> anyhow::Result<()> {
+        if let Some(jobs) = self.service_consumers.get(service_name) {
+            bail!(
+                "cannot delete service '{}': it is used by running jobs: {}",
+                service_name,
+                jobs.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+
+        self.services_registry
+            .write()
+            .await
+            .remove_service(service_name)
+            .await?;
+
+        info!("service '{}' removed", service_name);
+        Ok(())
     }
 
     fn add_deps(&mut self, job_name: &str, services: &[String]) {

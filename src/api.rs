@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::config::Connector;
+use crate::config::{Connector, Service};
 use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
 
 #[derive(Clone)]
@@ -28,6 +28,8 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/jobs/{id}", delete(stop_job))
         .route("/jobs", post(create_job))
         .route("/services", get(list_services))
+        .route("/services", post(create_service))
+        .route("/services/{name}", delete(remove_service))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -90,6 +92,43 @@ async fn list_services(State(state): State<AppState>) -> Json<Vec<ServiceStatus>
     let jm = state.job_manager.lock().await;
     let services = jm.list_services().await;
     Json(services)
+}
+
+/// POST /services
+async fn create_service(
+    State(state): State<AppState>,
+    Json(service_cfg): Json<Service>,
+) -> Json<Message<Service>> {
+    let jm = state.job_manager.lock().await;
+    let service = service_cfg.clone();
+    match jm.create_service(service_cfg).await {
+        Ok(()) => Json(Message {
+            message: "service created successfully".to_string(),
+            item: Some(service),
+        }),
+        Err(e) => Json(Message {
+            message: format!("failed to create service: {}", e),
+            item: None,
+        }),
+    }
+}
+
+/// DELETE /services/{name}
+async fn remove_service(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Json<Message<()>> {
+    let jm = state.job_manager.lock().await;
+    match jm.remove_service(&name).await {
+        Ok(()) => Json(Message {
+            message: format!("service {} deleted successfully", name),
+            item: None,
+        }),
+        Err(e) => Json(Message {
+            message: format!("failed to delete service {}: {}", name, e),
+            item: None,
+        }),
+    }
 }
 
 #[derive(Serialize)]
