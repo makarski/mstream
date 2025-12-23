@@ -1,21 +1,21 @@
 use std::{collections::HashMap, mem::take, sync::Arc};
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
 use tokio::sync::RwLock;
 
 use crate::{
     config::{
+        Config, Service,
         service_config::{
             GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine,
         },
-        Config, Service,
     },
     http,
     middleware::udf::rhai::RhaiMiddleware,
     mongodb::db_client,
-    pubsub::{ServiceAccountAuth, StaticAccessToken, SCOPES},
+    pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
 };
 
 type RhaiMiddlewareBuilder =

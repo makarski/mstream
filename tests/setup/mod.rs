@@ -3,8 +3,8 @@ use std::env;
 
 use anyhow::anyhow;
 use apache_avro::AvroSchema;
-use mongodb::bson::{doc, Document};
 use mongodb::Collection;
+use mongodb::bson::{Document, doc};
 use mstream::config::service_config::{GcpAuthConfig, MongoDbConfig, PubSubConfig};
 use mstream::config::{
     Encoding, SchemaServiceConfigReference, Service, ServiceConfigReference,

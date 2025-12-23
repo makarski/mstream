@@ -7,7 +7,7 @@ use tokio::{sync::mpsc::Receiver, task::block_in_place};
 use crate::{
     provision::pipeline::Pipeline,
     schema::encoding::SchemaEncoder,
-    sink::{encoding::SinkEvent, EventSink},
+    sink::{EventSink, encoding::SinkEvent},
     source::SourceEvent,
 };
 

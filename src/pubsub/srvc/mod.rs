@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::Sender;
 use tonic::service::Interceptor;
 
+use super::api::StreamingPullRequest;
 use super::api::schema::Type as PubSubSchemaType;
 use super::api::subscriber_client::SubscriberClient;
-use super::api::StreamingPullRequest;
-use super::{tls_transport, Channel, InterceptedService};
+use super::{Channel, InterceptedService, tls_transport};
 use crate::config::Encoding;
 use crate::encoding::framed;
 use crate::pubsub::api::publisher_client::PublisherClient;

@@ -6,7 +6,7 @@ use std::{
 use anyhow::bail;
 use serde::Serialize;
 use tokio::{
-    sync::{mpsc::UnboundedSender, RwLock},
+    sync::{RwLock, mpsc::UnboundedSender},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;

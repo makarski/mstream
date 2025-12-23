@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use tokio::sync::mpsc::Sender;
 
 use crate::config::Encoding;
-use crate::pubsub::srvc::PubSubSubscriber;
 use crate::pubsub::ServiceAccountAuth;
-use crate::schema::encoding::SchemaEncoder;
+use crate::pubsub::srvc::PubSubSubscriber;
 use crate::schema::Schema;
+use crate::schema::encoding::SchemaEncoder;
 use crate::{kafka::consumer::KafkaConsumer, mongodb::MongoDbChangeStreamListener};
 
 #[async_trait]

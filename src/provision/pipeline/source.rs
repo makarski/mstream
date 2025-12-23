@@ -8,7 +8,7 @@ use crate::{
     kafka::consumer::KafkaConsumer,
     mongodb::MongoDbChangeStreamListener,
     provision::{
-        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        pipeline::{SchemaDefinition, builder::ComponentBuilder},
         registry::ServiceRegistry,
     },
     pubsub::srvc::PubSubSubscriber,
@@ -135,8 +135,8 @@ impl SourceBuilder {
 mod tests {
     use super::*;
     use crate::config::{
-        service_config::{GcpAuthConfig, HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig},
         Encoding, Service, SourceServiceConfigReference,
+        service_config::{GcpAuthConfig, HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig},
     };
     use std::collections::HashMap;
 

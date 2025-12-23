@@ -6,9 +6,9 @@ use tokio::sync::RwLock;
 use crate::{
     config::{Service, ServiceConfigReference},
     http::middleware::HttpMiddleware,
-    middleware::{udf::UdfMiddleware, MiddlewareProvider},
+    middleware::{MiddlewareProvider, udf::UdfMiddleware},
     provision::{
-        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        pipeline::{SchemaDefinition, builder::ComponentBuilder},
         registry::ServiceRegistry,
     },
     schema::Schema,

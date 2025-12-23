@@ -1,7 +1,7 @@
-use std::str::{from_utf8, FromStr};
+use std::str::{FromStr, from_utf8};
 
-use anyhow::{anyhow, bail, Context, Ok};
-use apache_avro::{schema::SchemaKind, types::Value as AvroTypeValue, Decimal, Schema};
+use anyhow::{Context, Ok, anyhow, bail};
+use apache_avro::{Decimal, Schema, schema::SchemaKind, types::Value as AvroTypeValue};
 use mongodb::bson::{Bson, Decimal128, Document};
 
 use crate::encoding::xson::{BsonBytes, BsonBytesWithSchema, JsonBytes, JsonBytesWithSchema};

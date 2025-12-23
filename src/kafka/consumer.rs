@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
 use log::{debug, error, info};
-use rdkafka::consumer::{stream_consumer::StreamConsumer, Consumer};
+use rdkafka::consumer::{Consumer, stream_consumer::StreamConsumer};
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use tokio::sync::mpsc::Sender;
 

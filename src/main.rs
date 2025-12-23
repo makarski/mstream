@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(feature = "pprof")]
 mod profiler {
-    use pprof::{protos::Message, ProfilerGuard, ProfilerGuardBuilder};
+    use pprof::{ProfilerGuard, ProfilerGuardBuilder, protos::Message};
     use std::fs::File;
 
     pub fn start() -> Option<ProfilerGuard<'static>> {

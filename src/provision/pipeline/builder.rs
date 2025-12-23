@@ -7,11 +7,11 @@ use crate::{
     config::Connector,
     provision::{
         pipeline::{
+            Pipeline,
             middleware::{MiddlewareBuilder, MiddlewareDefinition},
             schema::{SchemaBuilder, SchemaDefinition},
             sink::{SinkBuilder, SinkDefinition},
             source::{SourceBuilder, SourceDefinition},
-            Pipeline,
         },
         registry::ServiceRegistry,
     },

@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 
 use anyhow::Context;
 use log::{debug, warn};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
 
 use crate::api::AppState;

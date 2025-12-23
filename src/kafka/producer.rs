@@ -5,9 +5,9 @@ use anyhow::anyhow;
 use futures::future::try_join_all;
 use log::debug;
 use rdkafka::{
+    ClientConfig,
     message::{Header, OwnedHeaders},
     producer::{FutureProducer, FutureRecord},
-    ClientConfig,
 };
 
 use crate::encoding::framed;

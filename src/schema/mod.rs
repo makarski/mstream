@@ -4,7 +4,7 @@ use mongo::MongoDbSchemaProvider;
 
 use crate::{
     config::Encoding,
-    pubsub::{srvc::SchemaService, ServiceAccountAuth},
+    pubsub::{ServiceAccountAuth, srvc::SchemaService},
 };
 pub mod encoding;
 pub mod mongo;

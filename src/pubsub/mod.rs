@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::anyhow;
 use gauth::token_provider::{AsyncTokenProvider, Watcher};
-use tonic::service::{interceptor::InterceptedService, Interceptor};
+use tonic::service::{Interceptor, interceptor::InterceptedService};
 use tonic::transport::{Channel, ClientTlsConfig};
 use tonic::{Code, Request, Status};
 

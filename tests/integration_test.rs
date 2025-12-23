@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use log::{debug, info};
-use mongodb::{bson::doc, options::UpdateOptions, Client, Collection};
+use mongodb::{Client, Collection, bson::doc, options::UpdateOptions};
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 mod setup;
 use setup::{
-    fixtures, generate_pubsub_attributes, pull_from_pubsub, setup_db, start_app_listener, Employee,
+    Employee, fixtures, generate_pubsub_attributes, pull_from_pubsub, setup_db, start_app_listener,
 };
 
 #[tokio::test(flavor = "multi_thread")]

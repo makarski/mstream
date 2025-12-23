@@ -7,7 +7,7 @@ use crate::{
     config::{SchemaServiceConfigReference, Service},
     provision::{pipeline::builder::ComponentBuilder, registry::ServiceRegistry},
     pubsub::srvc::SchemaService,
-    schema::{mongo::MongoDbSchemaProvider, Schema, SchemaProvider, SchemaRegistry},
+    schema::{Schema, SchemaProvider, SchemaRegistry, mongo::MongoDbSchemaProvider},
 };
 
 pub(super) struct SchemaBuilder {

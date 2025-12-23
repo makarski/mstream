@@ -6,7 +6,7 @@ use crate::{
     http::HttpService,
     kafka::producer::KafkaProducer,
     mongodb::persister::MongoDbPersister,
-    pubsub::{srvc::PubSubPublisher, ServiceAccountAuth},
+    pubsub::{ServiceAccountAuth, srvc::PubSubPublisher},
 };
 
 pub mod encoding;

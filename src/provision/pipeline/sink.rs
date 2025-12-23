@@ -8,7 +8,7 @@ use crate::{
     kafka::producer::KafkaProducer,
     mongodb::persister::MongoDbPersister,
     provision::{
-        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        pipeline::{SchemaDefinition, builder::ComponentBuilder},
         registry::ServiceRegistry,
     },
     pubsub::srvc::PubSubPublisher,
