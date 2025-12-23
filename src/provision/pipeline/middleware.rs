@@ -6,7 +6,10 @@ use crate::{
     config::{Service, ServiceConfigReference},
     http::middleware::HttpMiddleware,
     middleware::{udf::UdfMiddleware, MiddlewareProvider},
-    provision::{pipeline::SchemaDefinition, registry::ServiceRegistry},
+    provision::{
+        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        registry::ServiceRegistry,
+    },
     schema::Schema,
 };
 
@@ -21,16 +24,11 @@ pub struct MiddlewareDefinition {
     pub schema: Schema,
 }
 
-impl MiddlewareBuilder {
-    pub fn new(
-        registry: Arc<ServiceRegistry>,
-        configs: &Option<Vec<ServiceConfigReference>>,
-    ) -> Self {
-        let configs = configs.clone().unwrap_or_else(|| Vec::new());
-        Self { registry, configs }
-    }
+#[async_trait::async_trait]
+impl ComponentBuilder for MiddlewareBuilder {
+    type Output = Vec<MiddlewareDefinition>;
 
-    pub async fn build(
+    async fn build(
         &self,
         schemas: &[SchemaDefinition],
     ) -> anyhow::Result<Vec<MiddlewareDefinition>> {
@@ -53,6 +51,28 @@ impl MiddlewareBuilder {
         }
 
         Ok(middlewares)
+    }
+
+    fn service_deps(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .configs
+            .iter()
+            .map(|cfg| cfg.service_name.clone())
+            .collect();
+
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+}
+
+impl MiddlewareBuilder {
+    pub fn new(
+        registry: Arc<ServiceRegistry>,
+        configs: &Option<Vec<ServiceConfigReference>>,
+    ) -> Self {
+        let configs = configs.clone().unwrap_or_else(|| Vec::new());
+        Self { registry, configs }
     }
 
     async fn middleware(&self, cfg: &ServiceConfigReference) -> anyhow::Result<MiddlewareProvider> {

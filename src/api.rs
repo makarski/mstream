@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::config::Connector;
-use crate::job_manager::{JobManager, JobMetadata};
+use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -27,6 +27,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/jobs", get(list_jobs))
         .route("/jobs/{id}", delete(stop_job))
         .route("/jobs", post(create_job))
+        .route("/services", get(list_services))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -40,7 +41,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
 /// GET /jobs
 async fn list_jobs(State(state): State<AppState>) -> Json<Vec<JobMetadata>> {
     let jm = state.job_manager.lock().await;
-    let jobs = jm.list_jobs().into_iter().collect::<Vec<JobMetadata>>();
+    let jobs = jm.list_jobs();
 
     Json(jobs)
 }
@@ -82,6 +83,13 @@ async fn create_job(
             item: None,
         }),
     }
+}
+
+/// GET /services
+async fn list_services(State(state): State<AppState>) -> Json<Vec<ServiceStatus>> {
+    let jm = state.job_manager.lock().await;
+    let services = jm.list_services().await;
+    Json(services)
 }
 
 #[derive(Serialize)]

@@ -6,7 +6,10 @@ use crate::{
     config::{Encoding, Service, SourceServiceConfigReference},
     kafka::consumer::KafkaConsumer,
     mongodb::MongoDbChangeStreamListener,
-    provision::{pipeline::SchemaDefinition, registry::ServiceRegistry},
+    provision::{
+        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        registry::ServiceRegistry,
+    },
     pubsub::srvc::PubSubSubscriber,
     schema::Schema,
     source::SourceProvider,
@@ -22,12 +25,11 @@ pub(super) struct SourceDefinition {
     pub schema: Schema,
 }
 
-impl SourceBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, config: SourceServiceConfigReference) -> Self {
-        SourceBuilder { registry, config }
-    }
+#[async_trait::async_trait]
+impl ComponentBuilder for SourceBuilder {
+    type Output = SourceDefinition;
 
-    pub async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<SourceDefinition> {
+    async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<SourceDefinition> {
         let service_config = self
             .registry
             .service_definition(&self.config.service_name)
@@ -41,6 +43,16 @@ impl SourceBuilder {
             source_provider,
             schema,
         })
+    }
+
+    fn service_deps(&self) -> Vec<String> {
+        vec![self.config.service_name.clone()]
+    }
+}
+
+impl SourceBuilder {
+    pub fn new(registry: Arc<ServiceRegistry>, config: SourceServiceConfigReference) -> Self {
+        SourceBuilder { registry, config }
     }
 
     async fn source(&self, service_config: Service) -> anyhow::Result<SourceProvider> {

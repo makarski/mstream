@@ -27,7 +27,7 @@ impl Config {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 #[serde(tag = "provider")]
 pub enum Service {
     #[serde(rename = "pubsub")]

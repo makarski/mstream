@@ -1,22 +1,37 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use crate::{
     config::Connector,
     provision::{
         pipeline::{
-            middleware::MiddlewareBuilder, schema::SchemaBuilder, sink::SinkBuilder,
-            source::SourceBuilder, Pipeline,
+            middleware::{MiddlewareBuilder, MiddlewareDefinition},
+            schema::{SchemaBuilder, SchemaDefinition},
+            sink::{SinkBuilder, SinkDefinition},
+            source::{SourceBuilder, SourceDefinition},
+            Pipeline,
         },
         registry::ServiceRegistry,
     },
     schema::Schema,
 };
 
+#[async_trait]
+pub(crate) trait ComponentBuilder {
+    type Output;
+
+    async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<Self::Output>;
+    fn service_deps(&self) -> Vec<String>;
+}
+
+type ComponentBuilderImpl<T> = Box<dyn ComponentBuilder<Output = T> + Send + Sync>;
+
 pub struct PipelineBuilder {
-    source_builder: SourceBuilder,
-    schema_builder: SchemaBuilder,
-    middleware_builder: MiddlewareBuilder,
-    sink_builder: SinkBuilder,
+    source_builder: ComponentBuilderImpl<SourceDefinition>,
+    schema_builder: ComponentBuilderImpl<Vec<SchemaDefinition>>,
+    middleware_builder: ComponentBuilderImpl<Vec<MiddlewareDefinition>>,
+    sink_builder: ComponentBuilderImpl<Vec<SinkDefinition>>,
     pipeline: Pipeline,
 }
 
@@ -37,10 +52,16 @@ impl PipelineBuilder {
 
         Self {
             pipeline,
-            source_builder: SourceBuilder::new(registry.clone(), connector.source.clone()),
-            schema_builder: SchemaBuilder::new(registry.clone(), &connector.schemas),
-            middleware_builder: MiddlewareBuilder::new(registry.clone(), &connector.middlewares),
-            sink_builder: SinkBuilder::new(registry.clone(), connector.sinks.clone()),
+            source_builder: Box::new(SourceBuilder::new(
+                registry.clone(),
+                connector.source.clone(),
+            )),
+            schema_builder: Box::new(SchemaBuilder::new(registry.clone(), &connector.schemas)),
+            middleware_builder: Box::new(MiddlewareBuilder::new(
+                registry.clone(),
+                &connector.middlewares,
+            )),
+            sink_builder: Box::new(SinkBuilder::new(registry.clone(), connector.sinks.clone())),
         }
     }
 
@@ -53,8 +74,19 @@ impl PipelineBuilder {
         Ok(self.pipeline)
     }
 
+    pub fn service_deps(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        names.extend(self.source_builder.service_deps());
+        names.extend(self.schema_builder.service_deps());
+        names.extend(self.middleware_builder.service_deps());
+        names.extend(self.sink_builder.service_deps());
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
     async fn init_schemas(&mut self) -> anyhow::Result<()> {
-        let schemas = self.schema_builder.build().await?;
+        let schemas = self.schema_builder.build(&[]).await?;
         self.pipeline.schemas = schemas;
         Ok(())
     }

@@ -38,7 +38,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         "running jobs: {}",
         jm.list_jobs()
             .iter()
-            .map(|metadata| metadata.id.clone())
+            .map(|metadata| metadata.name.clone())
             .collect::<Vec<String>>()
             .join("; ")
     );
