@@ -71,10 +71,9 @@ impl SinkBuilder {
     }
 
     async fn publisher(&self, cfg: &ServiceConfigReference) -> anyhow::Result<SinkProvider> {
-        let service_config = self
-            .registry
-            .read()
-            .await
+        let registry_read = self.registry.read().await;
+
+        let service_config = registry_read
             .service_definition(&cfg.service_name)
             .await
             .map_err(|err| anyhow!("failed to initialize a sink: {}", err))?;
@@ -82,28 +81,18 @@ impl SinkBuilder {
         match service_config {
             Service::Kafka(k_conf) => Ok(SinkProvider::Kafka(KafkaProducer::new(&k_conf.config)?)),
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.read().await.gcp_auth(&ps_conf.name).await?;
+                let tp = registry_read.gcp_auth(&ps_conf.name).await?;
                 Ok(SinkProvider::PubSub(
                     PubSubPublisher::with_interceptor(tp.clone()).await?,
                 ))
             }
             Service::MongoDb(mongo_cfg) => {
-                let mgo_client = self
-                    .registry
-                    .read()
-                    .await
-                    .mongodb_client(&mongo_cfg.name)
-                    .await?;
+                let mgo_client = registry_read.mongodb_client(&mongo_cfg.name).await?;
                 let db = mgo_client.database(&mongo_cfg.db_name);
                 Ok(SinkProvider::MongoDb(MongoDbPersister::new(db)))
             }
             Service::Http(http_config) => {
-                let http_service = self
-                    .registry
-                    .read()
-                    .await
-                    .http_client(&http_config.name)
-                    .await?;
+                let http_service = registry_read.http_client(&http_config.name).await?;
                 Ok(SinkProvider::Http(http_service.clone()))
             }
             _ => bail!(

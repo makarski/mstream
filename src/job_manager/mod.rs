@@ -40,9 +40,10 @@ pub struct JobMetadata {
     #[serde(default)]
     stopped_at: Option<chrono::DateTime<chrono::Utc>>,
     state: JobState,
-
-    // todo: consider changing to a struct with service type
+    #[serde(rename = "linked_services")]
     service_deps: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline: Option<Connector>,
 }
 
 #[derive(Clone, Serialize)]
@@ -70,6 +71,7 @@ impl JobManager {
         source_handle: JoinHandle<()>,
         cancel_token: CancellationToken,
         service_deps: Vec<String>,
+        pipeline: Option<Connector>,
     ) -> JobMetadata {
         self.add_deps(&name, &service_deps);
 
@@ -79,6 +81,7 @@ impl JobManager {
             stopped_at: None,
             state: JobState::Running,
             service_deps,
+            pipeline,
         };
 
         let job_container = JobContainer {
@@ -138,6 +141,7 @@ impl JobManager {
 
         let service_deps = pipeline_builder.service_deps();
         let pipeline = pipeline_builder.build().await?;
+        let config = pipeline.config.clone();
 
         let job_cancel = self.cancel_all.child_token();
         let task_cancel = job_cancel.clone();
@@ -151,6 +155,7 @@ impl JobManager {
             source_handle,
             job_cancel,
             service_deps,
+            Some(config),
         ))
     }
 
@@ -193,6 +198,9 @@ impl JobManager {
     }
 
     pub async fn remove_service(&self, service_name: &str) -> anyhow::Result<()> {
+        // acquire a write lock before checking for consumers to avoid race conditions
+        let mut registry = self.services_registry.write().await;
+
         if let Some(jobs) = self.service_consumers.get(service_name) {
             bail!(
                 "cannot delete service '{}': it is used by running jobs: {}",
@@ -200,19 +208,14 @@ impl JobManager {
                 jobs.iter().cloned().collect::<Vec<_>>().join(", ")
             );
         }
-
-        self.services_registry
-            .write()
-            .await
-            .remove_service(service_name)
-            .await?;
+        registry.remove_service(service_name).await?;
 
         info!("service '{}' removed", service_name);
         Ok(())
     }
 
-    fn add_deps(&mut self, job_name: &str, services: &[String]) {
-        for service_name in services {
+    fn add_deps(&mut self, job_name: &str, deps: &[String]) {
+        for service_name in deps {
             self.service_consumers
                 .entry(service_name.clone())
                 .or_insert_with(HashSet::new)

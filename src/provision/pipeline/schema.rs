@@ -75,28 +75,22 @@ impl SchemaBuilder {
     }
 
     async fn schema(&self, cfg: &SchemaServiceConfigReference) -> anyhow::Result<SchemaProvider> {
-        let service_config = self
-            .registry
-            .read()
-            .await
+        let registry_read = self.registry.read().await;
+
+        let service_config = registry_read
             .service_definition(&cfg.service_name)
             .await
             .map_err(|err| anyhow!("failed to initialize a schema: {}", err))?;
 
         match service_config {
             Service::PubSub(gcp_conf) => {
-                let tp = self.registry.read().await.gcp_auth(&gcp_conf.name).await?;
+                let tp = registry_read.gcp_auth(&gcp_conf.name).await?;
                 Ok(SchemaProvider::PubSub(
                     SchemaService::with_interceptor(tp.clone()).await?,
                 ))
             }
             Service::MongoDb(mongo_cfg) => {
-                let mgo_client = self
-                    .registry
-                    .read()
-                    .await
-                    .mongodb_client(&mongo_cfg.name)
-                    .await?;
+                let mgo_client = registry_read.mongodb_client(&mongo_cfg.name).await?;
                 let schema_collection = cfg.resource.clone();
 
                 Ok(SchemaProvider::MongoDb(MongoDbSchemaProvider::new(

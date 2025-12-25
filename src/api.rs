@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -52,18 +53,24 @@ async fn list_jobs(State(state): State<AppState>) -> Json<Vec<JobMetadata>> {
 async fn stop_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Json<Message<JobMetadata>> {
+) -> (StatusCode, Json<Message<JobMetadata>>) {
     info!("stopping job: {}", id);
     let mut jm = state.job_manager.lock().await;
     match jm.stop_job(&id).await {
-        Ok(job_metadata) => Json(Message {
-            message: format!("job {} stopped successfully", id),
-            item: Some(job_metadata),
-        }),
-        Err(e) => Json(Message {
-            message: format!("failed to stop job {}: {}", id, e),
-            item: None,
-        }),
+        Ok(job_metadata) => (
+            StatusCode::OK,
+            Json(Message {
+                message: format!("job {} stopped successfully", id),
+                item: Some(job_metadata),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Message {
+                message: format!("failed to stop job {}: {}", id, e),
+                item: None,
+            }),
+        ),
     }
 }
 
@@ -71,19 +78,25 @@ async fn stop_job(
 async fn create_job(
     State(state): State<AppState>,
     Json(conn_cfg): Json<Connector>,
-) -> Json<Message<JobMetadata>> {
+) -> (StatusCode, Json<Message<JobMetadata>>) {
     info!("creating new job: {}", conn_cfg.name);
 
     let mut jm = state.job_manager.lock().await;
     match jm.start_job(conn_cfg).await {
-        Ok(job_metadata) => Json(Message {
-            message: "job created successfully".to_string(),
-            item: Some(job_metadata),
-        }),
-        Err(e) => Json(Message {
-            message: format!("failed to create job: {}", e),
-            item: None,
-        }),
+        Ok(job_metadata) => (
+            StatusCode::CREATED,
+            Json(Message {
+                message: "job created successfully".to_string(),
+                item: Some(job_metadata),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Message {
+                message: format!("failed to create job: {}", e),
+                item: None,
+            }),
+        ),
     }
 }
 
@@ -98,18 +111,24 @@ async fn list_services(State(state): State<AppState>) -> Json<Vec<ServiceStatus>
 async fn create_service(
     State(state): State<AppState>,
     Json(service_cfg): Json<Service>,
-) -> Json<Message<Service>> {
+) -> (StatusCode, Json<Message<Service>>) {
     let jm = state.job_manager.lock().await;
     let service = service_cfg.clone();
     match jm.create_service(service_cfg).await {
-        Ok(()) => Json(Message {
-            message: "service created successfully".to_string(),
-            item: Some(service),
-        }),
-        Err(e) => Json(Message {
-            message: format!("failed to create service: {}", e),
-            item: None,
-        }),
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(Message {
+                message: "service created successfully".to_string(),
+                item: Some(service),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Message {
+                message: format!("failed to create service: {}", e),
+                item: None,
+            }),
+        ),
     }
 }
 
@@ -117,17 +136,23 @@ async fn create_service(
 async fn remove_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Json<Message<()>> {
+) -> (StatusCode, Json<Message<()>>) {
     let jm = state.job_manager.lock().await;
     match jm.remove_service(&name).await {
-        Ok(()) => Json(Message {
-            message: format!("service {} deleted successfully", name),
-            item: None,
-        }),
-        Err(e) => Json(Message {
-            message: format!("failed to delete service {}: {}", name, e),
-            item: None,
-        }),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(Message {
+                message: format!("service {} deleted successfully", name),
+                item: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Message {
+                message: format!("failed to delete service {}: {}", name, e),
+                item: None,
+            }),
+        ),
     }
 }
 

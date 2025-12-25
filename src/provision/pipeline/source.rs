@@ -31,16 +31,8 @@ impl ComponentBuilder for SourceBuilder {
     type Output = SourceDefinition;
 
     async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<SourceDefinition> {
-        let service_config = self
-            .registry
-            .read()
-            .await
-            .service_definition(&self.config.service_name)
-            .await
-            .map_err(|err| anyhow!("failed to initialize a source: {}", err))?;
-
+        let source_provider = self.source().await?;
         let schema = super::find_schema(self.config.schema_id.clone(), schemas);
-        let source_provider = self.source(service_config).await?;
 
         Ok(SourceDefinition {
             source_provider,
@@ -61,17 +53,19 @@ impl SourceBuilder {
         SourceBuilder { registry, config }
     }
 
-    async fn source(&self, service_config: Service) -> anyhow::Result<SourceProvider> {
+    async fn source(&self) -> anyhow::Result<SourceProvider> {
+        let registry_read = self.registry.read().await;
+
+        let service_config = registry_read
+            .service_definition(&self.config.service_name)
+            .await
+            .map_err(|err| anyhow!("failed to initialize a source: {}", err))?;
+
         let input_encoding = Self::resolve_source_encoding(&service_config, &self.config)?;
 
         match service_config {
             Service::MongoDb(mongo_conf) => {
-                let mongo_client = self
-                    .registry
-                    .read()
-                    .await
-                    .mongodb_client(&mongo_conf.name)
-                    .await?;
+                let mongo_client = registry_read.mongodb_client(&mongo_conf.name).await?;
                 let db = mongo_client.database(&mongo_conf.db_name);
                 Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
                     db,
@@ -90,7 +84,7 @@ impl SourceBuilder {
                 Ok(SourceProvider::Kafka(consumer))
             }
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.read().await.gcp_auth(&ps_conf.name).await?;
+                let tp = registry_read.gcp_auth(&ps_conf.name).await?;
                 let subscriber =
                     PubSubSubscriber::new(tp.clone(), self.config.resource.clone(), input_encoding)
                         .await?;

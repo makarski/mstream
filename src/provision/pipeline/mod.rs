@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
-    config::Encoding,
+    config::{Connector, Encoding},
     provision::pipeline::{
         middleware::MiddlewareDefinition, processor::EventHandler, schema::SchemaDefinition,
         sink::SinkDefinition,
@@ -34,6 +34,7 @@ pub struct Pipeline {
     pub sinks: Vec<SinkDefinition>,
     pub batch_size: usize,
     pub is_batching_enabled: bool,
+    pub config: Connector,
 }
 
 impl Pipeline {

@@ -77,22 +77,16 @@ impl MiddlewareBuilder {
     }
 
     async fn middleware(&self, cfg: &ServiceConfigReference) -> anyhow::Result<MiddlewareProvider> {
-        let service_config = self
-            .registry
-            .read()
-            .await
+        let registry_read = self.registry.read().await;
+
+        let service_config = registry_read
             .service_definition(&cfg.service_name)
             .await
             .map_err(|err| anyhow!("failed to initialize a middleware: {}", err))?;
 
         match service_config {
             Service::Http(http_cfg) => {
-                let http_service = self
-                    .registry
-                    .read()
-                    .await
-                    .http_client(&http_cfg.name)
-                    .await?;
+                let http_service = registry_read.http_client(&http_cfg.name).await?;
                 Ok(MiddlewareProvider::Http(HttpMiddleware::new(
                     cfg.resource.clone(),
                     cfg.output_encoding.clone(),
@@ -100,12 +94,7 @@ impl MiddlewareBuilder {
                 )))
             }
             Service::Udf(udf_cfg) => {
-                let rhai_builder = self
-                    .registry
-                    .read()
-                    .await
-                    .udf_middleware(&udf_cfg.name)
-                    .await?;
+                let rhai_builder = registry_read.udf_middleware(&udf_cfg.name).await?;
                 let rhai_middleware = rhai_builder(cfg.resource.clone())?;
                 Ok(MiddlewareProvider::Udf(UdfMiddleware::Rhai(
                     rhai_middleware,
