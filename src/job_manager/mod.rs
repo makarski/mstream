@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::{Display, Formatter},
     sync::Arc,
 };
 
@@ -55,6 +56,16 @@ pub enum JobState {
     Failed,
 }
 
+impl Display for JobState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobState::Running => write!(f, "running"),
+            JobState::Stopped => write!(f, "stopped"),
+            JobState::Failed => write!(f, "failed"),
+        }
+    }
+}
+
 impl JobManager {
     pub fn new(service_registry: ServiceRegistry, exit_tx: UnboundedSender<String>) -> JobManager {
         Self {
@@ -103,13 +114,15 @@ impl JobManager {
             warn!("handling failed job: {}", job_name);
             jc.cancel_token.cancel();
 
+            let state_fmt = new_state.to_string();
+
             let mut metadata = jc.metadata;
             metadata.state = new_state;
             metadata.stopped_at = Some(chrono::Utc::now());
 
             self.remove_deps(job_name, &metadata.service_deps);
             self.stopped_jobs.push(metadata.clone());
-            warn!("job marked as stopped: {}", job_name);
+            warn!("job marked as {}: {}", state_fmt, job_name);
         }
     }
 
