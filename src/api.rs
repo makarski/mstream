@@ -142,14 +142,14 @@ async fn remove_service(
         Ok(()) => (
             StatusCode::OK,
             Json(Message {
-                message: format!("service {} deleted successfully", name),
+                message: format!("service {} removed successfully", name),
                 item: None,
             }),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(Message {
-                message: format!("failed to delete service {}: {}", name, e),
+                message: format!("failed to remove service {}: {}", name, e),
                 item: None,
             }),
         ),

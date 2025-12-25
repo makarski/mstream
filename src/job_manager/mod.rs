@@ -242,7 +242,7 @@ impl JobManager {
 
         if let Some(jobs) = self.service_consumers.get(service_name) {
             bail!(
-                "cannot delete service '{}': it is used by running jobs: {}",
+                "cannot remove service '{}': it is used by running jobs: {}",
                 service_name,
                 jobs.iter().cloned().collect::<Vec<_>>().join(", ")
             );
