@@ -10,7 +10,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::{Connector, Service},
@@ -21,6 +21,7 @@ pub struct JobManager {
     services_registry: Arc<RwLock<ServiceRegistry>>,
     cancel_all: CancellationToken,
     running_jobs: HashMap<String, JobContainer>,
+    stopped_jobs: Vec<JobMetadata>,
     service_consumers: HashMap<String, HashSet<String>>,
     exit_tx: UnboundedSender<String>,
 }
@@ -51,6 +52,7 @@ pub struct JobMetadata {
 pub enum JobState {
     Running,
     Stopped,
+    Failed,
 }
 
 impl JobManager {
@@ -59,6 +61,7 @@ impl JobManager {
             services_registry: Arc::new(RwLock::new(service_registry)),
             cancel_all: CancellationToken::new(),
             running_jobs: HashMap::new(),
+            stopped_jobs: Vec::new(),
             service_consumers: HashMap::new(),
             exit_tx,
         }
@@ -95,6 +98,21 @@ impl JobManager {
         metadata
     }
 
+    pub async fn handle_job_exit(&mut self, job_name: &str, new_state: JobState) {
+        if let Some(jc) = self.running_jobs.remove(job_name) {
+            warn!("handling failed job: {}", job_name);
+            jc.cancel_token.cancel();
+
+            let mut metadata = jc.metadata;
+            metadata.state = new_state;
+            metadata.stopped_at = Some(chrono::Utc::now());
+
+            self.remove_deps(job_name, &metadata.service_deps);
+            self.stopped_jobs.push(metadata.clone());
+            warn!("job marked as stopped: {}", job_name);
+        }
+    }
+
     pub async fn stop_job(&mut self, job_name: &str) -> anyhow::Result<JobMetadata> {
         if let Some(jc) = self.running_jobs.remove(job_name) {
             info!("stopping job: {}", job_name);
@@ -118,6 +136,8 @@ impl JobManager {
             metadata.stopped_at = Some(chrono::Utc::now());
             self.remove_deps(job_name, &metadata.service_deps);
 
+            self.stopped_jobs.push(metadata.clone());
+
             Ok(metadata)
         } else {
             bail!("job not found: {}", job_name);
@@ -125,16 +145,22 @@ impl JobManager {
     }
 
     pub fn list_jobs(&self) -> Vec<JobMetadata> {
-        self.running_jobs
+        let mut jobs: Vec<JobMetadata> = self
+            .running_jobs
             .values()
             .map(|jc| jc.metadata.clone())
-            .collect()
+            .collect();
+
+        jobs.extend(self.stopped_jobs.clone());
+        jobs
     }
 
     pub async fn start_job(&mut self, conn_cfg: Connector) -> anyhow::Result<JobMetadata> {
         if self.running_jobs.contains_key(&conn_cfg.name) {
             bail!("job already running: {}", conn_cfg.name);
         }
+
+        self.stopped_jobs.retain(|job| job.name != conn_cfg.name);
 
         let pipeline_builder =
             PipelineBuilder::new(self.services_registry.clone(), conn_cfg.clone());

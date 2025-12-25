@@ -5,7 +5,7 @@ use log::{debug, warn};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
 
-use crate::api::AppState;
+use crate::{api::AppState, job_manager::JobState};
 
 mod encoding;
 mod http;
@@ -44,7 +44,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     );
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let api_app_state = AppState::new(shared_jm);
+    let api_app_state = AppState::new(shared_jm.clone());
 
     tokio::spawn(async move {
         if let Err(err) = api::start_server(api_app_state, api_port).await {
@@ -53,7 +53,12 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     });
 
     while let Some(job_name) = exit_rx.recv().await {
-        warn!("stream listener exited: {}", job_name)
+        warn!("stream listener exited: {}", job_name);
+        shared_jm
+            .lock()
+            .await
+            .handle_job_exit(&job_name, JobState::Failed)
+            .await;
     }
 
     warn!("all stream listeners exited");
