@@ -130,13 +130,23 @@ impl ServiceRegistry {
     }
 
     pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
-        let mut config = self.config.write().await;
-        if let Some(pos) = config
-            .services
-            .iter()
-            .position(|s| s.name() == service_name)
-        {
-            config.services.remove(pos);
+        // we will drop config lock when the scope block ends
+        // this is done to avoid deadlocks when removing service dependencies
+        let config_removed = {
+            let mut config = self.config.write().await;
+            if let Some(pos) = config
+                .services
+                .iter()
+                .position(|s| s.name() == service_name)
+            {
+                config.services.remove(pos);
+                true
+            } else {
+                false
+            }
+        };
+
+        if config_removed {
             self.mongo_clients.write().await.remove(service_name);
             self.gcp_token_providers.write().await.remove(service_name);
             self.http_services.write().await.remove(service_name);
