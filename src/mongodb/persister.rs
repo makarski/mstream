@@ -1,5 +1,5 @@
 use crate::config::Encoding;
-use mongodb::{bson::RawDocumentBuf, error::Error, Database};
+use mongodb::{Database, bson::RawDocumentBuf, error::Error};
 use tokio::task::block_in_place;
 
 pub struct MongoDbPersister {

@@ -94,7 +94,7 @@ use crate::middleware::udf::rhai::convert::{
     ConvertError, LazyBsonDocument, RhaiEncodingExt, RhaiMap,
 };
 use crate::source::SourceEvent;
-use rhai::{Dynamic, AST};
+use rhai::{AST, Dynamic};
 use tokio::task::block_in_place;
 
 pub mod convert;

@@ -4,13 +4,13 @@ use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use log::debug;
 use mongodb::{
-    bson::{doc, RawDocumentBuf},
+    Client, Database,
+    bson::{RawDocumentBuf, doc},
     change_stream::{
-        event::{ChangeStreamEvent, OperationType, ResumeToken},
         ChangeStream,
+        event::{ChangeStreamEvent, OperationType, ResumeToken},
     },
     options::{ChangeStreamOptions, ClientOptions, FullDocumentBeforeChangeType, FullDocumentType},
-    Client, Database,
 };
 use tokio::sync::mpsc::Sender;
 

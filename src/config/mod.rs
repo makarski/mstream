@@ -54,13 +54,15 @@ impl Service {
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct Connector {
     #[serde(default = "default_connector_enabled")]
     pub enabled: bool,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchConfig>,
     pub source: SourceServiceConfigReference,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub middlewares: Option<Vec<ServiceConfigReference>>,
     pub schemas: Option<Vec<SchemaServiceConfigReference>>,
     pub sinks: Vec<ServiceConfigReference>,
@@ -79,31 +81,34 @@ fn default_connector_enabled() -> bool {
     true
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct ServiceConfigReference {
     pub service_name: String,
     pub resource: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_id: Option<String>,
     pub output_encoding: Encoding,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct SourceServiceConfigReference {
     pub service_name: String,
     pub resource: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_encoding: Option<Encoding>,
     pub output_encoding: Encoding,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct SchemaServiceConfigReference {
     pub id: String,
     pub service_name: String,
     pub resource: String,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BatchConfig {
     Count { size: usize },

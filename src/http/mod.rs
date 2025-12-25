@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use log::warn;
 use rand::Rng;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use thiserror::Error;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use url::Url;
 
 use crate::config::Encoding;

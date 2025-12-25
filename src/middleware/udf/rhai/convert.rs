@@ -156,7 +156,7 @@ impl Encoding {
                 _ => {
                     return Err(ConvertError::UnsupportedType {
                         type_name: "Avro/Other in Framed".into(),
-                    })
+                    });
                 }
             };
             array.push(val);
@@ -254,7 +254,7 @@ impl Encoding {
                 _ => {
                     return Err(ConvertError::UnsupportedType {
                         type_name: "Unsupported content type".into(),
-                    })
+                    });
                 }
             }
         }

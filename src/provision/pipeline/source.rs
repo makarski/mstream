@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail};
+use tokio::sync::RwLock;
 
 use crate::{
     config::{Encoding, Service, SourceServiceConfigReference},
     kafka::consumer::KafkaConsumer,
     mongodb::MongoDbChangeStreamListener,
     provision::{
-        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        pipeline::{SchemaDefinition, builder::ComponentBuilder},
         registry::ServiceRegistry,
     },
     pubsub::srvc::PubSubSubscriber,
@@ -16,7 +17,7 @@ use crate::{
 };
 
 pub(super) struct SourceBuilder {
-    registry: Arc<ServiceRegistry>,
+    registry: Arc<RwLock<ServiceRegistry>>,
     config: SourceServiceConfigReference,
 }
 
@@ -30,14 +31,8 @@ impl ComponentBuilder for SourceBuilder {
     type Output = SourceDefinition;
 
     async fn build(&self, schemas: &[SchemaDefinition]) -> anyhow::Result<SourceDefinition> {
-        let service_config = self
-            .registry
-            .service_definition(&self.config.service_name)
-            .await
-            .context("source service")?;
-
+        let source_provider = self.source().await?;
         let schema = super::find_schema(self.config.schema_id.clone(), schemas);
-        let source_provider = self.source(service_config).await?;
 
         Ok(SourceDefinition {
             source_provider,
@@ -51,16 +46,26 @@ impl ComponentBuilder for SourceBuilder {
 }
 
 impl SourceBuilder {
-    pub fn new(registry: Arc<ServiceRegistry>, config: SourceServiceConfigReference) -> Self {
+    pub fn new(
+        registry: Arc<RwLock<ServiceRegistry>>,
+        config: SourceServiceConfigReference,
+    ) -> Self {
         SourceBuilder { registry, config }
     }
 
-    async fn source(&self, service_config: Service) -> anyhow::Result<SourceProvider> {
+    async fn source(&self) -> anyhow::Result<SourceProvider> {
+        let registry_read = self.registry.read().await;
+
+        let service_config = registry_read
+            .service_definition(&self.config.service_name)
+            .await
+            .map_err(|err| anyhow!("failed to initialize a source: {}", err))?;
+
         let input_encoding = Self::resolve_source_encoding(&service_config, &self.config)?;
 
         match service_config {
             Service::MongoDb(mongo_conf) => {
-                let mongo_client = self.registry.mongodb_client(&mongo_conf.name).await?;
+                let mongo_client = registry_read.mongodb_client(&mongo_conf.name).await?;
                 let db = mongo_client.database(&mongo_conf.db_name);
                 Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
                     db,
@@ -79,7 +84,7 @@ impl SourceBuilder {
                 Ok(SourceProvider::Kafka(consumer))
             }
             Service::PubSub(ps_conf) => {
-                let tp = self.registry.gcp_auth(&ps_conf.name).await?;
+                let tp = registry_read.gcp_auth(&ps_conf.name).await?;
                 let subscriber =
                     PubSubSubscriber::new(tp.clone(), self.config.resource.clone(), input_encoding)
                         .await?;
@@ -124,8 +129,8 @@ impl SourceBuilder {
 mod tests {
     use super::*;
     use crate::config::{
-        service_config::{GcpAuthConfig, HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig},
         Encoding, Service, SourceServiceConfigReference,
+        service_config::{GcpAuthConfig, HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig},
     };
     use std::collections::HashMap;
 

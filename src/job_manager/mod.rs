@@ -1,13 +1,17 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::{Display, Formatter},
     sync::Arc,
 };
 
 use anyhow::bail;
 use serde::Serialize;
-use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
+use tokio::{
+    sync::{RwLock, mpsc::UnboundedSender},
+    task::JoinHandle,
+};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::{Connector, Service},
@@ -15,9 +19,10 @@ use crate::{
 };
 
 pub struct JobManager {
-    services_registry: Arc<ServiceRegistry>,
+    services_registry: Arc<RwLock<ServiceRegistry>>,
     cancel_all: CancellationToken,
     running_jobs: HashMap<String, JobContainer>,
+    stopped_jobs: Vec<JobMetadata>,
     service_consumers: HashMap<String, HashSet<String>>,
     exit_tx: UnboundedSender<String>,
 }
@@ -37,9 +42,10 @@ pub struct JobMetadata {
     #[serde(default)]
     stopped_at: Option<chrono::DateTime<chrono::Utc>>,
     state: JobState,
-
-    // todo: consider changing to a struct with service type
+    #[serde(rename = "linked_services")]
     service_deps: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline: Option<Connector>,
 }
 
 #[derive(Clone, Serialize)]
@@ -47,14 +53,26 @@ pub struct JobMetadata {
 pub enum JobState {
     Running,
     Stopped,
+    Failed,
+}
+
+impl Display for JobState {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobState::Running => write!(f, "running"),
+            JobState::Stopped => write!(f, "stopped"),
+            JobState::Failed => write!(f, "failed"),
+        }
+    }
 }
 
 impl JobManager {
     pub fn new(service_registry: ServiceRegistry, exit_tx: UnboundedSender<String>) -> JobManager {
         Self {
-            services_registry: Arc::new(service_registry),
+            services_registry: Arc::new(RwLock::new(service_registry)),
             cancel_all: CancellationToken::new(),
             running_jobs: HashMap::new(),
+            stopped_jobs: Vec::new(),
             service_consumers: HashMap::new(),
             exit_tx,
         }
@@ -67,6 +85,7 @@ impl JobManager {
         source_handle: JoinHandle<()>,
         cancel_token: CancellationToken,
         service_deps: Vec<String>,
+        pipeline: Option<Connector>,
     ) -> JobMetadata {
         self.add_deps(&name, &service_deps);
 
@@ -76,6 +95,7 @@ impl JobManager {
             stopped_at: None,
             state: JobState::Running,
             service_deps,
+            pipeline,
         };
 
         let job_container = JobContainer {
@@ -87,6 +107,23 @@ impl JobManager {
 
         self.running_jobs.insert(name, job_container);
         metadata
+    }
+
+    pub async fn handle_job_exit(&mut self, job_name: &str, new_state: JobState) {
+        if let Some(jc) = self.running_jobs.remove(job_name) {
+            warn!("handling failed job: {}", job_name);
+            jc.cancel_token.cancel();
+
+            let state_fmt = new_state.to_string();
+
+            let mut metadata = jc.metadata;
+            metadata.state = new_state;
+            metadata.stopped_at = Some(chrono::Utc::now());
+
+            self.remove_deps(job_name, &metadata.service_deps);
+            self.stopped_jobs.push(metadata.clone());
+            warn!("job marked as {}: {}", state_fmt, job_name);
+        }
     }
 
     pub async fn stop_job(&mut self, job_name: &str) -> anyhow::Result<JobMetadata> {
@@ -112,6 +149,8 @@ impl JobManager {
             metadata.stopped_at = Some(chrono::Utc::now());
             self.remove_deps(job_name, &metadata.service_deps);
 
+            self.stopped_jobs.push(metadata.clone());
+
             Ok(metadata)
         } else {
             bail!("job not found: {}", job_name);
@@ -119,10 +158,14 @@ impl JobManager {
     }
 
     pub fn list_jobs(&self) -> Vec<JobMetadata> {
-        self.running_jobs
+        let mut jobs: Vec<JobMetadata> = self
+            .running_jobs
             .values()
             .map(|jc| jc.metadata.clone())
-            .collect()
+            .collect();
+
+        jobs.extend(self.stopped_jobs.clone());
+        jobs
     }
 
     pub async fn start_job(&mut self, conn_cfg: Connector) -> anyhow::Result<JobMetadata> {
@@ -130,11 +173,14 @@ impl JobManager {
             bail!("job already running: {}", conn_cfg.name);
         }
 
+        self.stopped_jobs.retain(|job| job.name != conn_cfg.name);
+
         let pipeline_builder =
             PipelineBuilder::new(self.services_registry.clone(), conn_cfg.clone());
 
         let service_deps = pipeline_builder.service_deps();
         let pipeline = pipeline_builder.build().await?;
+        let config = pipeline.config.clone();
 
         let job_cancel = self.cancel_all.child_token();
         let task_cancel = job_cancel.clone();
@@ -148,11 +194,17 @@ impl JobManager {
             source_handle,
             job_cancel,
             service_deps,
+            Some(config),
         ))
     }
 
     pub async fn list_services(&self) -> Vec<ServiceStatus> {
-        let all_conf_services = self.services_registry.all_service_definitions().await;
+        let all_conf_services = self
+            .services_registry
+            .read()
+            .await
+            .all_service_definitions()
+            .await;
 
         all_conf_services
             .into_iter()
@@ -172,8 +224,37 @@ impl JobManager {
             .collect()
     }
 
-    fn add_deps(&mut self, job_name: &str, services: &[String]) {
-        for service_name in services {
+    pub async fn create_service(&self, service_cfg: Service) -> anyhow::Result<()> {
+        let service_name = service_cfg.name().to_string();
+        self.services_registry
+            .write()
+            .await
+            .add_service(service_cfg)
+            .await?;
+
+        info!("service '{}' created", service_name);
+        Ok(())
+    }
+
+    pub async fn remove_service(&self, service_name: &str) -> anyhow::Result<()> {
+        // acquire a write lock before checking for consumers to avoid race conditions
+        let mut registry = self.services_registry.write().await;
+
+        if let Some(jobs) = self.service_consumers.get(service_name) {
+            bail!(
+                "cannot remove service '{}': it is used by running jobs: {}",
+                service_name,
+                jobs.iter().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        registry.remove_service(service_name).await?;
+
+        info!("service '{}' removed", service_name);
+        Ok(())
+    }
+
+    fn add_deps(&mut self, job_name: &str, deps: &[String]) {
+        for service_name in deps {
             self.service_consumers
                 .entry(service_name.clone())
                 .or_insert_with(HashSet::new)

@@ -1,20 +1,21 @@
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail};
+use tokio::sync::RwLock;
 
 use crate::{
     config::{Service, ServiceConfigReference},
     http::middleware::HttpMiddleware,
-    middleware::{udf::UdfMiddleware, MiddlewareProvider},
+    middleware::{MiddlewareProvider, udf::UdfMiddleware},
     provision::{
-        pipeline::{builder::ComponentBuilder, SchemaDefinition},
+        pipeline::{SchemaDefinition, builder::ComponentBuilder},
         registry::ServiceRegistry,
     },
     schema::Schema,
 };
 
 pub(super) struct MiddlewareBuilder {
-    registry: Arc<ServiceRegistry>,
+    registry: Arc<RwLock<ServiceRegistry>>,
     configs: Vec<ServiceConfigReference>,
 }
 
@@ -68,7 +69,7 @@ impl ComponentBuilder for MiddlewareBuilder {
 
 impl MiddlewareBuilder {
     pub fn new(
-        registry: Arc<ServiceRegistry>,
+        registry: Arc<RwLock<ServiceRegistry>>,
         configs: &Option<Vec<ServiceConfigReference>>,
     ) -> Self {
         let configs = configs.clone().unwrap_or_else(|| Vec::new());
@@ -76,15 +77,16 @@ impl MiddlewareBuilder {
     }
 
     async fn middleware(&self, cfg: &ServiceConfigReference) -> anyhow::Result<MiddlewareProvider> {
-        let service_config = self
-            .registry
+        let registry_read = self.registry.read().await;
+
+        let service_config = registry_read
             .service_definition(&cfg.service_name)
             .await
-            .context("middleware config")?;
+            .map_err(|err| anyhow!("failed to initialize a middleware: {}", err))?;
 
         match service_config {
             Service::Http(http_cfg) => {
-                let http_service = self.registry.http_client(&http_cfg.name).await?;
+                let http_service = registry_read.http_client(&http_cfg.name).await?;
                 Ok(MiddlewareProvider::Http(HttpMiddleware::new(
                     cfg.resource.clone(),
                     cfg.output_encoding.clone(),
@@ -92,7 +94,7 @@ impl MiddlewareBuilder {
                 )))
             }
             Service::Udf(udf_cfg) => {
-                let rhai_builder = self.registry.udf_middleware(&udf_cfg.name).await?;
+                let rhai_builder = registry_read.udf_middleware(&udf_cfg.name).await?;
                 let rhai_middleware = rhai_builder(cfg.resource.clone())?;
                 Ok(MiddlewareProvider::Udf(UdfMiddleware::Rhai(
                     rhai_middleware,

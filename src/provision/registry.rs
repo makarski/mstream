@@ -1,21 +1,21 @@
 use std::{collections::HashMap, mem::take, sync::Arc};
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
 use tokio::sync::RwLock;
 
 use crate::{
     config::{
+        Config, Service,
         service_config::{
             GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine,
         },
-        Config, Service,
     },
     http,
     middleware::udf::rhai::RhaiMiddleware,
     mongodb::db_client,
-    pubsub::{ServiceAccountAuth, StaticAccessToken, SCOPES},
+    pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
 };
 
 type RhaiMiddlewareBuilder =
@@ -111,7 +111,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn add_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
+    pub async fn add_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
         if self.config.read().await.has_service(service_cfg.name()) {
             bail!("service with name '{}' already exists", service_cfg.name());
         }
@@ -127,6 +127,34 @@ impl ServiceRegistry {
         self.config.write().await.services.push(service_cfg);
 
         Ok(())
+    }
+
+    pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
+        // we will drop config lock when the scope block ends
+        // this is done to avoid deadlocks when removing service dependencies
+        let config_removed = {
+            let mut config = self.config.write().await;
+            if let Some(pos) = config
+                .services
+                .iter()
+                .position(|s| s.name() == service_name)
+            {
+                config.services.remove(pos);
+                true
+            } else {
+                false
+            }
+        };
+
+        if config_removed {
+            self.mongo_clients.write().await.remove(service_name);
+            self.gcp_token_providers.write().await.remove(service_name);
+            self.http_services.write().await.remove(service_name);
+            self.udf_middlewares.write().await.remove(service_name);
+            Ok(())
+        } else {
+            Err(anyhow!("service with name '{}' not found", service_name))
+        }
     }
 
     pub async fn udf_middleware(&self, name: &str) -> anyhow::Result<RhaiMiddlewareBuilder> {

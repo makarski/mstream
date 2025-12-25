@@ -209,12 +209,14 @@ mstream exposes a REST API for monitoring and management (default port: `8787`).
 
 - `GET /jobs`: List all running jobs.
 - `POST /jobs`: Start a new job by providing a connector configuration.
-- `DELETE /jobs/:id`: Stop a running job.
+- `DELETE /jobs/{name}`: Stop a running job.
 
 ### List Services
 - `GET /services`: List all configured services and their usage
+- `POST /services`: Add a new service
+- `DELETE /services/{name}`: Remove a service (if not in use)
 
-**Response Example:**
+**Service List Response Example:**
 ```json
 [
   {
