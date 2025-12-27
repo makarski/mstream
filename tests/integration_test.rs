@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use log::{debug, info};
 use mongodb::{Client, Collection, bson::doc, options::UpdateOptions};
+use mstream::job_manager::JobState;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 
@@ -23,7 +24,7 @@ async fn test_created_updated_db_to_pubsub() {
     let coll = db.collection(setup::DB_COLLECTION);
 
     // spawn change stream listener
-    let (tx, _) = mpsc::unbounded_channel::<String>();
+    let (tx, _) = mpsc::unbounded_channel::<(String, JobState)>();
     start_app_listener(tx).await;
 
     info!("setting up db, sleeping for 10 secs");

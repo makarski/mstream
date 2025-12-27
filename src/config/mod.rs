@@ -1,16 +1,19 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::service_config::{
-    HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig, UdfConfig,
+use crate::config::{
+    service_config::{HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig, UdfConfig},
+    system::SystemConfig,
 };
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct Config {
+    pub system: Option<SystemConfig>,
     pub services: Vec<Service>,
     pub connectors: Vec<Connector>,
 }
 
 pub mod service_config;
+pub mod system;
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
@@ -64,6 +67,7 @@ pub struct Connector {
     pub source: SourceServiceConfigReference,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub middlewares: Option<Vec<ServiceConfigReference>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub schemas: Option<Vec<SchemaServiceConfigReference>>,
     pub sinks: Vec<ServiceConfigReference>,
 }

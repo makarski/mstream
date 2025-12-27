@@ -7,7 +7,7 @@ use axum::{Json, Router};
 use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::config::{Connector, Service};
 use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
@@ -53,15 +53,15 @@ async fn list_jobs(State(state): State<AppState>) -> Json<Vec<JobMetadata>> {
 async fn stop_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> (StatusCode, Json<Message<JobMetadata>>) {
+) -> (StatusCode, Json<Message<String>>) {
     info!("stopping job: {}", id);
     let mut jm = state.job_manager.lock().await;
     match jm.stop_job(&id).await {
-        Ok(job_metadata) => (
+        Ok(_) => (
             StatusCode::OK,
             Json(Message {
                 message: format!("job {} stopped successfully", id),
-                item: Some(job_metadata),
+                item: None,
             }),
         ),
         Err(e) => (
@@ -90,13 +90,16 @@ async fn create_job(
                 item: Some(job_metadata),
             }),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(Message {
-                message: format!("failed to create job: {}", e),
-                item: None,
-            }),
-        ),
+        Err(e) => {
+            error!("{}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(Message {
+                    message: format!("failed to create job: {}", e),
+                    item: None,
+                }),
+            )
+        }
     }
 }
 

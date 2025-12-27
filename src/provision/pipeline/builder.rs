@@ -49,7 +49,6 @@ impl PipelineBuilder {
             middlewares: Vec::new(),
             schemas: Vec::new(),
             sinks: Vec::new(),
-            config: connector.clone(),
         };
 
         Self {

@@ -32,7 +32,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         .and_then(|port_str| port_str.parse::<u16>().ok())
         .unwrap_or(8787);
 
-    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<String>();
+    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<(String, JobState)>();
     let jm = cmd::listen_streams(exit_tx, config).await?;
     info!(
         "running jobs: {}",
@@ -52,12 +52,12 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         }
     });
 
-    while let Some(job_name) = exit_rx.recv().await {
+    while let Some((job_name, job_state)) = exit_rx.recv().await {
         warn!("stream listener exited: {}", job_name);
         shared_jm
             .lock()
             .await
-            .handle_job_exit(&job_name, JobState::Failed)
+            .handle_job_exit(&job_name, job_state)
             .await;
     }
 

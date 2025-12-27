@@ -8,7 +8,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
-    config::{Connector, Encoding},
+    config::Encoding,
+    job_manager::JobState,
     provision::pipeline::{
         middleware::MiddlewareDefinition, processor::EventHandler, schema::SchemaDefinition,
         sink::SinkDefinition,
@@ -34,14 +35,13 @@ pub struct Pipeline {
     pub sinks: Vec<SinkDefinition>,
     pub batch_size: usize,
     pub is_batching_enabled: bool,
-    pub config: Connector,
 }
 
 impl Pipeline {
     pub async fn run(
         mut self,
         cancel_token: CancellationToken,
-        exit_tx: UnboundedSender<String>,
+        exit_tx: UnboundedSender<(String, JobState)>,
     ) -> anyhow::Result<(String, JoinHandle<()>, JoinHandle<()>)> {
         let source_provider = self
             .source_provider
@@ -94,24 +94,30 @@ impl PipelineRuntime {
         })
     }
 
-    fn do_work(self, pipeline: Pipeline, exit_tx: UnboundedSender<String>) -> JoinHandle<()> {
+    fn do_work(
+        self,
+        pipeline: Pipeline,
+        exit_tx: UnboundedSender<(String, JobState)>,
+    ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let cnt_name = pipeline.name.clone();
             let mut eh = EventHandler::new(pipeline);
 
-            select! {
+            let job_state = select! {
                 _ = self.cancel_token.cancelled() => {
                     info!("cancelling job: {}", cnt_name);
+                    JobState::Stopped
                 }
                 res = eh.handle(self.events_rx) => {
                     if let Err(err) = res {
                         error!("job {} failed: {}", cnt_name, err);
                     }
+                    JobState::Failed
                 }
-            }
+            };
 
             // send done signal
-            if let Err(err) = exit_tx.send(cnt_name.clone()) {
+            if let Err(err) = exit_tx.send((cnt_name.clone(), job_state)) {
                 error!(
                     "failed to send done signal: {}: connector: {}",
                     err, cnt_name
