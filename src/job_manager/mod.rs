@@ -4,8 +4,8 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::bail;
-use serde::Serialize;
+use anyhow::{anyhow, bail};
+use serde::{Deserialize, Serialize};
 use tokio::{
     sync::{RwLock, mpsc::UnboundedSender},
     task::JoinHandle,
@@ -18,12 +18,14 @@ use crate::{
     provision::{pipeline::builder::PipelineBuilder, registry::ServiceRegistry},
 };
 
+pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
+
 pub struct JobManager {
-    services_registry: Arc<RwLock<ServiceRegistry>>,
+    service_registry: Arc<RwLock<ServiceRegistry>>,
     cancel_all: CancellationToken,
-    job_store: in_memory::InMemoryJobStore,
+    job_store: JobStorage,
     running_jobs: HashMap<String, JobContainer>,
-    exit_tx: UnboundedSender<(String, JobState)>,
+    exit_tx: Option<UnboundedSender<JobStateChange>>,
 }
 
 struct JobContainer {
@@ -32,21 +34,26 @@ struct JobContainer {
     cancel_token: CancellationToken,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JobMetadata {
     pub name: String,
     started_at: chrono::DateTime<chrono::Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     stopped_at: Option<chrono::DateTime<chrono::Utc>>,
     state: JobState,
+    pub desired_state: JobState,
     #[serde(rename = "linked_services")]
     service_deps: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pipeline: Option<Connector>,
+    pub pipeline: Option<Connector>,
 }
 
-#[derive(Clone, Serialize)]
+pub struct JobStateChange {
+    pub job_name: String,
+    pub new_state: JobState,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobState {
     Running,
@@ -66,20 +73,20 @@ impl Display for JobState {
 
 impl JobManager {
     pub fn new(
-        service_registry: ServiceRegistry,
-        job_store: in_memory::InMemoryJobStore,
-        exit_tx: UnboundedSender<(String, JobState)>,
+        service_registry: Arc<RwLock<ServiceRegistry>>,
+        job_store: JobStorage,
+        exit_tx: UnboundedSender<JobStateChange>,
     ) -> JobManager {
         Self {
-            services_registry: Arc::new(RwLock::new(service_registry)),
+            service_registry,
             cancel_all: CancellationToken::new(),
             running_jobs: HashMap::new(),
             job_store,
-            exit_tx,
+            exit_tx: Some(exit_tx),
         }
     }
 
-    fn register_job(
+    async fn register_job(
         &mut self,
         name: String,
         work_handle: JoinHandle<()>,
@@ -87,12 +94,13 @@ impl JobManager {
         cancel_token: CancellationToken,
         service_deps: Vec<String>,
         pipeline: Option<Connector>,
-    ) -> JobMetadata {
+    ) -> anyhow::Result<JobMetadata> {
         let metadata = JobMetadata {
             name: name.clone(),
             started_at: chrono::Utc::now(),
             stopped_at: None,
             state: JobState::Running,
+            desired_state: JobState::Running,
             service_deps,
             pipeline,
         };
@@ -103,28 +111,34 @@ impl JobManager {
             cancel_token,
         };
 
-        self.job_store.save(metadata.clone());
+        self.job_store.save(metadata.clone()).await?;
         self.running_jobs.insert(name, job_container);
-        metadata
+        Ok(metadata)
     }
 
-    pub async fn handle_job_exit(&mut self, job_name: &str, new_state: JobState) {
+    pub async fn handle_job_exit(&mut self, state_change: JobStateChange) -> anyhow::Result<()> {
+        let job_name = &state_change.job_name;
         if let Some(jc) = self.running_jobs.remove(job_name) {
             warn!("handling exited job: {}", job_name);
             jc.cancel_token.cancel();
         }
 
-        if let Some(mut metadata) = self.job_store.get(job_name).cloned() {
-            metadata.state = new_state;
+        if let Some(mut metadata) = self.job_store.get(job_name).await? {
+            metadata.state = state_change.new_state;
             metadata.stopped_at = Some(chrono::Utc::now());
             metadata.service_deps.clear();
-            self.job_store.save(metadata);
+            self.job_store.save(metadata).await?;
         } else {
             warn!("failed to find metadata for exited job: {}", job_name);
         }
+
+        Ok(())
     }
 
     pub async fn stop_job(&mut self, job_name: &str) -> anyhow::Result<()> {
+        self.set_desired_job_state(job_name, JobState::Stopped)
+            .await?;
+
         if let Some(jc) = self.running_jobs.remove(job_name) {
             info!("stopping job: {}", job_name);
             jc.cancel_token.cancel();
@@ -145,8 +159,46 @@ impl JobManager {
         Ok(())
     }
 
-    pub fn list_jobs(&self) -> Vec<JobMetadata> {
-        self.job_store.list_all()
+    pub async fn shutdown(&mut self) {
+        info!("shutting down all jobs");
+        self.cancel_all.cancel();
+
+        // ban new jobs
+        // wait for all running jobs to finish
+        self.exit_tx = None;
+    }
+
+    pub async fn stop_all_jobs(&mut self) -> anyhow::Result<()> {
+        let jobs = self.job_store.list_all().await?;
+
+        for job in jobs {
+            self.stop_job(&job.name).await?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn list_jobs(&self) -> anyhow::Result<Vec<JobMetadata>> {
+        self.job_store.list_all().await
+    }
+
+    pub async fn restart_job(&mut self, job_name: &str) -> anyhow::Result<JobMetadata> {
+        let job_metadata = self
+            .job_store
+            .get(job_name)
+            .await?
+            .ok_or_else(|| anyhow!("job not found: {}", job_name))?;
+
+        self.stop_job(job_name).await?;
+
+        if let Some(conn_cfg) = job_metadata.pipeline.clone() {
+            self.start_job(conn_cfg).await
+        } else {
+            bail!(
+                "cannot restart job '{}': missing pipeline configuration",
+                job_name
+            );
+        }
     }
 
     pub async fn start_job(&mut self, conn_cfg: Connector) -> anyhow::Result<JobMetadata> {
@@ -154,8 +206,14 @@ impl JobManager {
             bail!("job already running: {}", conn_cfg.name);
         }
 
+        let exit_tx = self
+            .exit_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("job manager is shutting down"))?
+            .clone();
+
         let pipeline_builder =
-            PipelineBuilder::new(self.services_registry.clone(), conn_cfg.clone());
+            PipelineBuilder::new(self.service_registry.clone(), conn_cfg.clone());
 
         let service_deps = pipeline_builder.service_deps();
         let pipeline = pipeline_builder.build().await?;
@@ -163,44 +221,45 @@ impl JobManager {
         let job_cancel = self.cancel_all.child_token();
         let task_cancel = job_cancel.clone();
 
-        let (job_name, work_handle, source_handle) =
-            pipeline.run(task_cancel, self.exit_tx.clone()).await?;
+        let (job_name, work_handle, source_handle) = pipeline.run(task_cancel, exit_tx).await?;
 
-        Ok(self.register_job(
+        self.register_job(
             job_name,
             work_handle,
             source_handle,
             job_cancel,
             service_deps,
             Some(conn_cfg),
-        ))
+        )
+        .await
     }
 
-    pub async fn list_services(&self) -> Vec<ServiceStatus> {
+    pub async fn list_services(&self) -> anyhow::Result<Vec<ServiceStatus>> {
         let all_conf_services = self
-            .services_registry
+            .service_registry
             .read()
             .await
             .all_service_definitions()
             .await;
 
-        all_conf_services
-            .into_iter()
-            .map(|service| {
-                let name = service.name();
-                let used_by = self.job_store.get_dependent_jobs(&name);
+        let mut statuses = Vec::with_capacity(all_conf_services.len());
 
-                ServiceStatus {
-                    service,
-                    used_by_jobs: used_by,
-                }
-            })
-            .collect()
+        for service in all_conf_services {
+            let name = service.name();
+            let used_by = self.job_store.get_dependent_jobs(&name).await?;
+
+            statuses.push(ServiceStatus {
+                service,
+                used_by_jobs: used_by,
+            });
+        }
+
+        Ok(statuses)
     }
 
     pub async fn create_service(&self, service_cfg: Service) -> anyhow::Result<()> {
         let service_name = service_cfg.name().to_string();
-        self.services_registry
+        self.service_registry
             .write()
             .await
             .add_service(service_cfg)
@@ -212,9 +271,9 @@ impl JobManager {
 
     pub async fn remove_service(&self, service_name: &str) -> anyhow::Result<()> {
         // acquire a write lock before checking for consumers to avoid race conditions
-        let mut registry = self.services_registry.write().await;
+        let mut registry = self.service_registry.write().await;
 
-        let jobs = self.job_store.get_dependent_jobs(service_name);
+        let jobs = self.job_store.get_dependent_jobs(service_name).await?;
         if !jobs.is_empty() {
             bail!(
                 "cannot remove service '{}': it is used by running jobs: {}",
@@ -227,6 +286,19 @@ impl JobManager {
         info!("service '{}' removed", service_name);
         Ok(())
     }
+
+    async fn set_desired_job_state(
+        &mut self,
+        job_name: &str,
+        state: JobState,
+    ) -> anyhow::Result<()> {
+        if let Some(mut metadata) = self.job_store.get(job_name).await? {
+            metadata.desired_state = state;
+            self.job_store.save(metadata).await?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -234,6 +306,14 @@ pub struct ServiceStatus {
     #[serde(flatten)]
     pub service: Service,
     pub used_by_jobs: Vec<String>,
+}
+
+#[async_trait::async_trait]
+pub trait JobLifecycleStorage {
+    async fn list_all(&self) -> anyhow::Result<Vec<JobMetadata>>;
+    async fn save(&mut self, metadata: JobMetadata) -> anyhow::Result<()>;
+    async fn get(&self, name: &str) -> anyhow::Result<Option<JobMetadata>>;
+    async fn get_dependent_jobs(&self, service_name: &str) -> anyhow::Result<Vec<String>>;
 }
 
 pub mod in_memory {
@@ -251,37 +331,6 @@ pub mod in_memory {
             Self {
                 jobs: HashMap::new(),
                 jobs_by_service: HashMap::new(),
-            }
-        }
-
-        pub fn list_all(&self) -> Vec<JobMetadata> {
-            self.jobs.values().cloned().collect()
-        }
-
-        pub fn save(&mut self, metadata: JobMetadata) {
-            if let Some(existing) = self.jobs.get(&metadata.name) {
-                if existing.service_deps != metadata.service_deps {
-                    self.clear_deps(&metadata.name);
-                }
-            }
-
-            if !metadata.service_deps.is_empty() {
-                self.add_deps(&metadata.name, &metadata.service_deps);
-            }
-
-            let name = metadata.name.clone();
-            self.jobs.insert(name, metadata);
-        }
-
-        pub fn get(&self, name: &str) -> Option<&JobMetadata> {
-            self.jobs.get(name)
-        }
-
-        pub fn get_dependent_jobs(&self, service_name: &str) -> Vec<String> {
-            if let Some(job_names) = self.jobs_by_service.get(service_name) {
-                job_names.iter().cloned().collect()
-            } else {
-                Vec::new()
             }
         }
 
@@ -310,6 +359,116 @@ pub mod in_memory {
                     }
                 }
             }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::JobLifecycleStorage for InMemoryJobStore {
+        async fn list_all(&self) -> anyhow::Result<Vec<JobMetadata>> {
+            Ok(self.jobs.values().cloned().collect())
+        }
+
+        async fn save(&mut self, metadata: JobMetadata) -> anyhow::Result<()> {
+            if let Some(existing) = self.jobs.get(&metadata.name) {
+                if existing.service_deps != metadata.service_deps {
+                    self.clear_deps(&metadata.name);
+                }
+            }
+
+            if !metadata.service_deps.is_empty() {
+                self.add_deps(&metadata.name, &metadata.service_deps);
+            }
+
+            let name = metadata.name.clone();
+            self.jobs.insert(name, metadata);
+            Ok(())
+        }
+
+        async fn get(&self, name: &str) -> anyhow::Result<Option<JobMetadata>> {
+            Ok(self.jobs.get(name).cloned())
+        }
+
+        async fn get_dependent_jobs(&self, service_name: &str) -> anyhow::Result<Vec<String>> {
+            let names = if let Some(job_names) = self.jobs_by_service.get(service_name) {
+                job_names.iter().cloned().collect()
+            } else {
+                Vec::new()
+            };
+
+            Ok(names)
+        }
+    }
+}
+
+pub mod mongodb_store {
+    use mongodb::{
+        Collection, Database,
+        bson::{doc, to_bson},
+    };
+
+    use crate::job_manager::JobMetadata;
+
+    pub struct MongoDBJobStore {
+        database: Database,
+        coll_name: String,
+    }
+
+    impl MongoDBJobStore {
+        pub fn new(database: Database, coll_name: String) -> Self {
+            Self {
+                database,
+                coll_name,
+            }
+        }
+
+        fn collection(&self) -> Collection<JobMetadata> {
+            self.database.collection(&self.coll_name)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl super::JobLifecycleStorage for MongoDBJobStore {
+        async fn list_all(&self) -> anyhow::Result<Vec<JobMetadata>> {
+            let mut cursor = self.collection().find(doc! {}).await?;
+            let mut jobs = Vec::new();
+
+            while cursor.advance().await? {
+                let job_metadata = cursor.deserialize_current()?;
+                jobs.push(job_metadata);
+            }
+            Ok(jobs)
+        }
+
+        async fn save(&mut self, metadata: JobMetadata) -> anyhow::Result<()> {
+            let filter = doc! { "name": &metadata.name };
+            let update_doc = to_bson(&metadata)?;
+            let update = doc! { "$set": update_doc };
+
+            self.collection()
+                .update_one(filter, update)
+                .upsert(true)
+                .await?;
+
+            Ok(())
+        }
+
+        async fn get(&self, name: &str) -> anyhow::Result<Option<JobMetadata>> {
+            let filter = doc! { "name": name };
+            let job_metadata = self.collection().find_one(filter).await?;
+            Ok(job_metadata)
+        }
+
+        async fn get_dependent_jobs(&self, service_name: &str) -> anyhow::Result<Vec<String>> {
+            let filter = doc! { "linked_services": service_name };
+            let mut cursor = self.collection().find(filter).await?;
+
+            let mut job_names = Vec::new();
+            while cursor.advance().await? {
+                let job_metadata = cursor.deserialize_current()?;
+                job_names.push(job_metadata.name);
+            }
+
+            Ok(job_names)
         }
     }
 }

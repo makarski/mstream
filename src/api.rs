@@ -26,8 +26,9 @@ impl AppState {
 pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/jobs", get(list_jobs))
-        .route("/jobs/{id}", delete(stop_job))
-        .route("/jobs", post(create_job))
+        .route("/jobs", post(create_start_job))
+        .route("/jobs/{id}/stop", post(stop_job))
+        .route("/jobs/{id}/restart", post(restart_job))
         .route("/services", get(list_services))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
@@ -42,11 +43,15 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// GET /jobs
-async fn list_jobs(State(state): State<AppState>) -> Json<Vec<JobMetadata>> {
+async fn list_jobs(State(state): State<AppState>) -> (StatusCode, Json<Vec<JobMetadata>>) {
     let jm = state.job_manager.lock().await;
-    let jobs = jm.list_jobs();
-
-    Json(jobs)
+    match jm.list_jobs().await {
+        Ok(jobs) => (StatusCode::OK, Json(jobs)),
+        Err(e) => {
+            error!("failed to list jobs: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
+        }
+    }
 }
 
 /// DELETE /jobs/{id}
@@ -74,8 +79,33 @@ async fn stop_job(
     }
 }
 
+/// POST /jobs/{id}/restart
+async fn restart_job(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> (StatusCode, Json<Message<String>>) {
+    info!("restarting job: {}", name);
+    let mut jm = state.job_manager.lock().await;
+    match jm.restart_job(&name).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(Message {
+                message: format!("job {} restarted successfully", name),
+                item: None,
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(Message {
+                message: format!("failed to restart job {}: {}", name, e),
+                item: None,
+            }),
+        ),
+    }
+}
+
 /// POST /jobs
-async fn create_job(
+async fn create_start_job(
     State(state): State<AppState>,
     Json(conn_cfg): Json<Connector>,
 ) -> (StatusCode, Json<Message<JobMetadata>>) {
@@ -104,10 +134,15 @@ async fn create_job(
 }
 
 /// GET /services
-async fn list_services(State(state): State<AppState>) -> Json<Vec<ServiceStatus>> {
+async fn list_services(State(state): State<AppState>) -> (StatusCode, Json<Vec<ServiceStatus>>) {
     let jm = state.job_manager.lock().await;
-    let services = jm.list_services().await;
-    Json(services)
+    match jm.list_services().await {
+        Ok(services) => (StatusCode::OK, Json(services)),
+        Err(e) => {
+            error!("failed to list services: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
+        }
+    }
 }
 
 /// POST /services

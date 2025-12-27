@@ -9,7 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     config::Encoding,
-    job_manager::JobState,
+    job_manager::{JobState, JobStateChange},
     provision::pipeline::{
         middleware::MiddlewareDefinition, processor::EventHandler, schema::SchemaDefinition,
         sink::SinkDefinition,
@@ -41,7 +41,7 @@ impl Pipeline {
     pub async fn run(
         mut self,
         cancel_token: CancellationToken,
-        exit_tx: UnboundedSender<(String, JobState)>,
+        exit_tx: UnboundedSender<JobStateChange>,
     ) -> anyhow::Result<(String, JoinHandle<()>, JoinHandle<()>)> {
         let source_provider = self
             .source_provider
@@ -97,7 +97,7 @@ impl PipelineRuntime {
     fn do_work(
         self,
         pipeline: Pipeline,
-        exit_tx: UnboundedSender<(String, JobState)>,
+        exit_tx: UnboundedSender<JobStateChange>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let cnt_name = pipeline.name.clone();
@@ -116,8 +116,13 @@ impl PipelineRuntime {
                 }
             };
 
+            let state_change = JobStateChange {
+                job_name: cnt_name.clone(),
+                new_state: job_state,
+            };
+
             // send done signal
-            if let Err(err) = exit_tx.send((cnt_name.clone(), job_state)) {
+            if let Err(err) = exit_tx.send(state_change) {
                 error!(
                     "failed to send done signal: {}: connector: {}",
                     err, cnt_name

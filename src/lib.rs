@@ -2,10 +2,13 @@ use std::{env, sync::Arc};
 
 use anyhow::Context;
 use log::{debug, warn};
-use tokio::sync::{Mutex, mpsc};
+use tokio::{
+    signal,
+    sync::{Mutex, mpsc},
+};
 use tracing::{error, info};
 
-use crate::{api::AppState, job_manager::JobState};
+use crate::{api::AppState, job_manager::JobStateChange};
 
 mod encoding;
 mod http;
@@ -32,16 +35,19 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         .and_then(|port_str| port_str.parse::<u16>().ok())
         .unwrap_or(8787);
 
-    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<(String, JobState)>();
+    let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<JobStateChange>();
     let jm = cmd::listen_streams(exit_tx, config).await?;
-    info!(
-        "running jobs: {}",
-        jm.list_jobs()
-            .iter()
-            .map(|metadata| metadata.name.clone())
-            .collect::<Vec<String>>()
-            .join("; ")
-    );
+    match jm.list_jobs().await {
+        Ok(jobs) if jobs.is_empty() => {
+            warn!("no jobs configured");
+        }
+        Ok(jobs) => {
+            info!("configured jobs: {}", jobs.len());
+        }
+        Err(err) => {
+            error!("failed to list jobs: {}", err);
+        }
+    };
 
     let shared_jm = Arc::new(Mutex::new(jm));
     let api_app_state = AppState::new(shared_jm.clone());
@@ -52,16 +58,39 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
         }
     });
 
-    while let Some((job_name, job_state)) = exit_rx.recv().await {
-        warn!("stream listener exited: {}", job_name);
-        shared_jm
-            .lock()
-            .await
-            .handle_job_exit(&job_name, job_state)
-            .await;
+    loop {
+        tokio::select! {
+            _ = signal::ctrl_c() => {
+                info!("received Ctrl+C, shutting down...");
+                shared_jm.lock().await.shutdown().await;
+            }
+            res = exit_rx.recv() => {
+                match res {
+                    Some(state_change) => {
+                        let job_name = state_change.job_name.clone();
+                        warn!("stream listener exited: {}", job_name);
+                        match shared_jm
+                            .lock()
+                            .await
+                            .handle_job_exit(state_change)
+                            .await
+                        {
+                            Ok(_) => {
+                                info!("handled job exit for: {}", job_name);
+                            }
+                            Err(err) => {
+                                error!("failed to handle job exit for {}: {}", job_name, err);
+                            }
+                        }
+                    }
+                    None => {
+                        warn!("all stream listeners have exited");
+                        break;
+                    }
+                }
+            }
+        }
     }
-
-    warn!("all stream listeners exited");
 
     Ok(())
 }

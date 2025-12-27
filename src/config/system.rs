@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct SystemConfig {
-    pub job_lifecycles: Option<JobLifecycle>,
+    pub job_lifecycle: Option<JobLifecycle>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
