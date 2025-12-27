@@ -172,7 +172,9 @@ impl JobManager {
         let jobs = self.job_store.list_all().await?;
 
         for job in jobs {
-            self.stop_job(&job.name).await?;
+            if let Err(err) = self.stop_job(&job.name).await {
+                error!("failed to stop job during reset '{}': {}", job.name, err);
+            }
         }
 
         Ok(())
