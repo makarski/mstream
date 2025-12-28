@@ -70,6 +70,10 @@ sinks = [
 ]
 ```
 
+Ready-made configs:
+* [mongo_to_kafka.toml](examples/mongo_to_kafka.toml) (MongoDB → Kafka)
+* [kafka_to_mongo.toml](examples/kafka_to_mongo.toml) (Kafka → MongoDB)
+
 Run mstream with your configuration:
 
 ```bash
@@ -85,7 +89,26 @@ cp mstream-config.toml.example ./mstream-config.toml
 # update the config as needed
 make docker-up
 make db-init-rpl-set
+
+## 🗄️ Job Lifecycle Persistence
+
+mstream keeps job definitions and runtime state in an internal job-lifecycle store so that restarts are predictable. By default the store is in-memory, but you can opt into a persistent backend by pointing the system section at a managed service:
+
+```toml
+[system.job_lifecycle]
+service_name = "mongodb-source"
+resource = "job-lifecycle"
+startup_state = "seed_from_file" # other options: "force_from_file", "keep"
 ```
+
+- **service_name** references an existing service entry (e.g. MongoDB) that will host the lifecycle collection/table.
+- **resource** is the database collection/table used to store job metadata.
+- **startup_state** controls how jobs are reconciled when mstream boots:
+  - `force_from_file`: stop everything and start only the connectors listed in the config file.
+  - `seed_from_file`: initialize the store from the file if it is empty, otherwise resume the previously persisted state.
+  - `keep`: ignore the file and resume whatever is already stored (handy for API-driven workflows).
+
+With a persistent store in place you can safely restart the server without losing job intent, resume jobs automatically, or keep them paused until you explicitly restart them via the API.
 
 ## 📚 Core Concepts
 
@@ -207,9 +230,10 @@ mstream exposes a REST API for monitoring and management (default port: `8787`).
 
 ### Job Management
 
-- `GET /jobs`: List all running jobs.
+- `GET /jobs`: List all jobs along with their desired and current state.
 - `POST /jobs`: Start a new job by providing a connector configuration.
-- `DELETE /jobs/{name}`: Stop a running job.
+- `POST /jobs/{name}/restart`: Restart an existing job using its stored pipeline definition.
+- `POST /jobs/{name}/stop`: Stop a running job (the configuration remains stored for future use).
 
 ### List Services
 - `GET /services`: List all configured services and their usage

@@ -49,6 +49,11 @@ max_retries = 3
 connection_timeout_sec = 15
 timeout_sec = 20
 
+[system.job_lifecycle]
+service_name = "mongodb-source"
+resource = "job-lifecycle"
+startup_state = "seed_from_file"
+
 # Connector Configurations
 [[connectors]]
 enabled = true
