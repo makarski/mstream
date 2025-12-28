@@ -10,7 +10,7 @@ A lightweight, high-performance data streaming bridge that connects sources to s
 - **Zero-Code Transformations**: Convert between BSON, JSON, and Avro formats automatically.
 - **Powerful Middleware**: Transform data in-flight using HTTP services or embedded Rhai scripts.
 - **Schema Validation**: Enforce data quality with Avro schema validation and filtering.
-- **High Performance**: Optimized batch processing with zero-copy BSON handling for MongoDB.
+- **High Performance**: Optimized batch processing with zero-copy handling.
 - **Simple Configuration**: Define your entire pipeline in a single TOML file.
 
 ## 📦 Installation
@@ -89,6 +89,7 @@ cp mstream-config.toml.example ./mstream-config.toml
 # update the config as needed
 make docker-up
 make db-init-rpl-set
+```
 
 ## 🗄️ Job Lifecycle Persistence
 

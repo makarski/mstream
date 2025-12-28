@@ -1,13 +1,13 @@
-use std::{collections::HashMap, mem::take, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
 use tokio::sync::RwLock;
 
 use crate::{
     config::{
-        Config, Service,
+        Service,
         service_config::{
             GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine,
         },
@@ -15,6 +15,7 @@ use crate::{
     http,
     middleware::udf::rhai::RhaiMiddleware,
     mongodb::db_client,
+    provision::registry::in_memory::InMemoryServiceStorage,
     pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
 };
 
@@ -22,7 +23,7 @@ type RhaiMiddlewareBuilder =
     Arc<dyn Fn(String) -> anyhow::Result<RhaiMiddleware> + Send + Sync + 'static>;
 
 pub struct ServiceRegistry {
-    config: Arc<RwLock<Config>>,
+    storage: in_memory::InMemoryServiceStorage,
     mongo_clients: RwLock<HashMap<String, Client>>,
     gcp_token_providers: RwLock<HashMap<String, ServiceAccountAuth>>,
     http_services: RwLock<HashMap<String, http::HttpService>>,
@@ -30,21 +31,24 @@ pub struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    pub async fn new(mut config: Config) -> anyhow::Result<ServiceRegistry> {
-        let services = take(&mut config.services);
-        let mut sr = ServiceRegistry {
-            config: Arc::new(RwLock::new(config.clone())),
+    /// Creates a new ServiceRegistry instance
+    /// This is a noop constructor, services need to be
+    /// initialized via `init` method
+    pub fn new(storage: InMemoryServiceStorage) -> ServiceRegistry {
+        Self {
+            storage,
             mongo_clients: RwLock::new(HashMap::new()),
             gcp_token_providers: RwLock::new(HashMap::new()),
             http_services: RwLock::new(HashMap::new()),
             udf_middlewares: RwLock::new(HashMap::new()),
-        };
-
-        for service in services {
-            sr.add_service(service.clone()).await?;
         }
+    }
 
-        Ok(sr)
+    pub async fn init(&mut self, seed_services: Vec<Service>) -> anyhow::Result<()> {
+        for service in seed_services {
+            self.register_service(service.clone()).await?;
+        }
+        Ok(())
     }
 
     async fn init_mongo(&self, service_cfg: &Service) -> anyhow::Result<()> {
@@ -111,10 +115,8 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    pub async fn add_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
-        if self.config.read().await.has_service(service_cfg.name()) {
-            bail!("service with name '{}' already exists", service_cfg.name());
-        }
+    pub async fn register_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
+        self.storage.save(service_cfg.clone()).await?;
 
         match &service_cfg {
             Service::MongoDb(_) => self.init_mongo(&service_cfg).await?,
@@ -124,28 +126,11 @@ impl ServiceRegistry {
             _ => {}
         }
 
-        self.config.write().await.services.push(service_cfg);
-
         Ok(())
     }
 
     pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
-        // we will drop config lock when the scope block ends
-        // this is done to avoid deadlocks when removing service dependencies
-        let config_removed = {
-            let mut config = self.config.write().await;
-            if let Some(pos) = config
-                .services
-                .iter()
-                .position(|s| s.name() == service_name)
-            {
-                config.services.remove(pos);
-                true
-            } else {
-                false
-            }
-        };
-
+        let config_removed = self.storage.remove(service_name).await?;
         if config_removed {
             self.mongo_clients.write().await.remove(service_name);
             self.gcp_token_providers.write().await.remove(service_name);
@@ -218,15 +203,69 @@ impl ServiceRegistry {
     }
 
     pub async fn service_definition(&self, service_name: &str) -> anyhow::Result<Service> {
-        self.config
-            .read()
-            .await
-            .service_by_name(service_name)
-            .cloned()
-            .ok_or_else(|| anyhow!("service config not found for: {}", service_name))
+        self.storage.get_by_name(service_name).await
     }
 
-    pub async fn all_service_definitions(&self) -> Vec<Service> {
-        self.config.read().await.services.clone()
+    pub async fn all_service_definitions(&self) -> anyhow::Result<Vec<Service>> {
+        self.storage.get_all().await
+    }
+}
+
+pub mod in_memory {
+    use crate::config::Service;
+
+    use anyhow::{anyhow, bail};
+
+    pub struct InMemoryServiceStorage {
+        active_services: Vec<Service>,
+    }
+
+    impl InMemoryServiceStorage {
+        pub fn new() -> Self {
+            Self {
+                active_services: vec![],
+            }
+        }
+
+        pub async fn save(&mut self, service: Service) -> anyhow::Result<()> {
+            if self.has_service(service.name()) {
+                bail!("service with name '{}' already exists", service.name());
+            }
+            self.active_services.push(service);
+            Ok(())
+        }
+
+        pub async fn remove(&mut self, service_name: &str) -> anyhow::Result<bool> {
+            let removed = if let Some(pos) = self
+                .active_services
+                .iter()
+                .position(|s| s.name() == service_name)
+            {
+                self.active_services.remove(pos);
+                true
+            } else {
+                false
+            };
+
+            Ok(removed)
+        }
+
+        pub async fn get_by_name(&self, service_name: &str) -> anyhow::Result<Service> {
+            self.service_by_name(service_name)
+                .cloned()
+                .ok_or_else(|| anyhow!("service config not found for: {}", service_name))
+        }
+
+        pub async fn get_all(&self) -> anyhow::Result<Vec<Service>> {
+            Ok(self.active_services.clone())
+        }
+
+        fn has_service(&self, name: &str) -> bool {
+            self.active_services.iter().any(|s| s.name() == name)
+        }
+
+        fn service_by_name(&self, name: &str) -> Option<&Service> {
+            self.active_services.iter().find(|s| s.name() == name)
+        }
     }
 }

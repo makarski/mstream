@@ -242,7 +242,7 @@ impl JobManager {
             .read()
             .await
             .all_service_definitions()
-            .await;
+            .await?;
 
         let mut statuses = Vec::with_capacity(all_conf_services.len());
 
@@ -264,7 +264,7 @@ impl JobManager {
         self.service_registry
             .write()
             .await
-            .add_service(service_cfg)
+            .register_service(service_cfg)
             .await?;
 
         info!("service '{}' created", service_name);

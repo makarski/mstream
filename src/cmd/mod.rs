@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::config::system::StartupState;
 use crate::job_manager::{JobManager, JobState, JobStateChange};
 use crate::provision::registry::ServiceRegistry;
+use crate::provision::registry::in_memory::InMemoryServiceStorage;
 use crate::provision::system::init_job_storage;
 
 /// Initializes and starts the event listeners for all the connectors
@@ -14,7 +15,11 @@ pub async fn listen_streams(
     exit_tx: UnboundedSender<JobStateChange>,
     cfg: Config,
 ) -> anyhow::Result<JobManager> {
-    let service_registry = ServiceRegistry::new(cfg.clone()).await?;
+    let service_storage = InMemoryServiceStorage::new();
+
+    let mut service_registry = ServiceRegistry::new(service_storage);
+    service_registry.init(cfg.services.clone()).await?;
+
     let service_registry = Arc::new(RwLock::new(service_registry));
 
     let (job_store, startup_state) = init_job_storage(&cfg, service_registry.clone()).await?;
