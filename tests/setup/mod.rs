@@ -10,6 +10,7 @@ use mstream::config::{
     Encoding, SchemaServiceConfigReference, Service, ServiceConfigReference,
     SourceServiceConfigReference,
 };
+use mstream::job_manager::JobStateChange;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tonic::service::Interceptor;
@@ -33,7 +34,7 @@ pub struct Employee {
     pub rating: f64,
 }
 
-pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<String>) {
+pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<JobStateChange>) {
     use mstream::cmd;
     use mstream::config::{Config, Connector};
 

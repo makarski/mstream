@@ -1,0 +1,28 @@
+[system.job_lifecycle]
+service_name = "mongo-analytics"
+resource = "job_lifecycle"
+startup_state = "keep"
+
+[[services]]
+provider = "kafka"
+name = "kafka-cloud"
+"bootstrap.servers" = "your-broker:9092"
+"security.protocol" = "SASL_SSL"
+"sasl.mechanism" = "PLAIN"
+"sasl.username" = "env:MSTREAM_KAFKA_USERNAME"
+"sasl.password" = "env:MSTREAM_KAFKA_PASSWORD"
+"group.id" = "analytics-consumer"
+
+[[services]]
+provider = "mongodb"
+name = "mongo-analytics"
+connection_string = "mongodb://analytics:analytics@mongo-analytics:27017/?authSource=admin"
+db_name = "analytics"
+
+[[connectors]]
+enabled = true
+name = "kafka_to_mongo_events"
+source = { service_name = "kafka-cloud", resource = "events-topic", input_encoding = "json", output_encoding = "json" }
+sinks  = [
+  { service_name = "mongo-analytics", resource = "events_processed", output_encoding = "bson" }
+]

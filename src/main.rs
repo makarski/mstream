@@ -1,5 +1,4 @@
 use log::info;
-use tokio::signal;
 
 const CONFIG_FILE: &str = "mstream-config.toml";
 
@@ -16,12 +15,7 @@ async fn main() -> anyhow::Result<()> {
 
     info!("starting mstream...");
     let app = mstream::run_app(CONFIG_FILE);
-    tokio::select! {
-        res = app => res?,
-        _ = signal::ctrl_c() => {
-            info!("received Ctrl+C, shutting down...");
-        }
-    }
+    app.await?;
 
     #[cfg(feature = "pprof")]
     profiler::flush(profiler_guard);

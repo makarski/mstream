@@ -1,0 +1,24 @@
+[system.job_lifecycle]
+service_name = "mongo-main"
+resource = "job_lifecycle"
+startup_state = "seed_from_file"
+
+[[services]]
+provider = "mongodb"
+name = "mongo-main"
+connection_string = "mongodb://admin:adminpassword@mongo:27017/?replicaSet=rs0"
+db_name = "etl"
+
+[[services]]
+provider = "kafka"
+name = "kafka-local"
+"bootstrap.servers" = "kafka:9092"
+"group.id" = "mstream-etl"
+
+[[connectors]]
+enabled = true
+name = "mongo_to_kafka_users"
+source = { service_name = "mongo-main", resource = "users", output_encoding = "bson" }
+sinks  = [
+  { service_name = "kafka-local", resource = "users-topic", output_encoding = "json" }
+]

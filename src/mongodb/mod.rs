@@ -101,7 +101,6 @@ impl EventSource for MongoDbChangeStreamListener {
                 continue;
             };
             let attributes = self.event_metadata(&event);
-            // self.resume_token = cs.resume_token();
 
             let bson_doc = match event.operation_type {
                 OperationType::Insert | OperationType::Update => {
@@ -137,6 +136,8 @@ impl EventSource for MongoDbChangeStreamListener {
                         is_framed_batch: false,
                     })
                     .await?;
+
+                // self.resume_token = cs.resume_token();
             }
         }
 
