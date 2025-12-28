@@ -54,7 +54,7 @@ async fn list_jobs(State(state): State<AppState>) -> (StatusCode, Json<Vec<JobMe
     }
 }
 
-/// DELETE /jobs/{id}
+/// POST /jobs/{id}/stop
 async fn stop_job(
     State(state): State<AppState>,
     Path(id): Path<String>,

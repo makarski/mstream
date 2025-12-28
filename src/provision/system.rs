@@ -29,18 +29,18 @@ pub async fn init_job_storage(
     let service_name = &lifecycle_cfg.service_name;
     let registry = sr.read().await;
     let service_definition = registry.service_definition(service_name).await?;
-    let starup_state = lifecycle_cfg.startup_state.clone();
+    let startup_state = lifecycle_cfg.startup_state.clone();
 
     match service_definition {
         Service::MongoDb(mongo_config) => {
-            let db_client = sr.read().await.mongodb_client(&service_name).await?;
+            let db_client = registry.mongodb_client(&service_name).await?;
             let db = db_client.database(&mongo_config.db_name);
             Ok((
                 Box::new(crate::job_manager::mongodb_store::MongoDBJobStore::new(
                     db,
                     lifecycle_cfg.resource.clone(),
                 )),
-                starup_state,
+                startup_state,
             ))
         }
         _ => anyhow::bail!(
