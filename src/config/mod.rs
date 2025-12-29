@@ -20,6 +20,10 @@ impl Config {
         let cfg = std::fs::read_to_string(path)?;
         Ok(toml::from_str(&cfg)?)
     }
+
+    pub fn service_by_name(&self, name: &str) -> Option<&Service> {
+        self.services.iter().find(|s| s.name() == name)
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
@@ -52,6 +56,7 @@ impl Service {
 #[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct Connector {
     #[serde(default = "default_connector_enabled")]
+    #[serde(skip_serializing)]
     pub enabled: bool,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

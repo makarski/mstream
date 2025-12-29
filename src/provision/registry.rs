@@ -15,7 +15,6 @@ use crate::{
     http,
     middleware::udf::rhai::RhaiMiddleware,
     mongodb::db_client,
-    provision::registry::in_memory::InMemoryServiceStorage,
     pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
 };
 
@@ -23,7 +22,7 @@ type RhaiMiddlewareBuilder =
     Arc<dyn Fn(String) -> anyhow::Result<RhaiMiddleware> + Send + Sync + 'static>;
 
 pub struct ServiceRegistry {
-    storage: in_memory::InMemoryServiceStorage,
+    storage: ServiceStorage,
     mongo_clients: RwLock<HashMap<String, Client>>,
     gcp_token_providers: RwLock<HashMap<String, ServiceAccountAuth>>,
     http_services: RwLock<HashMap<String, http::HttpService>>,
@@ -34,7 +33,7 @@ impl ServiceRegistry {
     /// Creates a new ServiceRegistry instance
     /// This is a noop constructor, services need to be
     /// initialized via `init` method
-    pub fn new(storage: InMemoryServiceStorage) -> ServiceRegistry {
+    pub fn new(storage: ServiceStorage) -> ServiceRegistry {
         Self {
             storage,
             mongo_clients: RwLock::new(HashMap::new()),
@@ -51,9 +50,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn init_mongo(&self, service_cfg: &Service) -> anyhow::Result<()> {
-        let cfg: &MongoDbConfig = service_cfg.try_into()?;
-
+    async fn init_mongo(&self, cfg: MongoDbConfig) -> anyhow::Result<()> {
         let client = db_client(cfg.name.to_owned(), &cfg.connection_string).await?;
         self.mongo_clients
             .write()
@@ -62,9 +59,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn init_pubsub(&self, service_cfg: &Service) -> anyhow::Result<()> {
-        let ps_cfg: &PubSubConfig = service_cfg.try_into()?;
-
+    async fn init_pubsub(&self, ps_cfg: PubSubConfig) -> anyhow::Result<()> {
         let tp = Self::create_gcp_token_provider(&ps_cfg.auth).await?;
         self.gcp_token_providers
             .write()
@@ -73,9 +68,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn init_http(&self, service_cfg: &Service) -> anyhow::Result<()> {
-        let cfg: &HttpConfig = service_cfg.try_into()?;
-
+    async fn init_http(&self, cfg: HttpConfig) -> anyhow::Result<()> {
         let http_service = http::HttpService::new(
             cfg.host.clone(),
             cfg.max_retries,
@@ -92,8 +85,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn init_udf(&self, service_cfg: &Service) -> anyhow::Result<()> {
-        let cfg: &UdfConfig = service_cfg.try_into()?;
+    async fn init_udf(&self, cfg: UdfConfig) -> anyhow::Result<()> {
         if !matches!(cfg.engine, UdfEngine::Rhai) {
             anyhow::bail!(
                 "unsupported udf engine: {:?} for service: {}",
@@ -118,11 +110,11 @@ impl ServiceRegistry {
     pub async fn register_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
         self.storage.save(service_cfg.clone()).await?;
 
-        match &service_cfg {
-            Service::MongoDb(_) => self.init_mongo(&service_cfg).await?,
-            Service::PubSub(_) => self.init_pubsub(&service_cfg).await?,
-            Service::Http(_) => self.init_http(&service_cfg).await?,
-            Service::Udf(_) => self.init_udf(&service_cfg).await?,
+        match service_cfg {
+            Service::MongoDb(mc) => self.init_mongo(mc).await?,
+            Service::PubSub(ps) => self.init_pubsub(ps).await?,
+            Service::Http(hc) => self.init_http(hc).await?,
+            Service::Udf(uc) => self.init_udf(uc).await?,
             _ => {}
         }
 
@@ -211,8 +203,19 @@ impl ServiceRegistry {
     }
 }
 
+/// Type alias for a boxed ServiceLifecycleStorage trait object
+pub type ServiceStorage = Box<dyn ServiceLifecycleStorage + Send + Sync>;
+
+#[async_trait::async_trait]
+pub trait ServiceLifecycleStorage {
+    async fn save(&mut self, service: Service) -> anyhow::Result<()>;
+    async fn remove(&mut self, service_name: &str) -> anyhow::Result<bool>;
+    async fn get_by_name(&self, service_name: &str) -> anyhow::Result<Service>;
+    async fn get_all(&self) -> anyhow::Result<Vec<Service>>;
+}
+
 pub mod in_memory {
-    use crate::config::Service;
+    use crate::{config::Service, provision::registry::ServiceLifecycleStorage};
 
     use anyhow::{anyhow, bail};
 
@@ -227,7 +230,18 @@ pub mod in_memory {
             }
         }
 
-        pub async fn save(&mut self, service: Service) -> anyhow::Result<()> {
+        fn has_service(&self, name: &str) -> bool {
+            self.active_services.iter().any(|s| s.name() == name)
+        }
+
+        fn service_by_name(&self, name: &str) -> Option<&Service> {
+            self.active_services.iter().find(|s| s.name() == name)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ServiceLifecycleStorage for InMemoryServiceStorage {
+        async fn save(&mut self, service: Service) -> anyhow::Result<()> {
             if self.has_service(service.name()) {
                 bail!("service with name '{}' already exists", service.name());
             }
@@ -235,7 +249,7 @@ pub mod in_memory {
             Ok(())
         }
 
-        pub async fn remove(&mut self, service_name: &str) -> anyhow::Result<bool> {
+        async fn remove(&mut self, service_name: &str) -> anyhow::Result<bool> {
             let removed = if let Some(pos) = self
                 .active_services
                 .iter()
@@ -250,22 +264,126 @@ pub mod in_memory {
             Ok(removed)
         }
 
-        pub async fn get_by_name(&self, service_name: &str) -> anyhow::Result<Service> {
+        async fn get_by_name(&self, service_name: &str) -> anyhow::Result<Service> {
             self.service_by_name(service_name)
                 .cloned()
                 .ok_or_else(|| anyhow!("service config not found for: {}", service_name))
         }
 
-        pub async fn get_all(&self) -> anyhow::Result<Vec<Service>> {
+        async fn get_all(&self) -> anyhow::Result<Vec<Service>> {
             Ok(self.active_services.clone())
         }
+    }
+}
 
-        fn has_service(&self, name: &str) -> bool {
-            self.active_services.iter().any(|s| s.name() == name)
+pub mod mongodb_storage {
+    use mongodb::{
+        Database,
+        bson::{self, DateTime, doc},
+    };
+
+    use crate::{
+        config::Service,
+        provision::{encryption::Encryptor, registry::ServiceLifecycleStorage},
+    };
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct EncryptedService {
+        name: String,
+        data: Vec<u8>,
+        nonce: Vec<u8>,
+        updated_at: Option<DateTime>,
+    }
+
+    pub struct MongoDbServiceStorage {
+        database: Database,
+        coll_name: String,
+        encryptor: Encryptor,
+    }
+
+    impl MongoDbServiceStorage {
+        pub fn new(database: Database, coll_name: &str, encryptor: Encryptor) -> Self {
+            Self {
+                database,
+                coll_name: coll_name.to_string(),
+                encryptor,
+            }
         }
 
-        fn service_by_name(&self, name: &str) -> Option<&Service> {
-            self.active_services.iter().find(|s| s.name() == name)
+        fn collection(&self) -> mongodb::Collection<EncryptedService> {
+            self.database.collection(&self.coll_name)
+        }
+
+        fn decrypt_service(&self, encrypted: &EncryptedService) -> anyhow::Result<Service> {
+            let plaintext = self.encryptor.decrypt(&encrypted.nonce, &encrypted.data)?;
+            let service: Service = serde_json::from_slice(&plaintext)?;
+            Ok(service)
+        }
+
+        fn encrypt_service(&mut self, service: &Service) -> anyhow::Result<EncryptedService> {
+            let b = serde_json::to_vec(service)?;
+            let encrypted = self.encryptor.encrypt(b.as_slice())?;
+
+            let encrypted = EncryptedService {
+                name: service.name().to_string(),
+                data: encrypted.data,
+                nonce: encrypted.nonce,
+                updated_at: Some(DateTime::now()),
+            };
+
+            Ok(encrypted)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ServiceLifecycleStorage for MongoDbServiceStorage {
+        async fn save(&mut self, service: Service) -> anyhow::Result<()> {
+            let encrypted = self.encrypt_service(&service)?;
+
+            let filter = doc! { "name": service.name() };
+            let update = doc! { "$set": bson::to_document(&encrypted)? };
+
+            self.collection()
+                .update_one(filter, update)
+                .upsert(true)
+                .await?;
+
+            Ok(())
+        }
+
+        async fn remove(&mut self, service_name: &str) -> anyhow::Result<bool> {
+            let filter = doc! { "name": service_name };
+            let is_removed = self
+                .collection()
+                .delete_one(filter)
+                .await
+                .map(|res| res.deleted_count > 0)?;
+
+            Ok(is_removed)
+        }
+
+        async fn get_by_name(&self, service_name: &str) -> anyhow::Result<Service> {
+            let filter = doc! { "name": service_name };
+            let encrypted =
+                self.collection().find_one(filter).await?.ok_or_else(|| {
+                    anyhow::anyhow!("service config not found for: {}", service_name)
+                })?;
+
+            let decrypted = self.decrypt_service(&encrypted)?;
+            Ok(decrypted)
+        }
+
+        async fn get_all(&self) -> anyhow::Result<Vec<Service>> {
+            let mut cursor = self.collection().find(doc! {}).await?;
+            let mut services = Vec::new();
+
+            while cursor.advance().await? {
+                let encrypted = cursor.deserialize_current()?;
+                let service = self.decrypt_service(&encrypted)?;
+                services.push(service);
+            }
+
+            Ok(services)
         }
     }
 }
