@@ -363,10 +363,10 @@ cargo test --test integration_test -- --ignored
 
 ### Additional Testing Resources
 
-For detailed testing documentation, see:
-- **[EMULATOR_TESTING.md](EMULATOR_TESTING.md)** - Complete guide to PubSub emulator setup and usage
-- **[MOCK.md](MOCK.md)** - Comprehensive mocking strategies and implementation options
-- **[TestSummary.md](TestSummary.md)** - Current test coverage analysis and recommendations
+For detailed testing documentation, see dir _documentation_:
+- **[EMULATOR_TESTING.md](documentation/EMULATOR_TESTING.md)** - Complete guide to PubSub emulator setup and usage
+- **[MOCK.md](documentation/MOCK.md)** - Comprehensive mocking strategies and implementation options
+- **[TEST_SUMMARY.md](documentation/TEST_SUMMARY.md)** - Current test coverage analysis and recommendations
 
 ### CI/CD Integration
 
@@ -392,4 +392,4 @@ Example GitHub Actions workflow for testing with emulator:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE-MIT) file for details.

@@ -2,10 +2,7 @@ use apache_avro::Schema as AvroSchema;
 use async_trait::async_trait;
 use mongo::MongoDbSchemaProvider;
 
-use crate::{
-    config::Encoding,
-    pubsub::{srvc::SchemaService, ServiceAccountAuth},
-};
+use crate::config::Encoding;
 pub mod encoding;
 pub mod mongo;
 
