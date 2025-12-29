@@ -16,10 +16,11 @@ async fn main() -> anyhow::Result<()> {
     info!("starting mstream...");
 
     // Parse command-line arguments for config file path
-    let config_path = std::env::args()
-        .skip(1)
+    let args: Vec<String> = std::env::args().collect();
+    let config_path = args
+        .iter()
         .position(|arg| arg == "--config")
-        .and_then(|pos| std::env::args().nth(pos + 2))
+        .and_then(|pos| args.get(pos + 1).cloned())
         .unwrap_or_else(|| CONFIG_FILE.to_string());
 
     let app = mstream::run_app(&config_path);
