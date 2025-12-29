@@ -1,0 +1,31 @@
+# MongoDB to MongoDB Streaming Example
+# This configuration demonstrates a simple data pipeline that streams
+# documents from one MongoDB collection to another with optional batching
+
+[logging]
+level = "info"
+
+[[services]]
+provider = "mongodb"
+name = "mongodb-local"
+connection_string = "mongodb://admin:adminpassword@localhost:27017/?authSource=admin&replicaSet=mstream_replica_set"
+db_name = "ecommerce"
+
+[[connectors]]
+enabled = true
+name = "orders-to-processed-orders"
+# Batch processing for better throughput (remove this line for real-time streaming)
+batch = { kind = "count", size = 100 }
+source = { service_name = "mongodb-local", resource = "orders", output_encoding = "bson" }
+sinks = [
+    { service_name = "mongodb-local", resource = "processed_orders", output_encoding = "bson" }
+]
+
+# Alternative: Real-time streaming without batching
+# [[connectors]]
+# enabled = true
+# name = "orders-to-processed-orders-realtime"
+# source = { service_name = "mongodb-local", resource = "orders", output_encoding = "bson" }
+# sinks = [
+#     { service_name = "mongodb-local", resource = "processed_orders" }
+# ]

@@ -5,4 +5,6 @@ src/pubsub/api/*
 .env
 mstream-config.toml
 mstream-config.toml.bak
+# Allow config files in examples
+!examples/**/mstream-config.toml
 .env.test
