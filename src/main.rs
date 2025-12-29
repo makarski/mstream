@@ -14,7 +14,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     info!("starting mstream...");
-    let app = mstream::run_app(CONFIG_FILE);
+    
+    // Parse command-line arguments for config file path
+    let config_path = std::env::args()
+        .skip(1)
+        .position(|arg| arg == "--config")
+        .and_then(|pos| std::env::args().nth(pos + 2))
+        .unwrap_or_else(|| CONFIG_FILE.to_string());
+    
+    let app = mstream::run_app(&config_path);
     app.await?;
 
     #[cfg(feature = "pprof")]
