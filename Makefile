@@ -39,7 +39,7 @@ run-docker: ## Runs the docker image without mongo db
 
 .PHONY: run-debug
 run-debug: ## Runs the server in debug mode
-	RUST_LOG=debug cargo run
+	RUST_LOG=debug cargo run -- $(ARGS)
 
 .PHONY: run-profile
 run-profile: ## Runs the server with profiling enabled
