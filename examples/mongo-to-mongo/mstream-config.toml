@@ -1,6 +1,6 @@
-# MongoDB to MongoDB Streaming Example
-# This configuration demonstrates a simple data pipeline that streams
-# documents from one MongoDB collection to another with optional batching
+# MongoDB to MongoDB Streaming Example with Data Anonymization
+# This configuration demonstrates a data pipeline that streams documents
+# from one MongoDB collection to another while anonymizing customer data
 
 [logging]
 level = "info"
@@ -11,21 +11,23 @@ name = "mongodb-local"
 connection_string = "mongodb://admin:adminpassword@localhost:27017/?authSource=admin&replicaSet=mstream_replica_set"
 db_name = "ecommerce"
 
+# UDF service for running Rhai scripts
+[[services]]
+provider = "udf"
+name = "anonymizer"
+engine = { kind = "rhai" }
+script_path = "./examples/mongo-to-mongo/scripts"
+
 [[connectors]]
 enabled = true
 name = "orders-to-processed-orders"
-# Batch processing for better throughput (remove this line for real-time streaming)
+# Batch processing for better throughput
 batch = { kind = "count", size = 100 }
 source = { service_name = "mongodb-local", resource = "orders", output_encoding = "bson" }
+# Apply anonymization middleware before writing to destination
+middlewares = [
+    { service_name = "anonymizer", resource = "anonymize_orders.rhai", input_encoding = "bson", output_encoding = "bson" }
+]
 sinks = [
     { service_name = "mongodb-local", resource = "processed_orders", output_encoding = "bson" }
 ]
-
-# Alternative: Real-time streaming without batching
-# [[connectors]]
-# enabled = true
-# name = "orders-to-processed-orders-realtime"
-# source = { service_name = "mongodb-local", resource = "orders", output_encoding = "bson" }
-# sinks = [
-#     { service_name = "mongodb-local", resource = "processed_orders" }
-# ]
