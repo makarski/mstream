@@ -217,7 +217,7 @@ pub trait ServiceLifecycleStorage {
 pub mod in_memory {
     use crate::{config::Service, provision::registry::ServiceLifecycleStorage};
 
-    use anyhow::{anyhow, bail};
+    use anyhow::anyhow;
 
     pub struct InMemoryServiceStorage {
         active_services: Vec<Service>,
@@ -230,10 +230,6 @@ pub mod in_memory {
             }
         }
 
-        fn has_service(&self, name: &str) -> bool {
-            self.active_services.iter().any(|s| s.name() == name)
-        }
-
         fn service_by_name(&self, name: &str) -> Option<&Service> {
             self.active_services.iter().find(|s| s.name() == name)
         }
@@ -242,10 +238,16 @@ pub mod in_memory {
     #[async_trait::async_trait]
     impl ServiceLifecycleStorage for InMemoryServiceStorage {
         async fn save(&mut self, service: Service) -> anyhow::Result<()> {
-            if self.has_service(service.name()) {
-                bail!("service with name '{}' already exists", service.name());
+            // overwrite existing service config if present
+            if let Some(existing) = self
+                .active_services
+                .iter_mut()
+                .find(|s| s.name() == service.name())
+            {
+                *existing = service;
+            } else {
+                self.active_services.push(service);
             }
-            self.active_services.push(service);
             Ok(())
         }
 

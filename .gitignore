@@ -6,3 +6,4 @@ src/pubsub/api/*
 mstream-config.toml
 mstream-config.toml.bak
 .env.test
+coverage/

@@ -56,7 +56,8 @@ impl Encryptor {
 
 pub(crate) async fn get_encryption_key(key_path: Option<&String>) -> anyhow::Result<Vec<u8>> {
     if let Ok(enc_key) = env::var(ENC_KEY_VAR_NAME) {
-        return hex::decode(&enc_key).context("failed to decode encryption key from hex");
+        let pbuf = PathBuf::from(format!("env:{}", ENC_KEY_VAR_NAME));
+        return key_hex_decode(&enc_key, pbuf.as_path());
     }
 
     let path_buf = determine_key_path(key_path);
@@ -83,11 +84,24 @@ fn determine_key_path(key_path: Option<&String>) -> PathBuf {
 }
 
 async fn encryption_key_from_path(fs_path: &Path) -> anyhow::Result<Vec<u8>> {
-    let key_hex = fs::read_to_string(fs_path)
-        .await
-        .context("failed to read encryption key from file")?;
+    let key_str = fs::read_to_string(fs_path).await.with_context(|| {
+        format!(
+            "failed to read encryption key from file: {}",
+            fs_path.display()
+        )
+    })?;
 
-    let key_bytes = hex::decode(&key_hex).context("failed to decode encryption key from hex")?;
+    key_hex_decode(&key_str, fs_path)
+}
+
+fn key_hex_decode(key: &str, fs_path: &Path) -> anyhow::Result<Vec<u8>> {
+    let key = key.trim();
+    let key_bytes = hex::decode(&key).with_context(|| {
+        format!(
+            "failed to decode encryption key from hex: {}",
+            fs_path.display()
+        )
+    })?;
 
     if key_bytes.len() != 32 {
         anyhow::bail!("invalid encryption key length: expected 32 bytes for AES-256");
@@ -128,4 +142,147 @@ fn ensure_encryption_key_permissions(fs_path: &Path) -> anyhow::Result<()> {
             .context("failed to set encryption key file permissions")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aes_gcm::KeyInit;
+    use tempfile::tempdir;
+    use tokio::fs;
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let key = Aes256Gcm::generate_key(OsRng);
+        let mut encryptor = Encryptor::new(key.as_slice()).expect("cipher");
+        let plaintext = b"super secret payload";
+
+        let encrypted = encryptor.encrypt(plaintext).expect("encrypt");
+        assert_ne!(encrypted.data, plaintext);
+
+        let decrypted = encryptor
+            .decrypt(&encrypted.nonce, &encrypted.data)
+            .expect("decrypt");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn decrypt_with_wrong_key_fails() {
+        let key_a = Aes256Gcm::generate_key(OsRng);
+        let mut encryptor_a = Encryptor::new(key_a.as_slice()).unwrap();
+
+        let key_b = Aes256Gcm::generate_key(OsRng);
+        let encryptor_b = Encryptor::new(key_b.as_slice()).unwrap();
+
+        let encrypted = encryptor_a.encrypt(b"data").unwrap();
+        assert!(
+            encryptor_b
+                .decrypt(&encrypted.nonce, &encrypted.data)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn key_loaded_from_env_var() {
+        let key = hex::encode(Aes256Gcm::generate_key(OsRng));
+        unsafe {
+            env::set_var(ENC_KEY_VAR_NAME, &key);
+        }
+
+        let loaded = get_encryption_key(None).await.expect("load key");
+        assert_eq!(loaded, hex::decode(key).unwrap());
+
+        unsafe {
+            env::remove_var(ENC_KEY_VAR_NAME);
+        }
+    }
+
+    #[tokio::test]
+    async fn generates_new_key_file_when_missing() {
+        unsafe {
+            env::remove_var(ENC_KEY_VAR_NAME);
+        }
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("enc.key");
+        let file_str = file_path.to_string_lossy().to_string();
+
+        assert!(!file_path.exists());
+        let key = get_encryption_key(Some(&file_str)).await.expect("generate");
+        assert_eq!(key.len(), 32);
+        assert!(file_path.exists());
+
+        let stored = fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(hex::decode(stored.trim()).unwrap(), key);
+    }
+
+    #[tokio::test]
+    async fn loads_existing_key_file() {
+        unsafe {
+            env::remove_var(ENC_KEY_VAR_NAME);
+        }
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("existing.key");
+        let key = Aes256Gcm::generate_key(OsRng);
+        fs::write(&file_path, hex::encode(key.as_slice()))
+            .await
+            .unwrap();
+
+        let key_str = file_path.to_string_lossy().to_string();
+        let loaded = get_encryption_key(Some(&key_str)).await.unwrap();
+        assert_eq!(loaded, key.as_slice());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn generated_key_file_has_strict_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        unsafe {
+            env::remove_var(ENC_KEY_VAR_NAME);
+        }
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("perm.key");
+        let key_str = file_path.to_string_lossy().to_string();
+
+        get_encryption_key(Some(&key_str)).await.unwrap();
+
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn determine_key_path_uses_default_when_none() {
+        let path = determine_key_path(None);
+        assert_eq!(path, PathBuf::from(DEFAULT_ENC_KEY_PATH));
+    }
+
+    #[test]
+    fn determine_key_path_uses_provided_path() {
+        let provided = "custom.key".to_string();
+        let path = determine_key_path(Some(&provided));
+        assert_eq!(path, PathBuf::from("custom.key"));
+    }
+
+    #[tokio::test]
+    async fn fails_on_invalid_key_length() {
+        unsafe {
+            env::remove_var(ENC_KEY_VAR_NAME);
+        }
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("short.key");
+
+        // Write a key that is too short (e.g., 16 bytes instead of 32)
+        fs::write(&file_path, hex::encode([0u8; 16])).await.unwrap();
+
+        let key_str = file_path.to_string_lossy().to_string();
+        let result = get_encryption_key(Some(&key_str)).await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid encryption key length")
+        );
+    }
 }
