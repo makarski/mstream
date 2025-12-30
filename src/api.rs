@@ -2,24 +2,31 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::Response;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
+use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use crate::config::{Connector, Service};
 use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
+use crate::mcp;
 
 #[derive(Clone)]
 pub struct AppState {
     job_manager: Arc<Mutex<JobManager>>,
+    mcp_state: mcp::http::McpState,
 }
 
 impl AppState {
     pub fn new(jb: Arc<Mutex<JobManager>>) -> Self {
-        Self { job_manager: jb }
+        Self { 
+            job_manager: jb.clone(),
+            mcp_state: mcp::http::McpState::new(jb),
+        }
     }
 }
 
@@ -33,6 +40,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}", get(get_one_service))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
+        .route("/mcp", post(handle_mcp))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -41,6 +49,14 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// POST /mcp
+async fn handle_mcp(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> Response {
+    mcp::http::handle_mcp_request(&state.mcp_state, payload).await
 }
 
 /// GET /jobs

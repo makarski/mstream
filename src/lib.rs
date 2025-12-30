@@ -13,6 +13,7 @@ use crate::{api::AppState, job_manager::JobStateChange};
 mod encoding;
 mod http;
 mod kafka;
+mod mcp;
 mod mongodb;
 mod sink;
 

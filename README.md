@@ -335,6 +335,50 @@ The `schema_id` field is optional in most cases and follows these rules:
 | Avro | JSON | Deserializes Avro to JSON |
 | Avro | BSON | Converts Avro records to BSON documents |
 
+## 🤖 MCP Integration
+
+mstream includes built-in support for the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), allowing AI assistants like Claude, ChatGPT, and other MCP clients to interact with your mstream jobs.
+
+### MCP Endpoint
+
+The MCP server is always available at `POST /mcp` on the API server (default port 8787).
+
+### Available Tools
+
+- **list_jobs**: List all configured mstream jobs with their current status, metadata, and configuration
+
+### Example Usage
+
+**Initialize the connection:**
+```bash
+curl -X POST http://localhost:8787/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}'
+```
+
+**List available tools:**
+```bash
+curl -X POST http://localhost:8787/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}'
+```
+
+**Call the list_jobs tool:**
+```bash
+curl -X POST http://localhost:8787/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_jobs", "arguments": {}}}'
+```
+
+### Using with AI Assistants
+
+Configure your AI assistant (LibreChat, VSCode Copilot, etc.) to connect to:
+```
+http://localhost:8787/mcp
+```
+
+The assistant will be able to query and monitor your mstream jobs directly.
+
 ### Development Commands
 
 ```bash
