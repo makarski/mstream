@@ -1,13 +1,12 @@
-/// HTTP handler for MCP protocol
-/// 
-/// Provides a simple HTTP POST endpoint for MCP JSON-RPC requests
-
-use std::sync::Arc;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Json as AxumJson, Response},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+/// HTTP handler for MCP protocol
+///
+/// Provides a simple HTTP POST endpoint for MCP JSON-RPC requests
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
@@ -29,21 +28,18 @@ impl McpState {
 }
 
 /// Handle MCP JSON-RPC requests via HTTP POST
-/// 
+///
 /// Implements basic MCP protocol methods:
 /// - initialize: Server initialization
 /// - tools/list: List available tools
 /// - tools/call: Execute a tool
-pub async fn handle_mcp_request(
-    state: &McpState,
-    payload: Value,
-) -> Response {
+pub async fn handle_mcp_request(state: &McpState, payload: Value) -> Response {
     debug!("Received MCP request: {:?}", payload);
-    
+
     // Parse JSON-RPC request
     let method = payload.get("method").and_then(|m| m.as_str());
     let id = payload.get("id").cloned();
-    
+
     let result = match method {
         Some("initialize") => {
             debug!("Handling initialize request");
@@ -73,7 +69,7 @@ pub async fn handle_mcp_request(
             }))
         }
     };
-    
+
     let response = match result {
         Ok(result) => json!({
             "jsonrpc": "2.0",
@@ -86,7 +82,7 @@ pub async fn handle_mcp_request(
             "error": error
         }),
     };
-    
+
     (StatusCode::OK, AxumJson(response)).into_response()
 }
 
@@ -123,11 +119,13 @@ async fn handle_tools_call(state: &McpState, params: Option<&Value>) -> Result<V
     let tool_name = params
         .and_then(|p| p.get("name"))
         .and_then(|n| n.as_str())
-        .ok_or_else(|| json!({
-            "code": -32602,
-            "message": "Invalid params: missing tool name"
-        }))?;
-    
+        .ok_or_else(|| {
+            json!({
+                "code": -32602,
+                "message": "Invalid params: missing tool name"
+            })
+        })?;
+
     match tool_name {
         "list_jobs" => {
             let jm = state.mcp_server.job_manager().lock().await;
@@ -140,7 +138,7 @@ async fn handle_tools_call(state: &McpState, params: Option<&Value>) -> Result<V
                             "message": format!("Internal error: {}", e)
                         })
                     })?;
-                    
+
                     Ok(json!({
                         "content": [
                             {

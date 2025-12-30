@@ -23,7 +23,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(jb: Arc<Mutex<JobManager>>) -> Self {
-        Self { 
+        Self {
             job_manager: jb.clone(),
             mcp_state: mcp::http::McpState::new(jb),
         }
@@ -52,10 +52,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// POST /mcp
-async fn handle_mcp(
-    State(state): State<AppState>,
-    Json(payload): Json<Value>,
-) -> Response {
+async fn handle_mcp(State(state): State<AppState>, Json(payload): Json<Value>) -> Response {
     mcp::http::handle_mcp_request(&state.mcp_state, payload).await
 }
 
