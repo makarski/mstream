@@ -473,3 +473,439 @@ pub mod mongodb_storage {
         }
     }
 }
+
+#[cfg(test)]
+mod service_registry_tests {
+    use super::{ServiceRegistry, ServiceStorage, in_memory::InMemoryServiceStorage};
+    use crate::config::{
+        Service,
+        service_config::{HttpConfig, UdfConfig, UdfEngine, UdfScript},
+    };
+    use crate::provision::registry::ServiceLifecycleStorage;
+    use tempfile::tempdir;
+
+    fn registry_with_in_memory_storage() -> ServiceRegistry {
+        let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
+        ServiceRegistry::new(storage)
+    }
+
+    #[tokio::test]
+    async fn register_http_service_initializes_client_and_persists_definition() {
+        let mut registry = registry_with_in_memory_storage();
+
+        let http_service = Service::Http(HttpConfig {
+            name: "http-alpha".to_string(),
+            host: "http://example.com".to_string(),
+            max_retries: Some(2),
+            base_backoff_ms: Some(10),
+            connection_timeout_sec: Some(5),
+            timeout_sec: Some(20),
+            tcp_keepalive_sec: Some(30),
+        });
+
+        registry
+            .register_service(http_service.clone())
+            .await
+            .expect("failed to register service");
+
+        assert!(
+            registry.http_client("http-alpha").await.is_ok(),
+            "http client should be initialized"
+        );
+
+        let definition = registry
+            .service_definition("http-alpha")
+            .await
+            .expect("service definition should exist");
+        assert_eq!("http-alpha", definition.name());
+    }
+
+    #[tokio::test]
+    async fn remove_service_clears_cached_clients_and_storage() {
+        let mut registry = registry_with_in_memory_storage();
+
+        let http_service = Service::Http(HttpConfig {
+            name: "http-remove".to_string(),
+            host: "http://example.com".to_string(),
+            max_retries: None,
+            base_backoff_ms: None,
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        });
+
+        registry
+            .register_service(http_service)
+            .await
+            .expect("failed to register service");
+
+        registry
+            .remove_service("http-remove")
+            .await
+            .expect("remove should succeed");
+
+        assert!(
+            registry.http_client("http-remove").await.is_err(),
+            "http client should be removed"
+        );
+        assert!(
+            registry.service_definition("http-remove").await.is_err(),
+            "definition should be removed from storage"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_udf_service_writes_scripts_and_rehydrates_sources() {
+        let mut registry = registry_with_in_memory_storage();
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let script_path = temp_dir.path().join("scripts");
+        let script_path_str = script_path.to_string_lossy().to_string();
+
+        let udf_service = Service::Udf(UdfConfig {
+            name: "udf-alpha".to_string(),
+            script_path: script_path_str,
+            engine: UdfEngine::Rhai,
+            sources: Some(vec![UdfScript {
+                filename: "script.rhai".to_string(),
+                content: "fn transform(input, attrs) { result(input, attrs) }".to_string(),
+            }]),
+        });
+
+        registry
+            .register_service(udf_service)
+            .await
+            .expect("failed to register udf service");
+
+        let definition = registry
+            .service_definition("udf-alpha")
+            .await
+            .expect("udf definition should exist");
+        match definition {
+            Service::Udf(mut cfg) => {
+                let scripts = cfg.sources.take().expect("sources should be rehydrated");
+                assert_eq!(1, scripts.len());
+                assert_eq!("script.rhai", scripts[0].filename);
+                assert_eq!(
+                    "fn transform(input, attrs) { result(input, attrs) }",
+                    scripts[0].content
+                );
+            }
+            other => panic!("expected udf service, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn register_udf_service_rejects_unsupported_engine() {
+        let mut registry = registry_with_in_memory_storage();
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let udf_service = Service::Udf(UdfConfig {
+            name: "udf-unsupported".to_string(),
+            script_path: temp_dir.path().to_string_lossy().to_string(),
+            engine: UdfEngine::Undefined,
+            sources: Some(vec![UdfScript {
+                filename: "script.rhai".to_string(),
+                content: "fn noop() {}".to_string(),
+            }]),
+        });
+
+        let err = registry.register_service(udf_service).await.unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported udf engine"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn register_udf_service_rejects_invalid_filename() {
+        let mut registry = registry_with_in_memory_storage();
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let script_path = temp_dir.path().join("scripts");
+
+        let udf_service = Service::Udf(UdfConfig {
+            name: "udf-invalid-filename".to_string(),
+            script_path: script_path.to_string_lossy().to_string(),
+            engine: UdfEngine::Rhai,
+            sources: Some(vec![UdfScript {
+                filename: "../script.rhai".to_string(),
+                content: "fn noop() {}".to_string(),
+            }]),
+        });
+
+        let err = registry.register_service(udf_service).await.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid filename"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn register_udf_service_rejects_empty_directory_without_sources() {
+        let mut registry = registry_with_in_memory_storage();
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let script_path = temp_dir.path().join("empty");
+
+        let udf_service = Service::Udf(UdfConfig {
+            name: "udf-empty".to_string(),
+            script_path: script_path.to_string_lossy().to_string(),
+            engine: UdfEngine::Rhai,
+            sources: None,
+        });
+
+        let err = registry.register_service(udf_service).await.unwrap_err();
+        assert!(
+            err.to_string().contains("no udf sources provided"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn service_definition_rehydrates_scripts_after_cold_start() {
+        let temp_dir = tempdir().expect("failed to create temp dir");
+        let scripts_dir = temp_dir.path().join("scripts");
+        tokio::fs::create_dir_all(&scripts_dir)
+            .await
+            .expect("failed to create scripts dir");
+        tokio::fs::write(scripts_dir.join("existing.rhai"), "fn cold() { 1 }")
+            .await
+            .expect("failed to write script");
+
+        let mut storage_impl = InMemoryServiceStorage::new();
+        let service = Service::Udf(UdfConfig {
+            name: "udf-cold".to_string(),
+            script_path: scripts_dir.to_string_lossy().to_string(),
+            engine: UdfEngine::Rhai,
+            sources: None,
+        });
+        storage_impl
+            .save(service)
+            .await
+            .expect("failed to persist service");
+
+        let storage: ServiceStorage = Box::new(storage_impl);
+        let registry = ServiceRegistry::new(storage);
+
+        let definition = registry
+            .service_definition("udf-cold")
+            .await
+            .expect("udf definition should exist after cold start");
+        match definition {
+            Service::Udf(cfg) => {
+                let scripts = cfg.sources.expect("sources should be rehydrated");
+                assert_eq!(1, scripts.len());
+                assert_eq!("existing.rhai", scripts[0].filename);
+                assert_eq!("fn cold() { 1 }", scripts[0].content);
+            }
+            other => panic!("expected udf service, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod inmemory_service_storage_tests {
+    use crate::{
+        config::{
+            Service,
+            service_config::{HttpConfig, UdfConfig, UdfEngine, UdfScript},
+        },
+        provision::registry::{ServiceLifecycleStorage, in_memory::InMemoryServiceStorage},
+    };
+
+    #[tokio::test]
+    async fn save_overwrites_existing_service() {
+        let mut storage = InMemoryServiceStorage::new();
+
+        let original = Service::Http(HttpConfig {
+            name: "alpha".to_string(),
+            host: "http://one".to_string(),
+            max_retries: Some(1),
+            base_backoff_ms: None,
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        });
+
+        let updated = Service::Http(HttpConfig {
+            name: "alpha".to_string(),
+            host: "http://two".to_string(),
+            max_retries: Some(3),
+            base_backoff_ms: Some(25),
+            connection_timeout_sec: Some(5),
+            timeout_sec: Some(30),
+            tcp_keepalive_sec: Some(15),
+        });
+
+        storage.save(original).await.unwrap();
+        storage.save(updated).await.unwrap();
+
+        let fetched = storage.get_by_name("alpha").await.unwrap();
+        match fetched {
+            Service::Http(cfg) => {
+                assert_eq!("http://two", cfg.host);
+                assert_eq!(Some(3), cfg.max_retries);
+                assert_eq!(Some(25), cfg.base_backoff_ms);
+            }
+            other => panic!("expected http service, got {:?}", other),
+        }
+
+        let services = storage.get_all().await.unwrap();
+        assert_eq!(1, services.len());
+    }
+
+    #[tokio::test]
+    async fn save_strips_udf_sources_before_persisting() {
+        let mut storage = InMemoryServiceStorage::new();
+
+        let service = Service::Udf(UdfConfig {
+            name: "udf-service".to_string(),
+            script_path: "/tmp/udf".to_string(),
+            engine: UdfEngine::Rhai,
+            sources: Some(vec![UdfScript {
+                filename: "script.rhai".to_string(),
+                content: "fn run() {}".to_string(),
+            }]),
+        });
+
+        storage.save(service.clone()).await.unwrap();
+
+        let saved = storage.get_by_name("udf-service").await.unwrap();
+        match saved {
+            Service::Udf(cfg) => {
+                assert!(cfg.sources.is_none());
+                assert_eq!("/tmp/udf", cfg.script_path);
+            }
+            other => panic!("expected udf service, got {:?}", other),
+        }
+
+        if let Service::Udf(cfg) = service {
+            assert!(cfg.sources.is_some());
+        } else {
+            panic!("expected udf service");
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_returns_true_and_deletes_service() {
+        let mut storage = InMemoryServiceStorage::new();
+
+        let service = Service::Http(HttpConfig {
+            name: "alpha".to_string(),
+            host: "http://one".to_string(),
+            max_retries: None,
+            base_backoff_ms: None,
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        });
+
+        storage.save(service).await.unwrap();
+
+        let removed = storage.remove("alpha").await.unwrap();
+        assert!(removed);
+        assert!(storage.get_by_name("alpha").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn remove_returns_false_when_service_missing() {
+        let mut storage = InMemoryServiceStorage::new();
+
+        let service = Service::Http(HttpConfig {
+            name: "alpha".to_string(),
+            host: "http://one".to_string(),
+            max_retries: None,
+            base_backoff_ms: None,
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        });
+
+        storage.save(service).await.unwrap();
+
+        let removed = storage.remove("beta").await.unwrap();
+        assert!(!removed);
+        assert!(storage.get_by_name("alpha").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn get_by_name_returns_cloned_service() {
+        let mut storage = InMemoryServiceStorage::new();
+
+        let service = Service::Http(HttpConfig {
+            name: "alpha".to_string(),
+            host: "http://one".to_string(),
+            max_retries: Some(2),
+            base_backoff_ms: Some(10),
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        });
+
+        storage.save(service).await.unwrap();
+
+        let fetched = storage.get_by_name("alpha").await.unwrap();
+        match fetched {
+            Service::Http(cfg) => {
+                assert_eq!("http://one", cfg.host);
+                assert_eq!(Some(2), cfg.max_retries);
+                assert_eq!(Some(10), cfg.base_backoff_ms);
+            }
+            other => panic!("expected http service, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_by_name_returns_error_when_missing() {
+        let storage = InMemoryServiceStorage::new();
+
+        let result = storage.get_by_name("missing").await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn get_all_returns_all_services() {
+        let mut storage = InMemoryServiceStorage::new();
+
+        let http = Service::Http(HttpConfig {
+            name: "alpha".to_string(),
+            host: "http://one".to_string(),
+            max_retries: None,
+            base_backoff_ms: None,
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        });
+
+        let udf = Service::Udf(UdfConfig {
+            name: "udf-service".to_string(),
+            script_path: "/tmp/udf".to_string(),
+            engine: UdfEngine::Rhai,
+            sources: Some(vec![UdfScript {
+                filename: "script.rhai".to_string(),
+                content: "fn run() {}".to_string(),
+            }]),
+        });
+
+        storage.save(http).await.unwrap();
+        storage.save(udf).await.unwrap();
+
+        let mut names: Vec<_> = storage
+            .get_all()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|service| {
+                let name = service.name().to_string();
+                if let Service::Udf(cfg) = &service {
+                    assert!(cfg.sources.is_none());
+                }
+                name
+            })
+            .collect();
+
+        names.sort();
+        assert_eq!(vec!["alpha".to_string(), "udf-service".to_string()], names);
+    }
+}
