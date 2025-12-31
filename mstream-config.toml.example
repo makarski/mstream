@@ -49,10 +49,20 @@ max_retries = 3
 connection_timeout_sec = 15
 timeout_sec = 20
 
+[system]
+# Optional: location of the AES-256 key used to encrypt persisted services
+encryption_key_path = "./mstream-services.key"
+
+# Optional: remove this block to fall back to the in-memory job store
 [system.job_lifecycle]
 service_name = "mongodb-source"
 resource = "job-lifecycle"
 startup_state = "seed_from_file"
+
+# Optional: remove this block to keep services in memory (reloaded from config on restart)
+[system.service_lifecycle]
+service_name = "mongodb-source"
+resource = "mstream-services"
 
 # Connector Configurations
 [[connectors]]
