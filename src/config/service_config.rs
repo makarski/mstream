@@ -34,7 +34,7 @@ pub struct UdfScript {
 pub enum UdfEngine {
     #[serde(rename = "rhai")]
     Rhai,
-    #[cfg(any(test, feature = "test_fixtures"))]
+    #[cfg(test)]
     #[serde(rename = "undefined")]
     Undefined,
 }
