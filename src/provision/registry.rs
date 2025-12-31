@@ -1,15 +1,15 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ffi::OsStr, path::Path, sync::Arc};
 
 use anyhow::{Context, anyhow};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
-use tokio::sync::RwLock;
+use tokio::fs;
 
 use crate::{
     config::{
         Service,
         service_config::{
-            GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine,
+            GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine, UdfScript,
         },
     },
     http,
@@ -23,10 +23,10 @@ type RhaiMiddlewareBuilder =
 
 pub struct ServiceRegistry {
     storage: ServiceStorage,
-    mongo_clients: RwLock<HashMap<String, Client>>,
-    gcp_token_providers: RwLock<HashMap<String, ServiceAccountAuth>>,
-    http_services: RwLock<HashMap<String, http::HttpService>>,
-    udf_middlewares: RwLock<HashMap<String, RhaiMiddlewareBuilder>>,
+    mongo_clients: HashMap<String, Client>,
+    gcp_token_providers: HashMap<String, ServiceAccountAuth>,
+    http_services: HashMap<String, http::HttpService>,
+    udf_middlewares: HashMap<String, RhaiMiddlewareBuilder>,
 }
 
 impl ServiceRegistry {
@@ -36,10 +36,10 @@ impl ServiceRegistry {
     pub fn new(storage: ServiceStorage) -> ServiceRegistry {
         Self {
             storage,
-            mongo_clients: RwLock::new(HashMap::new()),
-            gcp_token_providers: RwLock::new(HashMap::new()),
-            http_services: RwLock::new(HashMap::new()),
-            udf_middlewares: RwLock::new(HashMap::new()),
+            mongo_clients: HashMap::new(),
+            gcp_token_providers: HashMap::new(),
+            http_services: HashMap::new(),
+            udf_middlewares: HashMap::new(),
         }
     }
 
@@ -50,25 +50,19 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn init_mongo(&self, cfg: MongoDbConfig) -> anyhow::Result<()> {
+    async fn init_mongo(&mut self, cfg: MongoDbConfig) -> anyhow::Result<()> {
         let client = db_client(cfg.name.to_owned(), &cfg.connection_string).await?;
-        self.mongo_clients
-            .write()
-            .await
-            .insert(cfg.name.clone(), client);
+        self.mongo_clients.insert(cfg.name.clone(), client);
         Ok(())
     }
 
-    async fn init_pubsub(&self, ps_cfg: PubSubConfig) -> anyhow::Result<()> {
+    async fn init_pubsub(&mut self, ps_cfg: PubSubConfig) -> anyhow::Result<()> {
         let tp = Self::create_gcp_token_provider(&ps_cfg.auth).await?;
-        self.gcp_token_providers
-            .write()
-            .await
-            .insert(ps_cfg.name.clone(), tp);
+        self.gcp_token_providers.insert(ps_cfg.name.clone(), tp);
         Ok(())
     }
 
-    async fn init_http(&self, cfg: HttpConfig) -> anyhow::Result<()> {
+    async fn init_http(&mut self, cfg: HttpConfig) -> anyhow::Result<()> {
         let http_service = http::HttpService::new(
             cfg.host.clone(),
             cfg.max_retries,
@@ -78,14 +72,11 @@ impl ServiceRegistry {
             cfg.tcp_keepalive_sec,
         )
         .with_context(|| anyhow!("failed to initialize http service for: {}", cfg.name))?;
-        self.http_services
-            .write()
-            .await
-            .insert(cfg.name.clone(), http_service);
+        self.http_services.insert(cfg.name.clone(), http_service);
         Ok(())
     }
 
-    async fn init_udf(&self, cfg: UdfConfig) -> anyhow::Result<()> {
+    async fn init_udf(&mut self, cfg: UdfConfig) -> anyhow::Result<()> {
         if !matches!(cfg.engine, UdfEngine::Rhai) {
             anyhow::bail!(
                 "unsupported udf engine: {:?} for service: {}",
@@ -94,23 +85,20 @@ impl ServiceRegistry {
             );
         }
 
+        create_udf_script(&cfg).await?;
+
         let script_path = cfg.script_path.clone();
         let callback = move |filename: String| -> anyhow::Result<RhaiMiddleware> {
             Ok(RhaiMiddleware::new(script_path.clone(), filename)?)
         };
 
         let udf_builder = Arc::new(callback);
-        self.udf_middlewares
-            .write()
-            .await
-            .insert(cfg.name.clone(), udf_builder);
+        self.udf_middlewares.insert(cfg.name.clone(), udf_builder);
         Ok(())
     }
 
     pub async fn register_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
-        self.storage.save(service_cfg.clone()).await?;
-
-        match service_cfg {
+        match service_cfg.clone() {
             Service::MongoDb(mc) => self.init_mongo(mc).await?,
             Service::PubSub(ps) => self.init_pubsub(ps).await?,
             Service::Http(hc) => self.init_http(hc).await?,
@@ -118,16 +106,18 @@ impl ServiceRegistry {
             _ => {}
         }
 
+        self.storage.save(service_cfg).await?;
+
         Ok(())
     }
 
     pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
         let config_removed = self.storage.remove(service_name).await?;
         if config_removed {
-            self.mongo_clients.write().await.remove(service_name);
-            self.gcp_token_providers.write().await.remove(service_name);
-            self.http_services.write().await.remove(service_name);
-            self.udf_middlewares.write().await.remove(service_name);
+            self.mongo_clients.remove(service_name);
+            self.gcp_token_providers.remove(service_name);
+            self.http_services.remove(service_name);
+            self.udf_middlewares.remove(service_name);
             Ok(())
         } else {
             Err(anyhow!("service with name '{}' not found", service_name))
@@ -135,23 +125,16 @@ impl ServiceRegistry {
     }
 
     pub async fn udf_middleware(&self, name: &str) -> anyhow::Result<RhaiMiddlewareBuilder> {
-        self.udf_middlewares
-            .read()
-            .await
-            .get(name)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow!(
-                    "udf middleware builder not found for service name: {}",
-                    name
-                )
-            })
+        self.udf_middlewares.get(name).cloned().ok_or_else(|| {
+            anyhow!(
+                "udf middleware builder not found for service name: {}",
+                name
+            )
+        })
     }
 
     pub async fn mongodb_client(&self, name: &str) -> anyhow::Result<Client> {
         self.mongo_clients
-            .read()
-            .await
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow!("mongodb client not found for service name: {}", name))
@@ -159,8 +142,6 @@ impl ServiceRegistry {
 
     pub async fn gcp_auth(&self, name: &str) -> anyhow::Result<ServiceAccountAuth> {
         self.gcp_token_providers
-            .read()
-            .await
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow!("gcp token provider not found for service name: {}", name))
@@ -168,8 +149,6 @@ impl ServiceRegistry {
 
     pub async fn http_client(&self, name: &str) -> anyhow::Result<http::HttpService> {
         self.http_services
-            .read()
-            .await
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow!("http service not found for service name: {}", name))
@@ -195,12 +174,107 @@ impl ServiceRegistry {
     }
 
     pub async fn service_definition(&self, service_name: &str) -> anyhow::Result<Service> {
-        self.storage.get_by_name(service_name).await
+        let mut def = self.storage.get_by_name(service_name).await?;
+        self.enrich_udf_scripts(&mut def).await?;
+
+        Ok(def)
     }
 
     pub async fn all_service_definitions(&self) -> anyhow::Result<Vec<Service>> {
-        self.storage.get_all().await
+        let mut definitions = self.storage.get_all().await?;
+
+        for definition in definitions.iter_mut() {
+            self.enrich_udf_scripts(definition).await?;
+        }
+
+        Ok(definitions)
     }
+
+    async fn enrich_udf_scripts(&self, service: &mut Service) -> anyhow::Result<()> {
+        if let Service::Udf(udf_config) = service {
+            let scripts = read_udf_scripts(Path::new(&udf_config.script_path)).await?;
+            udf_config.sources = Some(scripts);
+        }
+        Ok(())
+    }
+}
+
+async fn create_udf_script(cfg: &UdfConfig) -> anyhow::Result<()> {
+    let base_path = Path::new(&cfg.script_path);
+
+    let sources = match &cfg.sources {
+        Some(s) => s,
+        None => &vec![],
+    };
+
+    if sources.is_empty()
+        && (!base_path.exists() || fs::read_dir(base_path).await?.next_entry().await?.is_none())
+    {
+        anyhow::bail!(
+            "no udf sources provided and udf script dir is empty or does not exist for service: {}. script_path: {}",
+            cfg.name,
+            base_path.display()
+        );
+    }
+
+    if !base_path.exists() {
+        fs::create_dir_all(base_path).await.with_context(|| {
+            anyhow!(
+                "failed to create an udf script dir: {}",
+                base_path.display()
+            )
+        })?;
+    }
+
+    for source in sources {
+        let filename = &source.filename;
+        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+            anyhow::bail!(
+                "invalid filename '{}' in udf source for service '{}'",
+                filename,
+                cfg.name
+            );
+        }
+
+        let script_path = base_path.join(&source.filename);
+        tokio::fs::write(&script_path, &source.content)
+            .await
+            .with_context(|| {
+                anyhow!("failed to write udf script file: {}", script_path.display())
+            })?;
+    }
+
+    Ok(())
+}
+
+async fn read_udf_scripts(script_path: &Path) -> anyhow::Result<Vec<UdfScript>> {
+    let mut dir = fs::read_dir(&script_path)
+        .await
+        .with_context(|| anyhow!("failed to read udf script file: {}", script_path.display()))?;
+
+    let mut scripts = Vec::new();
+
+    while let Some(entry) = dir.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() && path.extension() == Some(OsStr::new("rhai")) {
+            let content = fs::read_to_string(&path)
+                .await
+                .with_context(|| anyhow!("failed to read udf script file: {}", path.display()))?;
+
+            let filename = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
+                anyhow!("failed to read filename from a script: {}", path.display())
+            })?;
+
+            let script = UdfScript {
+                filename: filename.to_string(),
+                content: content.clone(),
+            };
+
+            scripts.push(script);
+        }
+    }
+
+    Ok(scripts)
 }
 
 /// Type alias for a boxed ServiceLifecycleStorage trait object
@@ -219,15 +293,14 @@ pub mod in_memory {
 
     use anyhow::anyhow;
 
+    #[derive(Default)]
     pub struct InMemoryServiceStorage {
         active_services: Vec<Service>,
     }
 
     impl InMemoryServiceStorage {
         pub fn new() -> Self {
-            Self {
-                active_services: vec![],
-            }
+            Self::default()
         }
 
         fn service_by_name(&self, name: &str) -> Option<&Service> {
@@ -238,15 +311,21 @@ pub mod in_memory {
     #[async_trait::async_trait]
     impl ServiceLifecycleStorage for InMemoryServiceStorage {
         async fn save(&mut self, service: Service) -> anyhow::Result<()> {
+            let mut service_to_save = service.clone();
+
+            if let Service::Udf(ref mut udf_config) = service_to_save {
+                udf_config.sources = None;
+            }
+
             // overwrite existing service config if present
             if let Some(existing) = self
                 .active_services
                 .iter_mut()
                 .find(|s| s.name() == service.name())
             {
-                *existing = service;
+                *existing = service_to_save;
             } else {
-                self.active_services.push(service);
+                self.active_services.push(service_to_save);
             }
             Ok(())
         }
@@ -322,7 +401,7 @@ pub mod mongodb_storage {
             Ok(service)
         }
 
-        fn encrypt_service(&mut self, service: &Service) -> anyhow::Result<EncryptedService> {
+        fn encrypt_service(&self, service: &Service) -> anyhow::Result<EncryptedService> {
             let b = serde_json::to_vec(service)?;
             let encrypted = self.encryptor.encrypt(b.as_slice())?;
 
@@ -340,6 +419,11 @@ pub mod mongodb_storage {
     #[async_trait::async_trait]
     impl ServiceLifecycleStorage for MongoDbServiceStorage {
         async fn save(&mut self, service: Service) -> anyhow::Result<()> {
+            let mut service_to_save = service.clone();
+            if let Service::Udf(ref mut udf_config) = service_to_save {
+                udf_config.sources = None;
+            }
+
             let encrypted = self.encrypt_service(&service)?;
 
             let filter = doc! { "name": service.name() };

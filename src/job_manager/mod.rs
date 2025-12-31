@@ -289,6 +289,12 @@ impl JobManager {
         Ok(())
     }
 
+    pub async fn get_service(&self, service_name: &str) -> anyhow::Result<Service> {
+        let registry = self.service_registry.read().await;
+        let service = registry.service_definition(service_name).await?;
+        Ok(service)
+    }
+
     async fn set_desired_job_state(
         &mut self,
         job_name: &str,

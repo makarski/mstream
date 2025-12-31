@@ -5,7 +5,7 @@ use std::{
 
 use aes_gcm::{
     AeadCore, Aes256Gcm, KeyInit,
-    aead::{AeadMut, OsRng},
+    aead::{Aead, OsRng},
 };
 use anyhow::{Context, anyhow};
 use tokio::fs;
@@ -30,7 +30,7 @@ impl Encryptor {
         Ok(Self { cipher })
     }
 
-    pub fn encrypt(&mut self, b: &[u8]) -> anyhow::Result<EncryptedData> {
+    pub fn encrypt(&self, b: &[u8]) -> anyhow::Result<EncryptedData> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = self
             .cipher
@@ -45,8 +45,8 @@ impl Encryptor {
 
     pub fn decrypt(&self, nonce: &[u8], b: &[u8]) -> anyhow::Result<Vec<u8>> {
         let nonce = aes_gcm::Nonce::from_slice(nonce);
-        let mut cipher = self.cipher.clone();
-        let plaintext = cipher
+        let plaintext = self
+            .cipher
             .decrypt(nonce, b)
             .map_err(|err| anyhow!("decryption failed: {}", err))?;
 
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn encrypt_decrypt_roundtrip() {
         let key = Aes256Gcm::generate_key(OsRng);
-        let mut encryptor = Encryptor::new(key.as_slice()).expect("cipher");
+        let encryptor = Encryptor::new(key.as_slice()).expect("cipher");
         let plaintext = b"super secret payload";
 
         let encrypted = encryptor.encrypt(plaintext).expect("encrypt");
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn decrypt_with_wrong_key_fails() {
         let key_a = Aes256Gcm::generate_key(OsRng);
-        let mut encryptor_a = Encryptor::new(key_a.as_slice()).unwrap();
+        let encryptor_a = Encryptor::new(key_a.as_slice()).unwrap();
 
         let key_b = Aes256Gcm::generate_key(OsRng);
         let encryptor_b = Encryptor::new(key_b.as_slice()).unwrap();

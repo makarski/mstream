@@ -27,9 +27,10 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/jobs", get(list_jobs))
         .route("/jobs", post(create_start_job))
-        .route("/jobs/{id}/stop", post(stop_job))
-        .route("/jobs/{id}/restart", post(restart_job))
+        .route("/jobs/{name}/stop", post(stop_job))
+        .route("/jobs/{name}/restart", post(restart_job))
         .route("/services", get(list_services))
+        .route("/services/{name}", get(get_one_service))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
         .with_state(state);
@@ -191,6 +192,20 @@ async fn remove_service(
                 item: None,
             }),
         ),
+    }
+}
+
+async fn get_one_service(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> (StatusCode, Json<Option<Service>>) {
+    let jm = state.job_manager.lock().await;
+    match jm.get_service(&name).await {
+        Ok(service) => (StatusCode::OK, Json(Some(service))),
+        Err(err) => {
+            error!("failed to get a service: {}: {}", name, err);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
+        }
     }
 }
 
