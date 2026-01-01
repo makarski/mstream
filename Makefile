@@ -80,25 +80,20 @@ unit-tests: ## Runs the unit tests
 	RUST_LOG=info cargo test -- --nocapture
 
 .PHONY: coverage
-coverage: ## Generates code coverage report
-	@echo "Generating code coverage report..."
-	@rm -rf coverage/
-	@echo "Install grcov if you don't have it yet: cargo install grcov"
-	cargo clean
-	mkdir -p target/coverage
-	export RUSTFLAGS="-C instrument-coverage" && \
-	export LLVM_PROFILE_FILE="target/coverage/bo-%p-%m.profraw" && \
-	cargo test
-	grcov . \
-		-s . \
-		--binary-path ./target/debug/deps/ \
-		-t html \
-		--branch \
-		--ignore-not-existing \
-		--ignore "/*" \
-		--ignore "build.rs" \
-		-o ./coverage/
-	@echo "Report generated at coverage/html/index.html"
+coverage: ## Runs tests and generates html coverage report (local dev)
+	@if ! command -v cargo-llvm-cov > /dev/null; then \
+		echo "cargo-llvm-cov not found, installing..."; \
+		cargo install cargo-llvm-cov; \
+	fi
+	cargo llvm-cov --html --output-dir coverage --open
+
+.PHONY: coverage-ci
+coverage-ci: ## Generates LCOV report for SonarQube/CI
+	@if ! command -v cargo-llvm-cov > /dev/null; then \
+		echo "cargo-llvm-cov not found, installing..."; \
+		cargo install cargo-llvm-cov; \
+	fi
+	cargo llvm-cov --lcov --output-path lcov.info
 
 ASK_TOPIC = topic=test; \
 	read -p "> Enter topic name (default is $$topic): " user_topic; \
