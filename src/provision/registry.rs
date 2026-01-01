@@ -45,7 +45,7 @@ impl ServiceRegistry {
 
     pub async fn init(&mut self, seed_services: Vec<Service>) -> anyhow::Result<()> {
         for service in seed_services {
-            self.register_service(service.clone()).await?;
+            self.register_service(service).await?;
         }
         Ok(())
     }
@@ -98,11 +98,11 @@ impl ServiceRegistry {
     }
 
     pub async fn register_service(&mut self, service_cfg: Service) -> anyhow::Result<()> {
-        match service_cfg.clone() {
-            Service::MongoDb(mc) => self.init_mongo(mc).await?,
-            Service::PubSub(ps) => self.init_pubsub(ps).await?,
-            Service::Http(hc) => self.init_http(hc).await?,
-            Service::Udf(uc) => self.init_udf(uc).await?,
+        match &service_cfg {
+            Service::MongoDb(mc) => self.init_mongo(mc.clone()).await?,
+            Service::PubSub(ps) => self.init_pubsub(ps.clone()).await?,
+            Service::Http(hc) => self.init_http(hc.clone()).await?,
+            Service::Udf(uc) => self.init_udf(uc.clone()).await?,
             _ => {}
         }
 
@@ -248,9 +248,12 @@ async fn create_udf_script(cfg: &UdfConfig) -> anyhow::Result<()> {
 }
 
 async fn read_udf_scripts(script_path: &Path) -> anyhow::Result<Vec<UdfScript>> {
-    let mut dir = fs::read_dir(&script_path)
-        .await
-        .with_context(|| anyhow!("failed to read udf script file: {}", script_path.display()))?;
+    let mut dir = fs::read_dir(&script_path).await.with_context(|| {
+        anyhow!(
+            "failed to read udf script directory: {}",
+            script_path.display()
+        )
+    })?;
 
     let mut scripts = Vec::new();
 
@@ -267,7 +270,7 @@ async fn read_udf_scripts(script_path: &Path) -> anyhow::Result<Vec<UdfScript>> 
 
             let script = UdfScript {
                 filename: filename.to_string(),
-                content: content.clone(),
+                content: content,
             };
 
             scripts.push(script);
@@ -424,7 +427,7 @@ pub mod mongodb_storage {
                 udf_config.sources = None;
             }
 
-            let encrypted = self.encrypt_service(&service)?;
+            let encrypted = self.encrypt_service(&service_to_save)?;
 
             let filter = doc! { "name": service.name() };
             let update = doc! { "$set": bson::to_document(&encrypted)? };

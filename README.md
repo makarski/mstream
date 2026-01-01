@@ -1,5 +1,7 @@
 # mstream
 
+[![CodeScene Average Code Health](https://codescene.io/projects/45886/status-badges/average-code-health)](https://codescene.io/projects/45886)
+
 A lightweight, high-performance data streaming bridge that connects sources to sinks with powerful transformation capabilities.
 
 **mstream** simplifies building data pipelines by providing a configurable bridge between systems like MongoDB, Kafka, and PubSub. It handles format conversion, schema validation, and data transformation out of the box, allowing you to focus on your data logic rather than glue code.

@@ -148,6 +148,7 @@ fn ensure_encryption_key_permissions(fs_path: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use aes_gcm::KeyInit;
+    use serial_test::serial;
     use tempfile::tempdir;
     use tokio::fs;
 
@@ -183,6 +184,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn key_loaded_from_env_var() {
         let key = hex::encode(Aes256Gcm::generate_key(OsRng));
         unsafe {
@@ -198,6 +200,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn generates_new_key_file_when_missing() {
         unsafe {
             env::remove_var(ENC_KEY_VAR_NAME);
@@ -216,6 +219,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn loads_existing_key_file() {
         unsafe {
             env::remove_var(ENC_KEY_VAR_NAME);
@@ -234,6 +238,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    #[serial]
     async fn generated_key_file_has_strict_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -264,6 +269,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn fails_on_invalid_key_length() {
         unsafe {
             env::remove_var(ENC_KEY_VAR_NAME);
