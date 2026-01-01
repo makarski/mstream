@@ -8,3 +8,4 @@ mstream-config.toml.bak
 # Allow config files in examples
 !examples/**/mstream-config.toml
 .env.test
+coverage/

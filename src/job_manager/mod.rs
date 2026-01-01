@@ -242,7 +242,7 @@ impl JobManager {
             .read()
             .await
             .all_service_definitions()
-            .await;
+            .await?;
 
         let mut statuses = Vec::with_capacity(all_conf_services.len());
 
@@ -264,7 +264,7 @@ impl JobManager {
         self.service_registry
             .write()
             .await
-            .add_service(service_cfg)
+            .register_service(service_cfg)
             .await?;
 
         info!("service '{}' created", service_name);
@@ -287,6 +287,12 @@ impl JobManager {
 
         info!("service '{}' removed", service_name);
         Ok(())
+    }
+
+    pub async fn get_service(&self, service_name: &str) -> anyhow::Result<Service> {
+        let registry = self.service_registry.read().await;
+        let service = registry.service_definition(service_name).await?;
+        Ok(service)
     }
 
     async fn set_desired_job_state(

@@ -1,5 +1,7 @@
 # mstream
 
+[![CodeScene Average Code Health](https://codescene.io/projects/45886/status-badges/average-code-health)](https://codescene.io/projects/45886)
+
 A lightweight, high-performance data streaming bridge that connects sources to sinks with powerful transformation capabilities.
 
 **mstream** simplifies building data pipelines by providing a configurable bridge between systems like MongoDB, Kafka, and PubSub. It handles format conversion, schema validation, and data transformation out of the box, allowing you to focus on your data logic rather than glue code.
@@ -10,7 +12,7 @@ A lightweight, high-performance data streaming bridge that connects sources to s
 - **Zero-Code Transformations**: Convert between BSON, JSON, and Avro formats automatically.
 - **Powerful Middleware**: Transform data in-flight using HTTP services or embedded Rhai scripts.
 - **Schema Validation**: Enforce data quality with Avro schema validation and filtering.
-- **High Performance**: Optimized batch processing with zero-copy BSON handling for MongoDB.
+- **High Performance**: Optimized batch processing with zero-copy handling.
 - **Simple Configuration**: Define your entire pipeline in a single TOML file.
 
 ## 📦 Installation
@@ -89,6 +91,7 @@ cp mstream-config.toml.example ./mstream-config.toml
 # update the config as needed
 make docker-up
 make db-init-rpl-set
+```
 
 ## 🗄️ Job Lifecycle Persistence
 
@@ -108,7 +111,30 @@ startup_state = "seed_from_file" # other options: "force_from_file", "keep"
   - `seed_from_file`: initialize the store from the file if it is empty, otherwise resume the previously persisted state.
   - `keep`: ignore the file and resume whatever is already stored (handy for API-driven workflows).
 
-With a persistent store in place you can safely restart the server without losing job intent, resume jobs automatically, or keep them paused until you explicitly restart them via the API.
+With a persistent store in place you can safely restart the server without losing job intent, resume jobs automatically, or keep them paused until you explicitly restart them via the API. If you omit `[system.job_lifecycle]`, mstream falls back to its in-memory job store.
+
+## 🔐 Service Registry Persistence
+
+Services created through the config file or the `/services` API can survive restarts by enabling a persistent service registry. Point the registry at a MongoDB service and tell mstream where to read the encryption key that protects the stored definitions:
+
+```toml
+[system]
+# Optional: override where the AES-256 key is stored; defaults to ./mstream.key
+encryption_key_path = "./mstream-services.key"
+
+[system.service_lifecycle]
+service_name = "mongodb-source"
+resource = "mstream-services"
+```
+
+- **service_name** must reference an existing MongoDB service; mstream reuses the same client and database.
+- **resource** is the collection that will hold the encrypted service documents.
+- **encryption_key_path** is the 32-byte AES-256 key file. If it is missing, mstream will generate it with strict file permissions; back it up because it is required to decrypt persisted services.
+- Instead of storing the key on disk you can set the `MSTREAM_ENC_KEY` environment variable to the hex-encoded key (handy for container secrets managers).
+
+If you skip `[system.service_lifecycle]`, service definitions remain in-memory and will be rebuilt from the config file on each restart.
+
+With `service_lifecycle` configured, service definitions that are registered via config or API calls are written to MongoDB, restored on startup, and stay available to jobs even if the process restarts.
 
 ## 📚 Core Concepts
 

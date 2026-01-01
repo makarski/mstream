@@ -18,6 +18,15 @@ pub struct UdfConfig {
     pub name: String,
     pub script_path: String,
     pub engine: UdfEngine,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sources: Option<Vec<UdfScript>>,
+}
+
+#[derive(Deserialize, Debug, Clone, Serialize)]
+pub struct UdfScript {
+    pub filename: String,
+    pub content: String,
 }
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
@@ -25,6 +34,9 @@ pub struct UdfConfig {
 pub enum UdfEngine {
     #[serde(rename = "rhai")]
     Rhai,
+    #[cfg(test)]
+    #[serde(rename = "undefined")]
+    Undefined,
 }
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
