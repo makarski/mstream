@@ -1,0 +1,1342 @@
+openapi: 3.0.3
+info:
+  title: mstream API
+  description: |
+    mstream is a high-performance streaming data platform that enables real-time data pipelines
+    between multiple data sources and destinations. This API provides comprehensive management
+    capabilities for jobs (streaming pipelines) and services (data connectors).
+    
+    ## Core Concepts
+    
+    **Jobs**: Represent active streaming pipelines that transform and move data from a source
+    service to a sink service. Jobs can be started, stopped, and restarted.
+    
+    **Services**: Represent data connectors (Kafka, MongoDB, PubSub, HTTP, Schema Registry).
+    Services must be configured before they can be used in jobs.
+    
+    ## API Features
+    - Complete job lifecycle management
+    - Service configuration and management
+    - Real-time job status monitoring
+    - Comprehensive error handling and validation
+  version: '0.27.0'
+  contact:
+    name: Simon Makarski
+    url: https://github.com/makarski/mstream
+  license:
+    name: MIT/Apache-2.0
+    url: https://github.com/makarski/mstream/blob/main/LICENSE-MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Default local development server
+  - url: http://localhost:{port}/
+    description: Custom port development server
+    variables:
+      port:
+        default: '8080'
+        description: API server port
+
+tags:
+  - name: Jobs
+    description: |
+      Operations for managing streaming jobs. Jobs represent active data pipelines that
+      transform and move data between configured services. Each job has a lifecycle:
+      created → running → stopped → restarted.
+  - name: Services
+    description: |
+      Operations for managing service configurations. Services are connectors to external
+      data systems (Kafka, MongoDB, PubSub, etc.). Services must exist before they can be
+      referenced by jobs.
+
+paths:
+  /jobs:
+    get:
+      operationId: listJobs
+      summary: List all jobs
+      description: |
+        Retrieves a list of all configured jobs with their current status information.
+        This includes running, stopped, and paused jobs.
+      tags:
+        - Jobs
+      responses:
+        '200':
+          description: Successfully retrieved list of jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/JobMetadata'
+              examples:
+                empty:
+                  summary: No jobs configured
+                  value: []
+                single_job:
+                  summary: Single running job
+                  value:
+                    - name: kafka-to-mongo
+                      started_at: "2024-01-15T10:30:45Z"
+                      stopped_at: null
+                      state: running
+                      desired_state: running
+                      linked_services:
+                        - kafka-prod
+                        - mongodb-sink
+                      pipeline: null
+                multiple_jobs:
+                  summary: Multiple jobs with mixed states
+                  value:
+                    - name: kafka-to-mongo
+                      started_at: "2024-01-15T10:30:45Z"
+                      stopped_at: null
+                      state: running
+                      desired_state: running
+                      linked_services:
+                        - kafka-prod
+                        - mongodb-sink
+                      pipeline: null
+                    - name: pubsub-to-http
+                      started_at: "2024-01-14T08:15:20Z"
+                      stopped_at: "2024-01-15T09:45:10Z"
+                      state: stopped
+                      desired_state: stopped
+                      linked_services:
+                        - gcp-pubsub
+                        - http-webhook
+                      pipeline: null
+        '500':
+          $ref: '#/components/responses/InternalError500'
+    
+    post:
+      operationId: createJob
+      summary: Create and start a new job
+      description: |
+        Creates a new streaming job with the provided connector configuration and immediately
+        starts it. The job will begin processing data according to its pipeline definition.
+        
+        The connector must reference valid services that have been previously created.
+      tags:
+        - Jobs
+      requestBody:
+        required: true
+        description: Job configuration and connector details
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Connector'
+            examples:
+              kafka_to_mongo:
+                summary: Kafka to MongoDB pipeline
+                value:
+                  name: kafka-to-mongo
+                  batch:
+                    kind: count
+                    size: 50
+                  source:
+                    service_name: kafka-prod
+                    resource: raw_events
+                    input_encoding: json
+                    output_encoding: json
+                  sinks:
+                    - service_name: mongodb-sink
+                      resource: events_collection
+                      output_encoding: bson
+              with_middleware:
+                summary: Pipeline with transformation middleware
+                value:
+                  name: kafka-to-mongo-transformed
+                  source:
+                    service_name: kafka-prod
+                    resource: events
+                    output_encoding: json
+                  middlewares:
+                    - service_name: data-transformer
+                      resource: transform_function
+                      output_encoding: json
+                  sinks:
+                    - service_name: mongodb-sink
+                      resource: transformed_events
+                      output_encoding: bson
+      responses:
+        '201':
+          description: Job created and started successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              examples:
+                success:
+                  summary: Job created successfully
+                  value:
+                    message: job created successfully
+                    item:
+                      name: kafka-to-mongo
+                      started_at: "2024-01-15T10:30:45Z"
+                      stopped_at: null
+                      state: running
+                      desired_state: running
+                      linked_services:
+                        - kafka-prod
+                        - mongodb-sink
+                      pipeline: null
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+        '404':
+          description: Referenced service not found
+          $ref: '#/components/responses/NotFound404'
+        '409':
+          description: Job with this name already exists
+          $ref: '#/components/responses/Conflict409'
+        '500':
+          $ref: '#/components/responses/InternalError500'
+
+  /jobs/{name}/stop:
+    post:
+      operationId: stopJob
+      summary: Stop a running job
+      description: |
+        Gracefully stops a running job. Once stopped, the job will no longer process data
+        but can be restarted later using the restart endpoint.
+      tags:
+        - Jobs
+      parameters:
+        - $ref: '#/components/parameters/ResourceName'
+      responses:
+        '200':
+          description: Job stopped successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+              examples:
+                success:
+                  summary: Job stopped
+                  value:
+                    message: "job kafka-to-mongo stopped successfully"
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+        '404':
+          description: Job not found
+          $ref: '#/components/responses/NotFound404'
+        '500':
+          $ref: '#/components/responses/InternalError500'
+
+  /jobs/{name}/restart:
+    post:
+      operationId: restartJob
+      summary: Restart a stopped job
+      description: |
+        Restarts a previously stopped job. The job will resume processing from where it left off
+        if pipeline state is available, or from the beginning otherwise.
+      tags:
+        - Jobs
+      parameters:
+        - $ref: '#/components/parameters/ResourceName'
+      responses:
+        '200':
+          description: Job restarted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              examples:
+                success:
+                  summary: Job restarted
+                  value:
+                    message: "job kafka-to-mongo restarted successfully"
+                    item:
+                      name: kafka-to-mongo
+                      started_at: "2024-01-15T10:30:45Z"
+                      stopped_at: null
+                      state: running
+                      desired_state: running
+                      linked_services:
+                        - kafka-prod
+                        - mongodb-sink
+                      pipeline: null
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+        '404':
+          description: Job not found
+          $ref: '#/components/responses/NotFound404'
+        '500':
+          description: Internal error or missing pipeline configuration
+          $ref: '#/components/responses/InternalError500'
+
+  /services:
+    get:
+      operationId: listServices
+      summary: List all services
+      description: |
+        Retrieves a list of all configured services with their status and usage information.
+        Shows which jobs are currently using each service.
+      tags:
+        - Services
+      responses:
+        '200':
+          description: Successfully retrieved list of services
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServiceStatus'
+              examples:
+                empty:
+                  summary: No services configured
+                  value: []
+                multiple_services:
+                  summary: Multiple services with various usage
+                  value:
+                    - provider: kafka
+                      name: kafka-prod
+                      offset_seek_back_seconds: null
+                      config:
+                        bootstrap.servers: "kafka-broker:9092"
+                        group.id: "mstream-consumer"
+                      used_by_jobs:
+                        - kafka-to-mongo
+                        - kafka-to-http
+                    - provider: mongodb
+                      name: mongodb-sink
+                      connection_string: "mongodb+srv://user:****@cluster.mongodb.net/mydb"
+                      db_name: myapp_db
+                      used_by_jobs:
+                        - kafka-to-mongo
+                    - provider: http
+                      name: http-webhook
+                      host: "https://webhook.example.com"
+                      max_retries: 3
+                      base_backoff_ms: 100
+                      used_by_jobs: []
+        '500':
+          $ref: '#/components/responses/InternalError500'
+
+    post:
+      operationId: createService
+      summary: Create a new service
+      description: |
+        Creates a new service configuration. Services are connectors to external systems
+        and must be created before they can be referenced by jobs.
+        
+        Supported service types include Kafka, MongoDB, Google Pub/Sub, HTTP, and Schema Registry.
+      tags:
+        - Services
+      requestBody:
+        required: true
+        description: Service configuration
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Service'
+            examples:
+              kafka:
+                summary: Kafka service configuration
+                value:
+                  provider: kafka
+                  name: kafka-prod
+                  config:
+                    bootstrap.servers: "kafka-broker:9092"
+                    group.id: "mstream-consumer"
+                    security.protocol: "SASL_SSL"
+                    sasl.mechanism: "PLAIN"
+                    sasl.username: "user"
+                    sasl.password: "env:KAFKA_PASSWORD"
+              mongodb:
+                summary: MongoDB service configuration
+                value:
+                  provider: mongodb
+                  name: mongodb-sink
+                  connection_string: "mongodb+srv://user:password@cluster.mongodb.net/mydb?retryWrites=true"
+                  db_name: myapp_db
+              pubsub:
+                summary: Google Pub/Sub service configuration
+                value:
+                  provider: pubsub
+                  name: gcp-pubsub
+                  auth:
+                    kind: service_account
+                    account_key_path: "/etc/secrets/gcp-key.json"
+              http:
+                summary: HTTP service configuration
+                value:
+                  provider: http
+                  name: http-webhook
+                  host: "https://webhook.example.com"
+                  max_retries: 5
+                  timeout_sec: 30
+              udf:
+                summary: UDF service configuration
+                value:
+                  provider: udf
+                  name: data-transformer
+                  script_path: "scripts/transform.rhai"
+                  engine:
+                    kind: rhai
+                  sources:
+                    - filename: "helpers.rhai"
+                      content: |
+                        fn double(x) {
+                          x * 2
+                        }
+      responses:
+        '201':
+          description: Service created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+              examples:
+                kafka_created:
+                  summary: Kafka service created
+                  value:
+                    message: service created successfully
+                    item:
+                      provider: kafka
+                      name: kafka-prod
+                      config:
+                        bootstrap.servers: "kafka-broker:9092"
+                        group.id: "mstream-consumer"
+        '400':
+          description: Invalid service configuration
+          $ref: '#/components/responses/BadRequest400'
+        '409':
+          description: Service with this name already exists
+          $ref: '#/components/responses/Conflict409'
+        '500':
+          $ref: '#/components/responses/InternalError500'
+
+  /services/{name}:
+    get:
+      operationId: getService
+      summary: Get a specific service by name
+      description: |
+        Retrieves detailed configuration information for a specific service.
+      tags:
+        - Services
+      parameters:
+        - $ref: '#/components/parameters/ResourceName'
+      responses:
+        '200':
+          description: Service found and returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Service'
+              examples:
+                kafka:
+                  summary: Kafka service
+                  value:
+                    provider: kafka
+                    name: kafka-prod
+                    offset_seek_back_seconds: null
+                    config:
+                      bootstrap.servers: "kafka-broker:9092"
+                      group.id: "mstream-consumer"
+                mongodb:
+                  summary: MongoDB service
+                  value:
+                    provider: mongodb
+                    name: mongodb-sink
+                    connection_string: "mongodb+srv://user:****@cluster.mongodb.net/mydb"
+                    db_name: myapp_db
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+        '404':
+          description: Service not found
+          $ref: '#/components/responses/NotFound404'
+        '500':
+          $ref: '#/components/responses/InternalError500'
+
+    delete:
+      operationId: deleteService
+      summary: Delete a service
+      description: |
+        Deletes a service configuration. The service cannot be deleted if it is currently
+        in use by any active jobs.
+      tags:
+        - Services
+      parameters:
+        - $ref: '#/components/parameters/ResourceName'
+      responses:
+        '200':
+          description: Service deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+              examples:
+                success:
+                  summary: Service deleted
+                  value:
+                    message: "service mongodb-sink removed successfully"
+        '400':
+          $ref: '#/components/responses/BadRequest400'
+        '404':
+          description: Service not found
+          $ref: '#/components/responses/NotFound404'
+        '409':
+          description: Service is in use by active jobs
+          $ref: '#/components/responses/Conflict409'
+        '500':
+          $ref: '#/components/responses/InternalError500'
+
+components:
+  schemas:
+    # Error Response Schemas
+    ErrorResponse:
+      type: object
+      title: Error Response
+      description: Standard error response wrapper
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+    
+    ErrorDetail:
+      type: object
+      title: Error Detail
+      description: |
+        Detailed error information including code, message, and optional context.
+        
+        Error codes are categorized by type:
+        - **BAD_REQUEST**: Malformed request or invalid input structure
+        - **INVALID_INPUT**: Validation failure on a specific field
+        - **NOT_FOUND**: Requested resource does not exist
+        - **CONFLICT**: Request conflicts with current system state
+        - **INTERNAL_ERROR**: Unexpected server-side error
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          enum:
+            - BAD_REQUEST
+            - INVALID_INPUT
+            - NOT_FOUND
+            - CONFLICT
+            - INTERNAL_ERROR
+          description: |
+            Machine-readable error code. Use this for programmatic error handling:
+            - BAD_REQUEST (400): General client error
+            - INVALID_INPUT (400): Specific field validation failure
+            - NOT_FOUND (404): Resource not found
+            - CONFLICT (409): State conflict (duplicate, in-use, etc.)
+            - INTERNAL_ERROR (500): Server-side error
+        message:
+          type: string
+          description: |
+            Human-readable error message describing what went wrong.
+            Format varies by error type but always provides actionable information.
+          example: "Invalid field 'name': job name cannot exceed 64 characters"
+        details:
+          type: object
+          nullable: true
+          description: |
+            Additional error context. Present for INVALID_INPUT errors to provide field-level details.
+            Null for other error types.
+          properties:
+            field:
+              type: string
+              description: Name of the field that failed validation
+            reason:
+              type: string
+              description: Detailed reason for the validation failure
+          example:
+            field: name
+            reason: job name cannot exceed 64 characters
+
+    # Message Response Schemas
+    Message:
+      type: object
+      title: Message Response
+      description: Generic success message without additional data
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Success message describing the operation result
+          example: "job my-job stopped successfully"
+    
+    MessageResponse:
+      type: object
+      title: Message Response with Data
+      description: Generic success message with optional response data
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Success message describing the operation result
+          example: "job created successfully"
+        item:
+          type: object
+          nullable: true
+          description: |
+            Optional response payload. Type depends on the operation:
+            - POST /jobs: JobMetadata
+            - POST /jobs/{name}/restart: JobMetadata
+            - POST /services: Service
+            Content will be null for operations that don't return item data.
+
+    # Job Metadata Schema
+    JobMetadata:
+      type: object
+      title: Job Metadata
+      description: |
+        Complete metadata about a streaming job including its current state, service dependencies,
+        and pipeline configuration. Jobs represent active data pipelines that process and move
+        data between configured services.
+      required:
+        - name
+        - started_at
+        - state
+        - desired_state
+        - linked_services
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: |
+            Unique job identifier. Must be 1-64 characters containing only
+            alphanumeric characters, hyphens, and underscores.
+          example: my-kafka-to-mongo-job
+        started_at:
+          type: string
+          format: date-time
+          description: |
+            ISO 8601 timestamp when the job was created/started.
+            Format: YYYY-MM-DDTHH:MM:SSZ
+          example: "2024-01-15T10:30:45Z"
+        stopped_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            ISO 8601 timestamp when the job was stopped. Null if the job has not been stopped.
+          example: "2024-01-15T12:45:30Z"
+        state:
+          type: string
+          enum:
+            - running
+            - stopped
+            - failed
+          description: |
+            Current execution state of the job:
+            - **running**: Job is actively processing data
+            - **stopped**: Job has been stopped and is not processing
+            - **failed**: Job encountered an error and stopped unexpectedly
+          example: running
+        desired_state:
+          type: string
+          enum:
+            - running
+            - stopped
+            - failed
+          description: |
+            Desired/target state of the job. The system works to achieve this state.
+          example: running
+        linked_services:
+          type: array
+          items:
+            type: string
+          description: |
+            List of service names that this job depends on.
+            Includes source services, sink services, and middleware services.
+          example:
+            - kafka-source
+            - mongodb-sink
+        pipeline:
+          type: object
+          nullable: true
+          description: |
+            The connector/pipeline configuration for this job. Contains source, sink,
+            and middleware service references. Null if not yet loaded.
+          additionalProperties: true
+          example: null
+
+    # Service Status Schema
+    ServiceStatus:
+      type: object
+      title: Service Status
+      description: |
+        Service configuration with usage information. Shows what jobs are currently
+        using this service.
+      required:
+        - provider
+        - used_by_jobs
+      properties:
+        provider:
+          type: string
+          enum:
+            - kafka
+            - mongodb
+            - pubsub
+            - http
+            - udf
+          description: |
+            Service provider type. The actual service properties depend on this type.
+          example: kafka
+        used_by_jobs:
+          type: array
+          items:
+            type: string
+          description: |
+            List of job names that currently depend on this service.
+            Service cannot be deleted if this list is non-empty.
+          example:
+            - job-1
+            - job-2
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Unique service identifier
+          example: kafka-prod
+
+    # Connector (Job Configuration) Schema
+    Connector:
+      type: object
+      title: Connector Configuration
+      description: |
+        Job connector/pipeline configuration that defines how data flows through the system.
+        Specifies source services, sink services, and optional middleware processing.
+      required:
+        - name
+        - source
+        - sinks
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: |
+            Unique job name. Must be 1-64 characters containing only
+            alphanumeric characters, hyphens, and underscores.
+          example: kafka-to-mongo-pipeline
+        batch:
+          type: object
+          nullable: true
+          description: |
+            Optional batching configuration. Groups records into batches before processing.
+          properties:
+            kind:
+              type: string
+              enum:
+                - count
+              description: Batching strategy type
+            size:
+              type: integer
+              minimum: 1
+              description: Number of records to batch together
+              example: 100
+          example:
+            kind: count
+            size: 100
+        source:
+          $ref: '#/components/schemas/SourceServiceReference'
+        middlewares:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/ServiceReference'
+          description: |
+            Optional middleware services for data transformation and filtering.
+            Processed in order.
+          example:
+            - service_name: transformation-udf
+              resource: transform_function
+              output_encoding: json
+        schemas:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/SchemaServiceReference'
+          description: |
+            Optional schema services (e.g., Schema Registry) for schema management.
+        sinks:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ServiceReference'
+          description: |
+            List of destination services where processed data is sent.
+            At least one sink is required.
+          example:
+            - service_name: mongodb-prod
+              resource: raw_events
+              output_encoding: bson
+
+    # Service Reference Schema
+    ServiceReference:
+      type: object
+      title: Service Reference
+      description: |
+        Reference to a service with resource and encoding specifications.
+        Used for source, sink, and middleware services in a connector.
+      required:
+        - service_name
+        - resource
+        - output_encoding
+      properties:
+        service_name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: |
+            Name of the configured service to reference. Service must exist.
+          example: kafka-prod
+        resource:
+          type: string
+          description: |
+            Resource identifier within the service (topic, collection, etc.).
+            Format depends on service type:
+            - Kafka: Topic name
+            - MongoDB: Collection name
+            - Pub/Sub: Subscription/Topic name
+            - HTTP: Endpoint path
+          example: user_events
+        schema_id:
+          type: string
+          nullable: true
+          description: |
+            Optional schema identifier for schema validation/transformation.
+            Used when schema services are configured.
+          example: user_event_v1
+        output_encoding:
+          type: string
+          enum:
+            - json
+            - avro
+            - bson
+          description: |
+            Output data encoding format:
+            - **json**: JSON encoding
+            - **avro**: Apache Avro binary format
+            - **bson**: BSON (MongoDB binary JSON)
+          example: json
+
+    # Source Service Reference Schema
+    SourceServiceReference:
+      type: object
+      title: Source Service Reference
+      description: |
+        Reference to the source service where data is read from.
+        Extends ServiceReference with optional input encoding.
+      required:
+        - service_name
+        - resource
+        - output_encoding
+      properties:
+        service_name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Name of the configured source service
+          example: kafka-prod
+        resource:
+          type: string
+          description: Resource to read from (topic, collection, etc.)
+          example: raw_events
+        schema_id:
+          type: string
+          nullable: true
+          description: Optional schema identifier for input validation
+          example: raw_event_v1
+        input_encoding:
+          type: string
+          enum:
+            - json
+            - avro
+            - bson
+          nullable: true
+          description: |
+            Optional input data encoding format. If specified, data is decoded
+            from this format before processing.
+          example: json
+        output_encoding:
+          type: string
+          enum:
+            - json
+            - avro
+            - bson
+          description: |
+            Output encoding format after source processing.
+            Typically same as input_encoding if specified.
+          example: json
+
+    # Schema Service Reference Schema
+    SchemaServiceReference:
+      type: object
+      title: Schema Service Reference
+      description: |
+        Reference to a schema service (e.g., Schema Registry) for schema management.
+      required:
+        - id
+        - service_name
+        - resource
+      properties:
+        id:
+          type: string
+          description: Unique identifier for this schema reference
+          example: user_schema_v1
+        service_name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Name of the schema service
+          example: schema-registry
+        resource:
+          type: string
+          description: Resource path within the schema service
+          example: users/schema
+
+    # Base Service Schema (Union Type with Discriminator)
+    Service:
+      oneOf:
+        - $ref: '#/components/schemas/KafkaService'
+        - $ref: '#/components/schemas/MongoDbService'
+        - $ref: '#/components/schemas/PubSubService'
+        - $ref: '#/components/schemas/HttpService'
+        - $ref: '#/components/schemas/UdfService'
+      discriminator:
+        propertyName: provider
+        mapping:
+          kafka: '#/components/schemas/KafkaService'
+          mongodb: '#/components/schemas/MongoDbService'
+          pubsub: '#/components/schemas/PubSubService'
+          http: '#/components/schemas/HttpService'
+          udf: '#/components/schemas/UdfService'
+
+    # Kafka Service Schema
+    KafkaService:
+      type: object
+      title: Kafka Service
+      description: |
+        Apache Kafka service configuration. Connects to a Kafka cluster for
+        producing and consuming messages.
+      required:
+        - provider
+        - name
+        - config
+      properties:
+        provider:
+          type: string
+          enum:
+            - kafka
+          description: Service provider type
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Unique service identifier
+          example: kafka-prod
+        offset_seek_back_seconds:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: |
+            Number of seconds to seek back from the latest offset when starting.
+            Useful for replaying recent data. Null to start from latest.
+          example: 3600
+        config:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Kafka client configuration. Standard librdkafka options.
+            Sensitive values (password, token, secret) are masked in responses.
+            Use environment variable syntax: `key: "env:ENV_VAR_NAME"` to load from env.
+          example:
+            bootstrap.servers: "kafka-broker:9092"
+            group.id: "mstream-consumer"
+            security.protocol: "SASL_SSL"
+            sasl.mechanism: "PLAIN"
+            sasl.username: "user"
+            sasl.password: "env:KAFKA_PASSWORD"
+
+    # MongoDB Service Schema
+    MongoDbService:
+      type: object
+      title: MongoDB Service
+      description: |
+        MongoDB service configuration. Connects to a MongoDB instance or cluster
+        for reading and writing documents.
+      required:
+        - provider
+        - name
+        - connection_string
+        - db_name
+      properties:
+        provider:
+          type: string
+          enum:
+            - mongodb
+          description: Service provider type
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Unique service identifier
+          example: mongodb-prod
+        connection_string:
+          type: string
+          format: uri
+          description: |
+            MongoDB connection string (URI). Sensitive credentials are masked in responses.
+            Format: `mongodb[+srv]://[username:password@]host[:port][/database][?options]`
+          example: "mongodb+srv://user:****@cluster.mongodb.net/mydb?retryWrites=true"
+        db_name:
+          type: string
+          description: Default database name for operations
+          example: myapp_db
+
+    # Google Pub/Sub Service Schema
+    PubSubService:
+      type: object
+      title: Google Pub/Sub Service
+      description: |
+        Google Cloud Pub/Sub service configuration. Connects to GCP Pub/Sub
+        for publishing and subscribing to topics.
+      required:
+        - provider
+        - name
+        - auth
+      properties:
+        provider:
+          type: string
+          enum:
+            - pubsub
+          description: Service provider type
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Unique service identifier
+          example: gcp-pubsub
+        auth:
+          oneOf:
+            - $ref: '#/components/schemas/PubSubStaticTokenAuth'
+            - $ref: '#/components/schemas/PubSubServiceAccountAuth'
+          description: GCP authentication configuration
+
+    # Pub/Sub Authentication Schemas
+    PubSubStaticTokenAuth:
+      type: object
+      title: Pub/Sub Static Token Auth
+      description: |
+        Authenticate using a static token from environment variable.
+      required:
+        - kind
+        - env_token_name
+      properties:
+        kind:
+          type: string
+          enum:
+            - static_token
+          description: Authentication type
+        env_token_name:
+          type: string
+          description: |
+            Environment variable name containing the authentication token.
+            Token value is masked in responses.
+          example: "GCP_PUBSUB_TOKEN"
+
+    PubSubServiceAccountAuth:
+      type: object
+      title: Pub/Sub Service Account Auth
+      description: |
+        Authenticate using a GCP service account key file.
+      required:
+        - kind
+        - account_key_path
+      properties:
+        kind:
+          type: string
+          enum:
+            - service_account
+          description: Authentication type
+        account_key_path:
+          type: string
+          description: |
+            File path to the GCP service account JSON key file.
+            Path is relative to application working directory.
+          example: "/etc/secrets/gcp-key.json"
+
+    # HTTP Service Schema
+    HttpService:
+      type: object
+      title: HTTP Service
+      description: |
+        HTTP service configuration. Connects to HTTP(S) endpoints for
+        sending data via HTTP requests.
+      required:
+        - provider
+        - name
+        - host
+      properties:
+        provider:
+          type: string
+          enum:
+            - http
+          description: Service provider type
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Unique service identifier
+          example: http-webhook
+        host:
+          type: string
+          format: uri
+          description: |
+            Base HTTP(S) URL for the service.
+            Format: `http[s]://hostname[:port]`
+          example: "https://webhook.example.com"
+        max_retries:
+          type: integer
+          nullable: true
+          minimum: 0
+          default: 3
+          description: |
+            Maximum number of retry attempts for failed HTTP requests.
+            Default is 3. Null uses default.
+          example: 5
+        base_backoff_ms:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: 100
+          description: |
+            Base backoff time in milliseconds for exponential backoff retry strategy.
+            Default is 100. Null uses default.
+          example: 200
+        connection_timeout_sec:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: 30
+          description: |
+            Connection timeout in seconds. Default is 30. Null uses default.
+          example: 60
+        timeout_sec:
+          type: integer
+          nullable: true
+          minimum: 1
+          default: 30
+          description: |
+            Request timeout in seconds. Default is 30. Null uses default.
+          example: 45
+        tcp_keepalive_sec:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: |
+            TCP keepalive interval in seconds. Null disables keepalive.
+          example: 30
+
+    # UDF (User Defined Function) Service Schema
+    UdfService:
+      type: object
+      title: UDF Service
+      description: |
+        User-defined function service using scripting engines (currently Rhai).
+        Provides data transformation and filtering capabilities.
+      required:
+        - provider
+        - name
+        - script_path
+        - engine
+      properties:
+        provider:
+          type: string
+          enum:
+            - udf
+          description: Service provider type
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Unique service identifier
+          example: data-transformer
+        script_path:
+          type: string
+          description: |
+            File path to the main script file. Path is relative to working directory.
+            Supports Rhai script files.
+          example: "scripts/transform.rhai"
+        engine:
+          type: object
+          required:
+            - kind
+          properties:
+            kind:
+              type: string
+              enum:
+                - rhai
+              description: Scripting engine type (Rhai is currently supported)
+          description: Scripting engine configuration
+        sources:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/UdfScript'
+          description: |
+            Optional additional script files to load as dependencies.
+            Processed before the main script.
+
+    # UDF Script Schema
+    UdfScript:
+      type: object
+      title: UDF Script
+      description: Additional script file for UDF service
+      required:
+        - filename
+        - content
+      properties:
+        filename:
+          type: string
+          description: Name of the script file
+          example: "helpers.rhai"
+        content:
+          type: string
+          description: Content of the script file
+          example: |
+            fn double(x) {
+              x * 2
+            }
+
+    # Encoding Schema
+    Encoding:
+      type: string
+      enum:
+        - json
+        - avro
+        - bson
+      description: |
+        Data encoding format:
+        - **json**: JSON text encoding
+        - **avro**: Apache Avro binary encoding
+        - **bson**: BSON binary JSON encoding (MongoDB native)
+
+  parameters:
+    ResourceName:
+      name: name
+      in: path
+      required: true
+      description: |
+        Resource name (job or service identifier).
+        Must be 1-64 characters, containing only alphanumeric characters, hyphens, and underscores.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[a-zA-Z0-9_-]+$'
+      example: my-job-01
+
+  responses:
+    BadRequest400:
+      description: Bad request or validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            invalid_input:
+              summary: Invalid input field
+              value:
+                error:
+                  code: INVALID_INPUT
+                  message: "Invalid field 'name': job name cannot be empty"
+                  details:
+                    field: name
+                    reason: job name cannot be empty
+            bad_request:
+              summary: Malformed request
+              value:
+                error:
+                  code: BAD_REQUEST
+                  message: Invalid service configuration provided
+                  details: null
+
+    NotFound404:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            job_not_found:
+              summary: Job not found
+              value:
+                error:
+                  code: NOT_FOUND
+                  message: "job 'my-job' not found"
+                  details: null
+            service_not_found:
+              summary: Service not found
+              value:
+                error:
+                  code: NOT_FOUND
+                  message: "service 'kafka-prod' not found"
+                  details: null
+
+    Conflict409:
+      description: Request conflicts with current state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            job_already_exists:
+              summary: Job already exists
+              value:
+                error:
+                  code: CONFLICT
+                  message: "Job 'pipeline-01' already exists"
+                  details: null
+            service_in_use:
+              summary: Service in use by jobs
+              value:
+                error:
+                  code: CONFLICT
+                  message: "Service 'mongodb-prod' is in use by jobs: job-1, job-2"
+                  details: null
+
+    InternalError500:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            pipeline_error:
+              summary: Missing pipeline configuration
+              value:
+                error:
+                  code: INTERNAL_ERROR
+                  message: "Cannot restart job 'my-job': missing pipeline configuration"
+                  details: null
+            storage_error:
+              summary: Storage error
+              value:
+                error:
+                  code: INTERNAL_ERROR
+                  message: "Storage error: database connection failed"
+                  details: null
