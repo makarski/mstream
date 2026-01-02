@@ -17,5 +17,5 @@ pub mod http;
 pub mod server;
 
 pub use client::ApiClient;
-pub use http::{handle_mcp_request, McpState};
+pub use http::{handle_mcp_request_generic as handle_mcp_request, McpState};
 pub use server::McpServer;

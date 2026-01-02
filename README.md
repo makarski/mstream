@@ -288,6 +288,47 @@ mstream exposes a REST API for monitoring and management (default port: `8787`).
 ]
 ```
 
+## MCP Support
+
+mstream includes built-in support for the Model Context Protocol (MCP), allowing AI assistants like Claude Desktop to interact with mstream through a standardized interface.
+
+### Quick Start
+
+1. **Start mstream** with default API port (8787):
+   ```bash
+   cargo run
+   ```
+
+2. **Configure Claude Desktop** to connect to the MCP server by adding to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+   ```json
+   {
+     "mcpServers": {
+       "mstream": {
+         "url": "http://localhost:8787/mcp"
+       }
+     }
+   }
+   ```
+
+3. **Ask Claude** to interact with mstream:
+   > "List all mstream jobs"
+   > "Create a new job for the kafka-to-mongo service"
+   > "Stop job with ID abc123"
+
+### Available Tools
+
+The MCP server exposes 7 tools for managing jobs and services:
+
+- **list_jobs** - List all jobs with their status
+- **create_job** - Create a new job for a service
+- **stop_job** - Stop a running job
+- **restart_job** - Restart a stopped job
+- **list_services** - List all configured services
+- **create_service** - Create a new service with configuration
+- **delete_service** - Delete an existing service
+
+For detailed configuration and usage instructions, see [docs/MCP_SETUP.md](docs/MCP_SETUP.md).
+
 ## Technical Reference
 
 ### PubSub Message Structure

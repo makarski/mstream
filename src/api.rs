@@ -11,15 +11,21 @@ use tracing::{error, info};
 
 use crate::config::{Connector, Service};
 use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
+use crate::mcp::McpState;
 
 #[derive(Clone)]
 pub struct AppState {
     job_manager: Arc<Mutex<JobManager>>,
+    mcp_state: McpState,
 }
 
 impl AppState {
-    pub fn new(jb: Arc<Mutex<JobManager>>) -> Self {
-        Self { job_manager: jb }
+    pub fn new(jb: Arc<Mutex<JobManager>>, api_port: u16) -> Self {
+        let api_base_url = format!("http://localhost:{}", api_port);
+        Self {
+            job_manager: jb,
+            mcp_state: McpState::new(api_base_url),
+        }
     }
 }
 
@@ -33,6 +39,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}", get(get_one_service))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
+        .route("/mcp", post(mcp_handler))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -205,6 +212,26 @@ async fn get_one_service(
         Err(err) => {
             error!("failed to get a service: {}: {}", name, err);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
+        }
+    }
+}
+
+/// POST /mcp - MCP JSON-RPC handler
+async fn mcp_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match crate::mcp::http::handle_mcp_request_generic(State(state.mcp_state.clone()), Json(payload)).await {
+        Ok(response) => (StatusCode::OK, response),
+        Err((_status, _error)) => {
+            let error_response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32603,
+                    "message": "Internal server error"
+                }
+            });
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
         }
     }
 }

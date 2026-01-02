@@ -51,7 +51,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     };
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let api_app_state = AppState::new(shared_jm.clone());
+    let api_app_state = AppState::new(shared_jm.clone(), api_port);
 
     tokio::spawn(async move {
         if let Err(err) = api::start_server(api_app_state, api_port).await {
