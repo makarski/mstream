@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::{
     sync::{RwLock, mpsc::UnboundedSender},
     task::JoinHandle,
@@ -19,6 +20,31 @@ use crate::{
 };
 
 pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
+
+/// Domain error type for job manager operations
+#[derive(Debug, Error)]
+pub enum JobManagerError {
+    #[error("Job '{0}' not found")]
+    JobNotFound(String),
+
+    #[error("Job '{0}' already exists")]
+    JobAlreadyExists(String),
+
+    #[error("Service '{0}' not found")]
+    ServiceNotFound(String),
+
+    #[error("Service '{0}' is in use by jobs: {1:?}")]
+    ServiceInUse(String, Vec<String>),
+
+    #[error("Cannot restart job '{0}': missing pipeline configuration")]
+    MissingPipeline(String),
+
+    #[error("Invalid service reference: {0}")]
+    InvalidServiceReference(String),
+
+    #[error("Storage error: {0}")]
+    StorageError(#[from] anyhow::Error),
+}
 
 pub struct JobManager {
     service_registry: Arc<RwLock<ServiceRegistry>>,
@@ -293,6 +319,20 @@ impl JobManager {
         let registry = self.service_registry.read().await;
         let service = registry.service_definition(service_name).await?;
         Ok(service)
+    }
+
+    /// Check if a job exists (either running or in storage)
+    pub async fn job_exists(&self, name: &str) -> anyhow::Result<bool> {
+        Ok(self.running_jobs.contains_key(name) || self.job_store.get(name).await?.is_some())
+    }
+
+    /// Check if a service exists
+    pub async fn service_exists(&self, name: &str) -> anyhow::Result<bool> {
+        self.service_registry
+            .read()
+            .await
+            .service_exists(name)
+            .await
     }
 
     async fn set_desired_job_state(
