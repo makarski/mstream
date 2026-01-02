@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::{Connector, Service};
-use crate::job_manager::{JobManager, JobMetadata, ServiceStatus, JobManagerError};
+use crate::job_manager::{JobManager, JobManagerError, JobMetadata, ServiceStatus};
 
 pub mod validation;
 
@@ -23,22 +23,19 @@ pub use validation::{Validate, ValidationError, validate_resource_name};
 pub enum ApiError {
     /// 400 Bad Request - client sent invalid data
     BadRequest(String),
-    
+
     /// 400 Bad Request - input validation failed
-    InvalidInput { 
-        field: String, 
-        reason: String 
-    },
-    
+    InvalidInput { field: String, reason: String },
+
     /// 404 Not Found - resource doesn't exist
-    NotFound { 
-        resource: String, 
-        identifier: String 
+    NotFound {
+        resource: String,
+        identifier: String,
     },
-    
+
     /// 409 Conflict - request conflicts with current state
     Conflict(String),
-    
+
     /// 500 Internal Server Error - unexpected server-side error
     InternalError(String),
 }
@@ -95,12 +92,7 @@ struct ErrorDetail {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message, details) = match self {
-            ApiError::BadRequest(msg) => (
-                StatusCode::BAD_REQUEST,
-                "BAD_REQUEST",
-                msg,
-                None,
-            ),
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg, None),
             ApiError::InvalidInput { field, reason } => (
                 StatusCode::BAD_REQUEST,
                 "INVALID_INPUT",
@@ -110,18 +102,16 @@ impl IntoResponse for ApiError {
                     "reason": reason
                 })),
             ),
-            ApiError::NotFound { resource, identifier } => (
+            ApiError::NotFound {
+                resource,
+                identifier,
+            } => (
                 StatusCode::NOT_FOUND,
                 "NOT_FOUND",
                 format!("{} '{}' not found", resource, identifier),
                 None,
             ),
-            ApiError::Conflict(msg) => (
-                StatusCode::CONFLICT,
-                "CONFLICT",
-                msg,
-                None,
-            ),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg, None),
             ApiError::InternalError(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
@@ -155,34 +145,26 @@ impl IntoResponse for ApiError {
 impl From<JobManagerError> for ApiError {
     fn from(err: JobManagerError) -> Self {
         match err {
-            JobManagerError::JobNotFound(name) => {
-                ApiError::NotFound {
-                    resource: "job".to_string(),
-                    identifier: name,
-                }
-            }
+            JobManagerError::JobNotFound(name) => ApiError::NotFound {
+                resource: "job".to_string(),
+                identifier: name,
+            },
             JobManagerError::JobAlreadyExists(name) => {
                 ApiError::Conflict(format!("Job '{}' already exists", name))
             }
-            JobManagerError::ServiceNotFound(name) => {
-                ApiError::NotFound {
-                    resource: "service".to_string(),
-                    identifier: name,
-                }
-            }
-            JobManagerError::ServiceInUse(name, jobs) => {
-                ApiError::Conflict(format!(
-                    "Service '{}' is in use by jobs: {}",
-                    name,
-                    jobs.join(", ")
-                ))
-            }
-            JobManagerError::MissingPipeline(name) => {
-                ApiError::InternalError(format!(
-                    "Cannot restart job '{}': missing pipeline configuration",
-                    name
-                ))
-            }
+            JobManagerError::ServiceNotFound(name) => ApiError::NotFound {
+                resource: "service".to_string(),
+                identifier: name,
+            },
+            JobManagerError::ServiceInUse(name, jobs) => ApiError::Conflict(format!(
+                "Service '{}' is in use by jobs: {}",
+                name,
+                jobs.join(", ")
+            )),
+            JobManagerError::MissingPipeline(name) => ApiError::InternalError(format!(
+                "Cannot restart job '{}': missing pipeline configuration",
+                name
+            )),
             JobManagerError::InvalidServiceReference(reason) => {
                 ApiError::InternalError(format!("Invalid service reference: {}", reason))
             }
@@ -192,7 +174,6 @@ impl From<JobManagerError> for ApiError {
         }
     }
 }
-
 
 #[derive(Clone)]
 pub struct AppState {
@@ -243,15 +224,14 @@ async fn stop_job(
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Message<String>>), ApiError> {
     // Validate job name format
-    validate_resource_name(&name, "job")
-        .map_err(|e| ApiError::InvalidInput {
-            field: e.field,
-            reason: e.reason,
-        })?;
+    validate_resource_name(&name, "job").map_err(|e| ApiError::InvalidInput {
+        field: e.field,
+        reason: e.reason,
+    })?;
 
     info!("stopping job: {}", name);
     let mut jm = state.job_manager.lock().await;
-    
+
     // Stop the job (returns JobNotFound error if not found)
     jm.stop_job(&name).await.map_err(|e| {
         // Convert anyhow::Error to JobManagerError for proper error mapping
@@ -277,15 +257,14 @@ async fn restart_job(
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Message<JobMetadata>>), ApiError> {
     // Validate job name format
-    validate_resource_name(&name, "job")
-        .map_err(|e| ApiError::InvalidInput {
-            field: e.field,
-            reason: e.reason,
-        })?;
+    validate_resource_name(&name, "job").map_err(|e| ApiError::InvalidInput {
+        field: e.field,
+        reason: e.reason,
+    })?;
 
     info!("restarting job: {}", name);
     let mut jm = state.job_manager.lock().await;
-    
+
     let metadata = jm.restart_job(&name).await.map_err(|e| {
         // Convert anyhow::Error to appropriate ApiError
         let err_str = e.to_string();
@@ -295,7 +274,10 @@ async fn restart_job(
                 identifier: name.clone(),
             }
         } else if err_str.contains("missing pipeline") {
-            ApiError::InternalError(format!("Cannot restart job '{}': missing pipeline configuration", name))
+            ApiError::InternalError(format!(
+                "Cannot restart job '{}': missing pipeline configuration",
+                name
+            ))
         } else {
             ApiError::InternalError(format!("failed to restart job: {}", e))
         }
@@ -316,22 +298,23 @@ async fn create_start_job(
     Json(conn_cfg): Json<Connector>,
 ) -> Result<(StatusCode, Json<Message<JobMetadata>>), ApiError> {
     // Validate connector name format
-    validate_resource_name(&conn_cfg.name, "job")
-        .map_err(|e| ApiError::InvalidInput {
-            field: e.field,
-            reason: e.reason,
-        })?;
+    validate_resource_name(&conn_cfg.name, "job").map_err(|e| ApiError::InvalidInput {
+        field: e.field,
+        reason: e.reason,
+    })?;
 
     info!("creating new job: {}", conn_cfg.name);
 
     let mut jm = state.job_manager.lock().await;
-    
+
     // Check if job already exists
-    let job_exists = jm.list_jobs().await
+    let job_exists = jm
+        .list_jobs()
+        .await
         .ok()
         .map(|jobs| jobs.iter().any(|j| j.name == conn_cfg.name))
         .unwrap_or(false);
-    
+
     if job_exists {
         return Err(ApiError::job_already_exists(&conn_cfg.name));
     }
@@ -378,28 +361,29 @@ async fn create_service(
     Json(service_cfg): Json<Service>,
 ) -> Result<(StatusCode, Json<Message<Service>>), ApiError> {
     let service_name = service_cfg.name();
-    
+
     // Validate service name format
-    validate_resource_name(service_name, "service")
-        .map_err(|e| ApiError::InvalidInput {
-            field: e.field,
-            reason: e.reason,
-        })?;
+    validate_resource_name(service_name, "service").map_err(|e| ApiError::InvalidInput {
+        field: e.field,
+        reason: e.reason,
+    })?;
 
     let jm = state.job_manager.lock().await;
-    
+
     // Check if service already exists
-    let service_exists = jm.list_services().await
+    let service_exists = jm
+        .list_services()
+        .await
         .ok()
         .map(|services| services.iter().any(|s| s.service.name() == service_name))
         .unwrap_or(false);
-    
+
     if service_exists {
         return Err(ApiError::service_already_exists(service_name));
     }
 
     let service = service_cfg.clone();
-    
+
     // Create the service
     jm.create_service(service_cfg).await.map_err(|e| {
         let err_str = e.to_string();
@@ -425,14 +409,13 @@ async fn remove_service(
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Message<()>>), ApiError> {
     // Validate service name format
-    validate_resource_name(&name, "service")
-        .map_err(|e| ApiError::InvalidInput {
-            field: e.field,
-            reason: e.reason,
-        })?;
+    validate_resource_name(&name, "service").map_err(|e| ApiError::InvalidInput {
+        field: e.field,
+        reason: e.reason,
+    })?;
 
     let jm = state.job_manager.lock().await;
-    
+
     // This will return ServiceInUse error if jobs are using it
     jm.remove_service(&name).await.map_err(|e| {
         let err_str = e.to_string();
@@ -462,11 +445,10 @@ async fn get_one_service(
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Service>), ApiError> {
     // Validate service name format
-    validate_resource_name(&name, "service")
-        .map_err(|e| ApiError::InvalidInput {
-            field: e.field,
-            reason: e.reason,
-        })?;
+    validate_resource_name(&name, "service").map_err(|e| ApiError::InvalidInput {
+        field: e.field,
+        reason: e.reason,
+    })?;
 
     let jm = state.job_manager.lock().await;
     let service = jm.get_service(&name).await.map_err(|e| {
