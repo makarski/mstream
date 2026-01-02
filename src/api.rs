@@ -22,10 +22,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(jb: Arc<Mutex<JobManager>>) -> Self {
+    pub fn new(jb: Arc<Mutex<JobManager>>, api_port: u16) -> Self {
+        let api_base_url = format!("http://localhost:{}", api_port);
         Self {
             job_manager: jb.clone(),
-            mcp_state: mcp::http::McpState::new(jb),
+            mcp_state: mcp::http::McpState::new(api_base_url),
         }
     }
 }

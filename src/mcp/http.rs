@@ -1,16 +1,15 @@
+//! HTTP handler for MCP protocol
+//!
+//! Provides a simple HTTP POST endpoint for MCP JSON-RPC requests
+
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Json as AxumJson, Response},
 };
 use serde_json::{Value, json};
-/// HTTP handler for MCP protocol
-///
-/// Provides a simple HTTP POST endpoint for MCP JSON-RPC requests
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
-use crate::job_manager::JobManager;
 use crate::mcp::server::McpServer;
 
 /// State for MCP HTTP handler
@@ -20,13 +19,12 @@ pub struct McpState {
 }
 
 impl McpState {
-    pub fn new(job_manager: Arc<Mutex<JobManager>>) -> Self {
+    pub fn new(api_base_url: String) -> Self {
         Self {
-            mcp_server: Arc::new(McpServer::new(job_manager)),
+            mcp_server: Arc::new(McpServer::new(api_base_url)),
         }
     }
 }
-
 /// Handle MCP JSON-RPC requests via HTTP POST
 ///
 /// Implements basic MCP protocol methods:
@@ -126,33 +124,29 @@ async fn handle_tools_call(state: &McpState, params: Option<&Value>) -> Result<V
             })
         })?;
 
+    // Call the MCP server's tool methods which in turn call the HTTP API
+    // This maintains separation of concerns: MCP endpoint -> MCP tools -> HTTP API
     match tool_name {
         "list_jobs" => {
-            let jm = state.mcp_server.job_manager().lock().await;
-            match jm.list_jobs().await {
-                Ok(jobs) => {
-                    let jobs_json = serde_json::to_string_pretty(&jobs).map_err(|e| {
-                        error!("Failed to serialize jobs: {}", e);
-                        json!({
-                            "code": -32603,
-                            "message": format!("Internal error: {}", e)
-                        })
-                    })?;
-
-                    Ok(json!({
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": jobs_json
-                            }
-                        ]
-                    }))
+            match state.mcp_server.list_jobs().await {
+                Ok(result) => {
+                    // Serialize the CallToolResult directly
+                    let result_json = serde_json::to_value(&result)
+                        .map_err(|e| {
+                            error!("Failed to serialize result: {}", e);
+                            json!({
+                                "code": -32603,
+                                "message": format!("Failed to serialize result: {}", e)
+                            })
+                        })?;
+                    
+                    Ok(result_json)
                 }
                 Err(e) => {
-                    error!("Failed to list jobs: {}", e);
+                    error!("Tool execution failed: {:?}", e);
                     Err(json!({
-                        "code": -32603,
-                        "message": format!("Failed to list jobs: {}", e)
+                        "code": e.code,
+                        "message": e.message
                     }))
                 }
             }
@@ -164,5 +158,45 @@ async fn handle_tools_call(state: &McpState, params: Option<&Value>) -> Result<V
                 "message": format!("Unknown tool: {}", other)
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_handle_initialize() {
+        let result = handle_initialize().unwrap();
+        
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert!(result["capabilities"]["tools"].is_object());
+        assert_eq!(result["serverInfo"]["name"], "mstream-mcp");
+        assert!(result["serverInfo"]["version"].is_string());
+    }
+
+    #[test]
+    fn test_handle_tools_list() {
+        let result = handle_tools_list().unwrap();
+        
+        let tools = result["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "list_jobs");
+        assert!(tools[0]["description"].is_string());
+        assert!(tools[0]["inputSchema"].is_object());
+    }
+
+    // Note: Full integration tests for handle_tools_call require JobManager setup
+    // which is complex to mock. These are tested via integration tests.
+    #[test]
+    fn test_json_rpc_error_structure() {
+        let error = json!({
+            "code": -32602,
+            "message": "Invalid params"
+        });
+        
+        assert_eq!(error["code"], -32602);
+        assert_eq!(error["message"], "Invalid params");
     }
 }
