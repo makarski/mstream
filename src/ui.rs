@@ -387,6 +387,64 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
     layout(&format!("Job {}", job_name), &content)
 }
 
+/// Style configuration for a pipeline stage.
+struct StageStyle {
+    label: &'static str,
+    text_class: &'static str,
+    bg_class: &'static str,
+    border_color: &'static str,
+}
+
+const SOURCE_STYLE: StageStyle = StageStyle {
+    label: "Source",
+    text_class: "has-text-success-dark",
+    bg_class: "has-background-success-light",
+    border_color: "#48c774",
+};
+
+const TRANSFORM_STYLE: StageStyle = StageStyle {
+    label: "Transform",
+    text_class: "has-text-warning-dark",
+    bg_class: "has-background-warning-light",
+    border_color: "#ffdd57",
+};
+
+const SINK_STYLE: StageStyle = StageStyle {
+    label: "Sink",
+    text_class: "has-text-info-dark",
+    bg_class: "has-background-info-light",
+    border_color: "#3298dc",
+};
+
+/// Renders a single pipeline stage (source, transform, or sink).
+fn render_stage(
+    style: &StageStyle,
+    service_name: &str,
+    resource: &str,
+    schemas_html: &str,
+) -> String {
+    format!(
+        r#"
+        <div class="stage">
+            <div class="box {}" style="border-top: 4px solid {};">
+                <strong class="{}">{}</strong>
+                <div class="is-size-6 has-text-weight-medium"><a href="/ui/services/{}">{}</a></div>
+                <div class="resource-name mt-1">{}</div>
+                {}
+            </div>
+        </div>
+        "#,
+        style.bg_class,
+        style.border_color,
+        style.text_class,
+        style.label,
+        service_name,
+        service_name,
+        resource,
+        schemas_html
+    )
+}
+
 fn render_pipeline_viz(connector: &Connector) -> String {
     let mut html = String::from(r#"<div class="pipeline-viz">"#);
     let schemas = connector.schemas.as_deref().unwrap_or(&[]);
@@ -418,46 +476,26 @@ fn render_pipeline_viz(connector: &Connector) -> String {
     // Source
     let source_svc = escape_html(&connector.source.service_name);
     let source_resource = escape_html(&connector.source.resource);
-    html.push_str(&format!(
-        r#"
-        <div class="stage">
-            <div class="box has-background-success-light" style="border-top: 4px solid #48c774;">
-                <strong class="has-text-success-dark">Source</strong>
-                <div class="is-size-6 has-text-weight-medium"><a href="/ui/services/{}">{}</a></div>
-                <div class="resource-name mt-1">{}</div>
-                {}
-            </div>
-        </div>
-        <div class="arrow">&rarr;</div>
-        "#,
-        source_svc,
-        source_svc,
-        source_resource,
-        get_schemas_html(&connector.source.service_name, &connector.source.resource)
+    html.push_str(&render_stage(
+        &SOURCE_STYLE,
+        &source_svc,
+        &source_resource,
+        &get_schemas_html(&connector.source.service_name, &connector.source.resource),
     ));
+    html.push_str(r#"<div class="arrow">&rarr;</div>"#);
 
     // Middlewares
     if let Some(middlewares) = &connector.middlewares {
         for mw in middlewares {
             let mw_svc = escape_html(&mw.service_name);
             let mw_resource = escape_html(&mw.resource);
-            html.push_str(&format!(
-                r#"
-                <div class="stage">
-                    <div class="box has-background-warning-light" style="border-top: 4px solid #ffdd57;">
-                        <strong class="has-text-warning-dark">Transform</strong>
-                        <div class="is-size-6 has-text-weight-medium"><a href="/ui/services/{}">{}</a></div>
-                        <div class="resource-name mt-1">{}</div>
-                        {}
-                    </div>
-                </div>
-                <div class="arrow">&rarr;</div>
-                "#,
-                mw_svc,
-                mw_svc,
-                mw_resource,
-                get_schemas_html(&mw.service_name, &mw.resource)
+            html.push_str(&render_stage(
+                &TRANSFORM_STYLE,
+                &mw_svc,
+                &mw_resource,
+                &get_schemas_html(&mw.service_name, &mw.resource),
             ));
+            html.push_str(r#"<div class="arrow">&rarr;</div>"#);
         }
     }
 
@@ -466,21 +504,11 @@ fn render_pipeline_viz(connector: &Connector) -> String {
     for sink in &connector.sinks {
         let sink_svc = escape_html(&sink.service_name);
         let sink_resource = escape_html(&sink.resource);
-        html.push_str(&format!(
-            r#"
-            <div class="stage">
-                <div class="box has-background-info-light" style="border-top: 4px solid #3298dc;">
-                    <strong class="has-text-info-dark">Sink</strong>
-                    <div class="is-size-6 has-text-weight-medium"><a href="/ui/services/{}">{}</a></div>
-                    <div class="resource-name mt-1">{}</div>
-                    {}
-                </div>
-            </div>
-            "#,
-            sink_svc,
-            sink_svc,
-            sink_resource,
-            get_schemas_html(&sink.service_name, &sink.resource)
+        html.push_str(&render_stage(
+            &SINK_STYLE,
+            &sink_svc,
+            &sink_resource,
+            &get_schemas_html(&sink.service_name, &sink.resource),
         ));
     }
     html.push_str("</div>");
@@ -539,20 +567,18 @@ async fn create_job_ui(
     )
 }
 
-fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> {
-    let mut rows = String::new();
-    for job in jobs {
-        rows.push_str(&render_job_row(job));
-    }
+/// Renders a table with optional error message.
+fn render_table(headers: &[&str], rows: &str, error: Option<&str>) -> Html<String> {
+    let error_html = error
+        .map(|err| {
+            format!(
+                "<div class='notification is-danger is-light'>{}</div>",
+                escape_html(err)
+            )
+        })
+        .unwrap_or_default();
 
-    let error_html = if let Some(err) = error {
-        format!(
-            "<div class='notification is-danger is-light'>{}</div>",
-            escape_html(err)
-        )
-    } else {
-        String::new()
-    };
+    let header_cells: String = headers.iter().map(|h| format!("<th>{}</th>", h)).collect();
 
     Html(format!(
         r#"
@@ -561,10 +587,7 @@ fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> 
             <table class="table is-fullwidth is-striped is-hoverable">
                 <thead>
                     <tr>
-                        <th>Name</th>
-                        <th>State</th>
-                        <th>Started At</th>
-                        <th>Actions</th>
+                        {}
                     </tr>
                 </thead>
                 <tbody>
@@ -573,8 +596,13 @@ fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> 
             </table>
         </div>
         "#,
-        error_html, rows
+        error_html, header_cells, rows
     ))
+}
+
+fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> {
+    let rows: String = jobs.iter().map(render_job_row).collect();
+    render_table(&["Name", "State", "Started At", "Actions"], &rows, error)
 }
 
 fn render_job_row(job: &JobMetadata) -> String {
@@ -813,34 +841,58 @@ async fn get_service_details(
     layout(&format!("Service {}", service_name), &content)
 }
 
+/// Reads a single script file and returns (filename, content) or None on error.
+async fn read_script_file(path: &std::path::Path) -> Option<(String, String)> {
+    let content = tokio::fs::read_to_string(path).await.ok()?;
+    let filename = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    Some((filename, content))
+}
+
+/// Reads script files from a path (file or directory) and returns (filename, content) pairs.
+async fn read_scripts_from_path(path: &std::path::Path) -> Vec<(String, String)> {
+    if path.is_file() {
+        return read_script_file(path).await.into_iter().collect();
+    }
+
+    if !path.is_dir() {
+        return Vec::new();
+    }
+
+    let Ok(mut entries) = tokio::fs::read_dir(path).await else {
+        return Vec::new();
+    };
+
+    let mut scripts = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let entry_path = entry.path();
+        if !entry_path.is_file() {
+            continue;
+        }
+        if let Some(script) = read_script_file(&entry_path).await {
+            scripts.push(script);
+        }
+    }
+    scripts
+}
+
 async fn load_udf_scripts(config: &UdfConfig) -> String {
     let mut html = String::from("<h2 class='title is-4 mt-6'>Scripts</h2>");
 
-    if let Some(sources) = &config.sources {
-        for script in sources {
-            html.push_str(&render_script(&script.filename, &script.content));
-        }
-        return html;
-    }
+    let scripts: Vec<(String, String)> = if let Some(sources) = &config.sources {
+        sources
+            .iter()
+            .map(|s| (s.filename.clone(), s.content.clone()))
+            .collect()
+    } else {
+        read_scripts_from_path(std::path::Path::new(&config.script_path)).await
+    };
 
-    let path = std::path::Path::new(&config.script_path);
-    if path.is_dir() {
-        if let Ok(mut entries) = tokio::fs::read_dir(path).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                        let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                        html.push_str(&render_script(&filename, &content));
-                    }
-                }
-            }
-        }
-    } else if path.is_file() {
-        if let Ok(content) = tokio::fs::read_to_string(&path).await {
-            let filename = path.file_name().unwrap_or_default().to_string_lossy();
-            html.push_str(&render_script(&filename, &content));
-        }
+    for (filename, content) in scripts {
+        html.push_str(&render_script(&filename, &content));
     }
 
     html
@@ -903,41 +955,8 @@ async fn remove_service_ui(
 }
 
 fn render_services_table(services: &[ServiceStatus], error: Option<&str>) -> Html<String> {
-    let mut rows = String::new();
-    for svc in services {
-        rows.push_str(&render_service_row(svc));
-    }
-
-    let error_html = if let Some(err) = error {
-        format!(
-            "<div class='notification is-danger is-light'>{}</div>",
-            escape_html(err)
-        )
-    } else {
-        String::new()
-    };
-
-    Html(format!(
-        r#"
-        {}
-        <div class="table-container">
-            <table class="table is-fullwidth is-striped is-hoverable">
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Provider</th>
-                        <th>Used By</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {}
-                </tbody>
-            </table>
-        </div>
-        "#,
-        error_html, rows
-    ))
+    let rows: String = services.iter().map(render_service_row).collect();
+    render_table(&["Name", "Provider", "Used By", "Actions"], &rows, error)
 }
 
 fn render_service_row(status: &ServiceStatus) -> String {
