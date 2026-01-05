@@ -144,7 +144,7 @@ async fn get_root() -> Html<String> {
                     </form>
                 </details>
             </div>
-            <div id="services-container" hx-get="/ui/services" hx-trigger="load">
+            <div id="services-container" hx-get="/ui/services" hx-trigger="load, services-update from:body">
                 <progress class="progress is-small is-info" max="100">15%</progress>
             </div>
         </div>
@@ -390,6 +390,7 @@ fn render_pipeline_viz(connector: &Connector) -> String {
         ));
     }
     html.push_str("</div>");
+
     html.push_str("</div>");
     html
 }
@@ -418,13 +419,16 @@ struct CreateConfigForm {
 async fn create_job_ui(
     State(state): State<AppState>,
     Form(form): Form<CreateConfigForm>,
-) -> Html<String> {
+) -> impl IntoResponse {
     let connector: Connector = match serde_json::from_str(&form.config_json) {
         Ok(c) => c,
         Err(e) => {
             let jm = state.job_manager.lock().await;
             let jobs = jm.list_jobs().await.unwrap_or_default();
-            return render_jobs_table(&jobs, Some(&format!("Invalid JSON: {}", e)));
+            return (
+                [("HX-Trigger", "services-update")],
+                render_jobs_table(&jobs, Some(&format!("Invalid JSON: {}", e))),
+            );
         }
     };
 
@@ -435,7 +439,10 @@ async fn create_job_ui(
     };
 
     let jobs = jm.list_jobs().await.unwrap_or_default();
-    render_jobs_table(&jobs, error.as_deref())
+    (
+        [("HX-Trigger", "services-update")],
+        render_jobs_table(&jobs, error.as_deref()),
+    )
 }
 
 fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> {
@@ -535,7 +542,11 @@ async fn stop_job_ui(
 
     let jm = state.job_manager.lock().await;
     if let Ok(Some(job)) = jm.get_job(&name).await {
-        return Html(render_job_row(&job)).into_response();
+        return (
+            [("HX-Trigger", "services-update")],
+            Html(render_job_row(&job)),
+        )
+            .into_response();
     }
 
     Html(format!(
@@ -566,7 +577,11 @@ async fn restart_job_ui(
     }
 
     match res {
-        Ok(job) => Html(render_job_row(&job)).into_response(),
+        Ok(job) => (
+            [("HX-Trigger", "services-update")],
+            Html(render_job_row(&job)),
+        )
+            .into_response(),
         Err(_) => Html(format!(
             "<tr><td colspan='4' class='has-text-danger'>Error restarting job {}</td></tr>",
             name
