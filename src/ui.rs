@@ -20,6 +20,103 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+const LAYOUT_CSS: &str = r#"
+    .pipeline-viz { display: flex; align-items: center; gap: 1rem; overflow-x: auto; padding: 1rem 0; }
+    .stage { min-width: 200px; text-align: center; }
+    .stage .box { height: 100%; display: flex; flex-direction: column; justify-content: center; }
+    .arrow { font-size: 1.5rem; color: #b5b5b5; }
+    .resource-name { font-family: monospace; font-size: 0.85rem; word-break: break-all; color: #666; }
+    .navbar { border-bottom: 1px solid #f5f5f5; margin-bottom: 2rem; }
+    pre.config { padding: 1.25rem; background-color: #f6f8fa; border-radius: 6px; }
+    .string { color: #0a3069; }
+    .number { color: #0550ae; }
+    .boolean { color: #0550ae; }
+    .null { color: #0550ae; }
+    .key { color: #cf222e; }
+    .code-container { position: relative; }
+    .copy-btn {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        opacity: 0;
+        transition: opacity 0.2s;
+    }
+    .code-container:hover .copy-btn { opacity: 1; }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    .button.htmx-request {
+        color: transparent !important;
+        pointer-events: none;
+        position: relative;
+    }
+    .button.htmx-request::after {
+        animation: spinAround 500ms infinite linear;
+        border: 2px solid #dbdbdb;
+        border-radius: 9999px;
+        border-right-color: transparent;
+        border-top-color: transparent;
+        content: "";
+        display: block;
+        height: 1em;
+        position: absolute;
+        width: 1em;
+        left: calc(50% - 0.5em);
+        top: calc(50% - 0.5em);
+    }
+    @keyframes spinAround {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(359deg); }
+    }
+"#;
+
+const LAYOUT_JS: &str = r#"
+    function highlightAll() {
+        document.querySelectorAll('pre.json-content').forEach((block) => {
+            if (block.dataset.highlighted) return;
+            const content = block.textContent;
+            block.innerHTML = syntaxHighlight(content);
+            block.dataset.highlighted = "true";
+        });
+    }
+
+    function syntaxHighlight(json) {
+        json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+            var cls = 'number';
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'key';
+                } else {
+                    cls = 'string';
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'boolean';
+            } else if (/null/.test(match)) {
+                cls = 'null';
+            }
+            return '<span class="' + cls + '">' + match + '</span>';
+        });
+    }
+
+    function copyToClipboard(btn) {
+        const container = btn.closest('.code-container');
+        const pre = container.querySelector('pre');
+        const code = pre.textContent;
+        navigator.clipboard.writeText(code).then(() => {
+            const originalText = btn.innerText;
+            btn.innerText = 'Copied!';
+            btn.classList.add('is-success');
+            setTimeout(() => {
+                btn.innerText = originalText;
+                btn.classList.remove('is-success');
+            }, 2000);
+        });
+    }
+
+    highlightAll();
+    document.body.addEventListener('htmx:afterSwap', highlightAll);
+"#;
+
 pub fn ui_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(get_root))
@@ -36,134 +133,32 @@ pub fn ui_routes() -> Router<AppState> {
 
 fn layout(title: &str, content: &str) -> Html<String> {
     Html(format!(
-        r##"
-<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{} - MStream</title>
+    <title>{title} - MStream</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
     <script src="https://unpkg.com/htmx.org@2.0.0"></script>
-    <style>
-        .pipeline-viz {{ display: flex; align-items: center; gap: 1rem; overflow-x: auto; padding: 1rem 0; }}
-        .stage {{ min-width: 200px; text-align: center; }}
-        .stage .box {{ height: 100%; display: flex; flex-direction: column; justify-content: center; }}
-        .arrow {{ font-size: 1.5rem; color: #b5b5b5; }}
-        .resource-name {{ font-family: monospace; font-size: 0.85rem; word-break: break-all; color: #666; }}
-        .navbar {{ border-bottom: 1px solid #f5f5f5; margin-bottom: 2rem; }}
-        pre.config {{ padding: 1.25rem; background-color: #f6f8fa; border-radius: 6px; }}
-        .string {{ color: #0a3069; }}
-        .number {{ color: #0550ae; }}
-        .boolean {{ color: #0550ae; }}
-        .null {{ color: #0550ae; }}
-        .key {{ color: #cf222e; }}
-
-        .code-container {{ position: relative; }}
-        .copy-btn {{
-            position: absolute;
-            top: 0.5rem;
-            right: 0.5rem;
-            opacity: 0;
-            transition: opacity 0.2s;
-        }}
-        .code-container:hover .copy-btn {{ opacity: 1; }}
-
-        /* Custom summary marker removal and styling */
-        details > summary {{ list-style: none; }}
-        details > summary::-webkit-details-marker {{ display: none; }}
-
-        /* HTMX Loading State for Bulma Buttons */
-        .button.htmx-request {{
-            color: transparent !important;
-            pointer-events: none;
-            position: relative;
-        }}
-        .button.htmx-request::after {{
-            animation: spinAround 500ms infinite linear;
-            border: 2px solid #dbdbdb;
-            border-radius: 9999px;
-            border-right-color: transparent;
-            border-top-color: transparent;
-            content: "";
-            display: block;
-            height: 1em;
-            position: absolute;
-            width: 1em;
-            left: calc(50% - 0.5em);
-            top: calc(50% - 0.5em);
-        }}
-        @keyframes spinAround {{
-            from {{ transform: rotate(0deg); }}
-            to {{ transform: rotate(359deg); }}
-        }}
-    </style>
+    <style>{css}</style>
 </head>
 <body>
     <nav class="navbar" role="navigation" aria-label="main navigation">
         <div class="container">
             <div class="navbar-brand">
-                <a class="navbar-item has-text-weight-bold is-size-4" href="/">
-                    MStream
-                </a>
+                <a class="navbar-item has-text-weight-bold is-size-4" href="/">MStream</a>
             </div>
         </div>
     </nav>
-
-    <div class="container">
-        {}
-    </div>
-    <script>
-        function highlightAll() {{
-            document.querySelectorAll('pre.json-content').forEach((block) => {{
-                if (block.dataset.highlighted) return;
-                const content = block.textContent;
-                block.innerHTML = syntaxHighlight(content);
-                block.dataset.highlighted = "true";
-            }});
-        }}
-
-        function syntaxHighlight(json) {{
-            json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return json.replace(/("(\\u[a-zA-Z0-9]{{4}}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {{
-                var cls = 'number';
-                if (/^"/.test(match)) {{
-                    if (/:$/.test(match)) {{
-                        cls = 'key';
-                    }} else {{
-                        cls = 'string';
-                    }}
-                }} else if (/true|false/.test(match)) {{
-                    cls = 'boolean';
-                }} else if (/null/.test(match)) {{
-                    cls = 'null';
-                }}
-                return '<span class="' + cls + '">' + match + '</span>';
-            }});
-        }}
-
-        function copyToClipboard(btn) {{
-            const container = btn.closest('.code-container');
-            const pre = container.querySelector('pre');
-            const code = pre.textContent;
-            navigator.clipboard.writeText(code).then(() => {{
-                const originalText = btn.innerText;
-                btn.innerText = 'Copied!';
-                btn.classList.add('is-success');
-                setTimeout(() => {{
-                    btn.innerText = originalText;
-                    btn.classList.remove('is-success');
-                }}, 2000);
-            }});
-        }}
-
-        highlightAll();
-        document.body.addEventListener('htmx:afterSwap', highlightAll);
-    </script>
+    <div class="container">{content}</div>
+    <script>{js}</script>
 </body>
-</html>
-"##,
-        title, content
+</html>"##,
+        title = title,
+        css = LAYOUT_CSS,
+        content = content,
+        js = LAYOUT_JS
     ))
 }
 
