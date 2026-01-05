@@ -272,3 +272,130 @@ where
         self.iter().map(|item| item.masked()).collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test helper that tracks whether masked() was called
+    #[derive(Clone, Serialize, PartialEq, Debug)]
+    struct TestItem {
+        public: String,
+        secret: String,
+    }
+
+    impl Masked for TestItem {
+        fn masked(&self) -> Self {
+            Self {
+                public: self.public.clone(),
+                secret: "****".to_string(),
+            }
+        }
+    }
+
+    mod message_masked_tests {
+        use super::*;
+
+        #[test]
+        fn masks_item_when_present() {
+            let msg = Message {
+                message: "test message".to_string(),
+                item: Some(TestItem {
+                    public: "visible".to_string(),
+                    secret: "hunter2".to_string(),
+                }),
+            };
+
+            let masked = msg.masked();
+
+            assert_eq!(masked.message, "test message");
+            assert!(masked.item.is_some());
+            let item = masked.item.unwrap();
+            assert_eq!(item.public, "visible");
+            assert_eq!(item.secret, "****");
+        }
+
+        #[test]
+        fn preserves_none_item() {
+            let msg: Message<TestItem> = Message {
+                message: "no item".to_string(),
+                item: None,
+            };
+
+            let masked = msg.masked();
+
+            assert_eq!(masked.message, "no item");
+            assert!(masked.item.is_none());
+        }
+
+        #[test]
+        fn message_unchanged() {
+            let msg = Message {
+                message: "secret info in message".to_string(),
+                item: Some(TestItem {
+                    public: "x".to_string(),
+                    secret: "y".to_string(),
+                }),
+            };
+
+            let masked = msg.masked();
+
+            // Message field is not masked, only item
+            assert_eq!(masked.message, "secret info in message");
+        }
+    }
+
+    mod vec_masked_tests {
+        use super::*;
+
+        #[test]
+        fn masks_all_elements() {
+            let items = vec![
+                TestItem {
+                    public: "a".to_string(),
+                    secret: "secret1".to_string(),
+                },
+                TestItem {
+                    public: "b".to_string(),
+                    secret: "secret2".to_string(),
+                },
+                TestItem {
+                    public: "c".to_string(),
+                    secret: "secret3".to_string(),
+                },
+            ];
+
+            let masked = items.masked();
+
+            assert_eq!(masked.len(), 3);
+            assert_eq!(masked[0].public, "a");
+            assert_eq!(masked[0].secret, "****");
+            assert_eq!(masked[1].public, "b");
+            assert_eq!(masked[1].secret, "****");
+            assert_eq!(masked[2].public, "c");
+            assert_eq!(masked[2].secret, "****");
+        }
+
+        #[test]
+        fn handles_empty_vec() {
+            let items: Vec<TestItem> = vec![];
+
+            let masked = items.masked();
+
+            assert!(masked.is_empty());
+        }
+
+        #[test]
+        fn handles_single_element() {
+            let items = vec![TestItem {
+                public: "only".to_string(),
+                secret: "one".to_string(),
+            }];
+
+            let masked = items.masked();
+
+            assert_eq!(masked.len(), 1);
+            assert_eq!(masked[0].secret, "****");
+        }
+    }
+}
