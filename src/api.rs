@@ -14,7 +14,7 @@ use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
 
 #[derive(Clone)]
 pub struct AppState {
-    job_manager: Arc<Mutex<JobManager>>,
+    pub(crate) job_manager: Arc<Mutex<JobManager>>,
 }
 
 impl AppState {
@@ -25,6 +25,7 @@ impl AppState {
 
 pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
+        .merge(crate::ui::ui_routes())
         .route("/jobs", get(list_jobs))
         .route("/jobs", post(create_start_job))
         .route("/jobs/{name}/stop", post(stop_job))
@@ -198,7 +199,7 @@ async fn remove_service(
 async fn get_one_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> (StatusCode, Json<Option<Service>>) {
+) -> (StatusCode, Json<Option<ServiceStatus>>) {
     let jm = state.job_manager.lock().await;
     match jm.get_service(&name).await {
         Ok(service) => (StatusCode::OK, Json(Some(service))),

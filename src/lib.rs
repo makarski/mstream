@@ -25,6 +25,7 @@ pub mod provision;
 pub mod pubsub;
 pub mod schema;
 pub mod source;
+pub mod ui;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path).with_context(|| "failed to load config")?;
