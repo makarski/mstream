@@ -118,13 +118,7 @@ impl Masked for KafkaConfig {
     fn masked(&self) -> Self {
         let mut masked_cfg = self.config.clone();
         for (k, v) in masked_cfg.iter_mut() {
-            if k.contains("password")
-                || k.contains("secret")
-                || k.contains("token")
-                || k.contains("jaas")
-                || k.ends_with(".key")
-                || k.contains("credential")
-            {
+            if is_sensitive_key(k) {
                 *v = "****".to_string();
             }
         }
@@ -133,6 +127,15 @@ impl Masked for KafkaConfig {
             ..self.clone()
         }
     }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    key.contains("password")
+        || key.contains("secret")
+        || key.contains("token")
+        || key.contains("jaas")
+        || key.ends_with(".key")
+        || key.contains("credential")
 }
 
 impl Masked for UdfConfig {
@@ -170,34 +173,6 @@ impl Masked for PubSubConfig {
     }
 }
 
-impl<'a> TryFrom<&'a super::Service> for &'a KafkaConfig {
-    type Error = anyhow::Error;
-
-    fn try_from(service: &'a super::Service) -> Result<Self, Self::Error> {
-        match service {
-            super::Service::Kafka(cfg) => Ok(cfg),
-            _ => anyhow::bail!(
-                "expected KafkaConfig service definition, found: {}",
-                service.name()
-            ),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a super::Service> for &'a UdfConfig {
-    type Error = anyhow::Error;
-
-    fn try_from(service: &'a super::Service) -> Result<Self, Self::Error> {
-        match service {
-            super::Service::Udf(cfg) => Ok(cfg),
-            _ => anyhow::bail!(
-                "expected UdfConfig service definition, found: {}",
-                service.name()
-            ),
-        }
-    }
-}
-
 impl<'a> TryFrom<&'a super::Service> for &'a MongoDbConfig {
     type Error = anyhow::Error;
 
@@ -206,33 +181,6 @@ impl<'a> TryFrom<&'a super::Service> for &'a MongoDbConfig {
             super::Service::MongoDb(cfg) => Ok(cfg),
             _ => anyhow::bail!(
                 "expected MongoDbConfig service definition, found: {}",
-                service.name()
-            ),
-        }
-    }
-}
-impl<'a> TryFrom<&'a super::Service> for &'a HttpConfig {
-    type Error = anyhow::Error;
-
-    fn try_from(service: &'a super::Service) -> Result<Self, Self::Error> {
-        match service {
-            super::Service::Http(cfg) => Ok(cfg),
-            _ => anyhow::bail!(
-                "expected HttpConfig service definition, found: {}",
-                service.name()
-            ),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a super::Service> for &'a PubSubConfig {
-    type Error = anyhow::Error;
-
-    fn try_from(service: &'a super::Service) -> Result<Self, Self::Error> {
-        match service {
-            super::Service::PubSub(cfg) => Ok(cfg),
-            _ => anyhow::bail!(
-                "expected PubSubConfig service definition, found: {}",
                 service.name()
             ),
         }

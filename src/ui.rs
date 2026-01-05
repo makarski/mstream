@@ -1,6 +1,6 @@
 use crate::api::AppState;
 use crate::config::service_config::UdfConfig;
-use crate::config::{BatchConfig, Connector, Service};
+use crate::config::{BatchConfig, Connector, Masked, Service};
 use crate::job_manager::{JobMetadata, JobState as JState, ServiceStatus};
 use axum::{
     Router,
@@ -706,7 +706,7 @@ async fn get_service_details(
             .join(", ")
     };
 
-    let config_json = serde_json::to_string_pretty(&status.service)
+    let config_json = serde_json::to_string_pretty(&status.service.masked())
         .unwrap_or_else(|_| "Error serializing config".into());
 
     let extra_content = match &status.service {
