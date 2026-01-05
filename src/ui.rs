@@ -11,6 +11,15 @@ use axum::{
 };
 use serde::Deserialize;
 
+/// Escapes HTML special characters to prevent XSS attacks.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 pub fn ui_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(get_root))
@@ -277,7 +286,10 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
         .pipeline
         .as_ref()
         .map(|p| {
-            serde_json::to_string_pretty(p).unwrap_or_else(|_| "Error serializing config".into())
+            escape_html(
+                &serde_json::to_string_pretty(p)
+                    .unwrap_or_else(|_| "Error serializing config".into()),
+            )
         })
         .unwrap_or_else(|| "No pipeline configuration".into());
 
@@ -286,6 +298,17 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
         .as_ref()
         .map(|p| render_pipeline_viz(p))
         .unwrap_or_default();
+
+    let job_name = escape_html(&job.name);
+    let service_deps = if job.service_deps.is_empty() {
+        "None".to_string()
+    } else {
+        job.service_deps
+            .iter()
+            .map(|s| escape_html(s))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
     let content = format!(
         r##"
@@ -347,25 +370,21 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
             <pre class="config json-content">{}</pre>
         </div>
         "##,
-        job.name,
-        job.name,
+        job_name,
+        job_name,
         status_tag,
         job.state,
-        job.name,
-        job.name, // buttons
+        job_name,
+        job_name, // buttons
         job.started_at.format("%Y-%m-%d %H:%M:%S UTC"),
         duration,
         batch_info,
-        if job.service_deps.is_empty() {
-            "None".to_string()
-        } else {
-            job.service_deps.join(", ")
-        },
+        service_deps,
         pipeline_viz,
         pipeline_json
     );
 
-    layout(&format!("Job {}", job.name), &content)
+    layout(&format!("Job {}", job_name), &content)
 }
 
 fn render_pipeline_viz(connector: &Connector) -> String {
@@ -376,7 +395,7 @@ fn render_pipeline_viz(connector: &Connector) -> String {
         let matches: Vec<_> = schemas
             .iter()
             .filter(|s| s.service_name == svc_name && s.resource == resource)
-            .map(|s| s.id.as_str())
+            .map(|s| escape_html(&s.id))
             .collect();
 
         if matches.is_empty() {
@@ -397,6 +416,8 @@ fn render_pipeline_viz(connector: &Connector) -> String {
     };
 
     // Source
+    let source_svc = escape_html(&connector.source.service_name);
+    let source_resource = escape_html(&connector.source.resource);
     html.push_str(&format!(
         r#"
         <div class="stage">
@@ -409,15 +430,17 @@ fn render_pipeline_viz(connector: &Connector) -> String {
         </div>
         <div class="arrow">&rarr;</div>
         "#,
-        connector.source.service_name,
-        connector.source.service_name,
-        connector.source.resource,
+        source_svc,
+        source_svc,
+        source_resource,
         get_schemas_html(&connector.source.service_name, &connector.source.resource)
     ));
 
     // Middlewares
     if let Some(middlewares) = &connector.middlewares {
         for mw in middlewares {
+            let mw_svc = escape_html(&mw.service_name);
+            let mw_resource = escape_html(&mw.resource);
             html.push_str(&format!(
                 r#"
                 <div class="stage">
@@ -430,9 +453,9 @@ fn render_pipeline_viz(connector: &Connector) -> String {
                 </div>
                 <div class="arrow">&rarr;</div>
                 "#,
-                mw.service_name,
-                mw.service_name,
-                mw.resource,
+                mw_svc,
+                mw_svc,
+                mw_resource,
                 get_schemas_html(&mw.service_name, &mw.resource)
             ));
         }
@@ -441,6 +464,8 @@ fn render_pipeline_viz(connector: &Connector) -> String {
     // Sinks
     html.push_str(r#"<div style="display: flex; flex-direction: column; gap: 1rem;">"#);
     for sink in &connector.sinks {
+        let sink_svc = escape_html(&sink.service_name);
+        let sink_resource = escape_html(&sink.resource);
         html.push_str(&format!(
             r#"
             <div class="stage">
@@ -452,9 +477,9 @@ fn render_pipeline_viz(connector: &Connector) -> String {
                 </div>
             </div>
             "#,
-            sink.service_name,
-            sink.service_name,
-            sink.resource,
+            sink_svc,
+            sink_svc,
+            sink_resource,
             get_schemas_html(&sink.service_name, &sink.resource)
         ));
     }
@@ -521,7 +546,10 @@ fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> 
     }
 
     let error_html = if let Some(err) = error {
-        format!("<div class='notification is-danger is-light'>{}</div>", err)
+        format!(
+            "<div class='notification is-danger is-light'>{}</div>",
+            escape_html(err)
+        )
     } else {
         String::new()
     };
@@ -556,6 +584,8 @@ fn render_job_row(job: &JobMetadata) -> String {
         JState::Failed => "is-danger",
     };
 
+    let job_name = escape_html(&job.name);
+
     let actions = format!(
         r#"
         <div class="buttons are-small">
@@ -563,7 +593,7 @@ fn render_job_row(job: &JobMetadata) -> String {
             <button class="button is-info is-light" hx-post="/ui/jobs/{}/restart" hx-target="closest tr" hx-swap="outerHTML" hx-disabled-elt="this">Restart</button>
         </div>
         "#,
-        job.name, job.name
+        job_name, job_name
     );
 
     format!(
@@ -575,8 +605,8 @@ fn render_job_row(job: &JobMetadata) -> String {
             <td>{}</td>
         </tr>
         "#,
-        job.name,
-        job.name,
+        job_name,
+        job_name,
         status_tag,
         job.state,
         job.started_at.format("%Y-%m-%d %H:%M:%S"),
@@ -602,7 +632,7 @@ async fn stop_job_ui(
         if ctx == "details" {
             return (
                 StatusCode::OK,
-                [("HX-Redirect", format!("/ui/jobs/{}", name))],
+                [("HX-Redirect", format!("/ui/jobs/{}", escape_html(&name)))],
                 Html(String::new()),
             )
                 .into_response();
@@ -620,7 +650,7 @@ async fn stop_job_ui(
 
     Html(format!(
         "<tr><td colspan='4' class='has-text-danger'>Error stopping job {}</td></tr>",
-        name
+        escape_html(&name)
     ))
     .into_response()
 }
@@ -638,7 +668,7 @@ async fn restart_job_ui(
         if ctx == "details" {
             return (
                 StatusCode::OK,
-                [("HX-Redirect", format!("/ui/jobs/{}", name))],
+                [("HX-Redirect", format!("/ui/jobs/{}", escape_html(&name)))],
                 Html(String::new()),
             )
                 .into_response();
@@ -653,7 +683,7 @@ async fn restart_job_ui(
             .into_response(),
         Err(_) => Html(format!(
             "<tr><td colspan='4' class='has-text-danger'>Error restarting job {}</td></tr>",
-            name
+            escape_html(&name)
         ))
         .into_response(),
     }
@@ -701,18 +731,25 @@ async fn get_service_details(
         status
             .used_by_jobs
             .iter()
-            .map(|job_name| format!(r#"<a href="/ui/jobs/{}">{}</a>"#, job_name, job_name))
+            .map(|job_name| {
+                let escaped = escape_html(job_name);
+                format!(r#"<a href="/ui/jobs/{}">{}</a>"#, escaped, escaped)
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
 
-    let config_json = serde_json::to_string_pretty(&status.service.masked())
-        .unwrap_or_else(|_| "Error serializing config".into());
+    let config_json = escape_html(
+        &serde_json::to_string_pretty(&status.service.masked())
+            .unwrap_or_else(|_| "Error serializing config".into()),
+    );
 
     let extra_content = match &status.service {
         Service::Udf(cfg) => load_udf_scripts(&cfg).await,
         _ => String::new(),
     };
+
+    let service_name = escape_html(status.service.name());
 
     let content = format!(
         r##"
@@ -757,12 +794,12 @@ async fn get_service_details(
 
         {}
         "##,
-        status.service.name(),
-        status.service.name(),
+        service_name,
+        service_name,
         if status.used_by_jobs.is_empty() {
             format!(
                 r##"<button class="button is-danger is-light" hx-delete="/ui/services/{}" hx-confirm="Are you sure? This will delete the service." hx-target="body" hx-disabled-elt="this">Delete Service</button>"##,
-                status.service.name()
+                service_name
             )
         } else {
             r#"<button class="button is-danger is-light" disabled title="Cannot delete service while in use">Delete Service</button>"#.to_string()
@@ -773,7 +810,7 @@ async fn get_service_details(
         extra_content
     );
 
-    layout(&format!("Service {}", status.service.name()), &content)
+    layout(&format!("Service {}", service_name), &content)
 }
 
 async fn load_udf_scripts(config: &UdfConfig) -> String {
@@ -810,10 +847,8 @@ async fn load_udf_scripts(config: &UdfConfig) -> String {
 }
 
 fn render_script(filename: &str, content: &str) -> String {
-    let escaped = content
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;");
+    let escaped_content = escape_html(content);
+    let escaped_filename = escape_html(filename);
 
     format!(
         r##"
@@ -826,7 +861,7 @@ fn render_script(filename: &str, content: &str) -> String {
             </div>
         </div>
         "##,
-        filename, escaped
+        escaped_filename, escaped_content
     )
 }
 
@@ -874,7 +909,10 @@ fn render_services_table(services: &[ServiceStatus], error: Option<&str>) -> Htm
     }
 
     let error_html = if let Some(err) = error {
-        format!("<div class='notification is-danger is-light'>{}</div>", err)
+        format!(
+            "<div class='notification is-danger is-light'>{}</div>",
+            escape_html(err)
+        )
     } else {
         String::new()
     };
@@ -903,7 +941,7 @@ fn render_services_table(services: &[ServiceStatus], error: Option<&str>) -> Htm
 }
 
 fn render_service_row(status: &ServiceStatus) -> String {
-    let name = status.service.name();
+    let name = escape_html(status.service.name());
     let provider = match status.service {
         Service::PubSub(_) => "PubSub",
         Service::Kafka(_) => "Kafka",
@@ -915,7 +953,12 @@ fn render_service_row(status: &ServiceStatus) -> String {
     let used_by = if status.used_by_jobs.is_empty() {
         "<span class='has-text-grey'>-</span>".to_string()
     } else {
-        status.used_by_jobs.join(", ")
+        status
+            .used_by_jobs
+            .iter()
+            .map(|j| escape_html(j))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
 
     let delete_btn = if status.used_by_jobs.is_empty() {
@@ -938,4 +981,133 @@ fn render_service_row(status: &ServiceStatus) -> String {
         "#,
         name, name, provider, used_by, delete_btn
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod escape_html_tests {
+        use super::*;
+
+        #[test]
+        fn escapes_ampersand() {
+            assert_eq!(escape_html("foo & bar"), "foo &amp; bar");
+        }
+
+        #[test]
+        fn escapes_less_than() {
+            assert_eq!(escape_html("<script>"), "&lt;script&gt;");
+        }
+
+        #[test]
+        fn escapes_greater_than() {
+            assert_eq!(escape_html("a > b"), "a &gt; b");
+        }
+
+        #[test]
+        fn escapes_double_quotes() {
+            assert_eq!(escape_html(r#"say "hello""#), "say &quot;hello&quot;");
+        }
+
+        #[test]
+        fn escapes_single_quotes() {
+            assert_eq!(escape_html("it's"), "it&#x27;s");
+        }
+
+        #[test]
+        fn escapes_xss_payload() {
+            let payload = "<script>alert('XSS')</script>";
+            let escaped = escape_html(payload);
+            assert_eq!(
+                escaped,
+                "&lt;script&gt;alert(&#x27;XSS&#x27;)&lt;/script&gt;"
+            );
+            assert!(!escaped.contains('<'));
+            assert!(!escaped.contains('>'));
+        }
+
+        #[test]
+        fn leaves_safe_strings_unchanged() {
+            assert_eq!(escape_html("hello world"), "hello world");
+            assert_eq!(escape_html("my-job-123"), "my-job-123");
+            assert_eq!(escape_html("kafka.topic.name"), "kafka.topic.name");
+        }
+
+        #[test]
+        fn handles_empty_string() {
+            assert_eq!(escape_html(""), "");
+        }
+
+        #[test]
+        fn escapes_all_special_chars_together() {
+            let input = r#"<a href="test?a=1&b=2">it's a 'link'</a>"#;
+            let escaped = escape_html(input);
+            assert!(!escaped.contains('<'));
+            assert!(!escaped.contains('>'));
+            assert!(!escaped.contains('"'));
+            assert!(!escaped.contains('\''));
+            // & should only appear as part of escape sequences
+            for part in escaped.split('&') {
+                if !part.is_empty() {
+                    assert!(
+                        part.starts_with("amp;")
+                            || part.starts_with("lt;")
+                            || part.starts_with("gt;")
+                            || part.starts_with("quot;")
+                            || part.starts_with("#x27;")
+                            || escaped.starts_with(part), // first part before any &
+                        "unexpected ampersand usage in: {}",
+                        escaped
+                    );
+                }
+            }
+        }
+    }
+
+    mod format_duration_tests {
+        use super::*;
+
+        #[test]
+        fn formats_seconds_only() {
+            let d = chrono::Duration::seconds(45);
+            assert_eq!(format_duration(d), "0m 45s");
+        }
+
+        #[test]
+        fn formats_minutes_and_seconds() {
+            let d = chrono::Duration::seconds(125); // 2m 5s
+            assert_eq!(format_duration(d), "2m 5s");
+        }
+
+        #[test]
+        fn formats_hours_minutes_seconds() {
+            let d = chrono::Duration::seconds(3661); // 1h 1m 1s
+            assert_eq!(format_duration(d), "1h 1m 1s");
+        }
+
+        #[test]
+        fn formats_days_hours_minutes() {
+            let d = chrono::Duration::seconds(90061); // 1d 1h 1m 1s
+            assert_eq!(format_duration(d), "1d 1h 1m");
+        }
+
+        #[test]
+        fn formats_zero_duration() {
+            let d = chrono::Duration::seconds(0);
+            assert_eq!(format_duration(d), "0m 0s");
+        }
+
+        #[test]
+        fn formats_exactly_one_hour() {
+            let d = chrono::Duration::seconds(3600);
+            assert_eq!(format_duration(d), "1h 0m 0s");
+        }
+
+        #[test]
+        fn formats_exactly_one_day() {
+            let d = chrono::Duration::seconds(86400);
+            assert_eq!(format_duration(d), "1d 0h 0m");
+        }
+    }
 }
