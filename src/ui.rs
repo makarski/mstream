@@ -42,8 +42,23 @@ fn layout(title: &str, content: &str) -> Html<String> {
         .stage .box {{ height: 100%; display: flex; flex-direction: column; justify-content: center; }}
         .arrow {{ font-size: 1.5rem; color: #b5b5b5; }}
         .resource-name {{ font-family: monospace; font-size: 0.85rem; word-break: break-all; color: #666; }}
-        pre.config {{ background-color: #f5f5f5; padding: 1.25rem; border-radius: 4px; }}
         .navbar {{ border-bottom: 1px solid #f5f5f5; margin-bottom: 2rem; }}
+        pre.config {{ padding: 1.25rem; background-color: #f6f8fa; border-radius: 6px; }}
+        .string {{ color: #0a3069; }}
+        .number {{ color: #0550ae; }}
+        .boolean {{ color: #0550ae; }}
+        .null {{ color: #0550ae; }}
+        .key {{ color: #cf222e; }}
+
+        .code-container {{ position: relative; }}
+        .copy-btn {{
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }}
+        .code-container:hover .copy-btn {{ opacity: 1; }}
 
         /* Custom summary marker removal and styling */
         details > summary {{ list-style: none; }}
@@ -89,6 +104,53 @@ fn layout(title: &str, content: &str) -> Html<String> {
     <div class="container">
         {}
     </div>
+    <script>
+        function highlightAll() {{
+            document.querySelectorAll('pre.json-content').forEach((block) => {{
+                if (block.dataset.highlighted) return;
+                const content = block.textContent;
+                block.innerHTML = syntaxHighlight(content);
+                block.dataset.highlighted = "true";
+            }});
+        }}
+
+        function syntaxHighlight(json) {{
+            json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return json.replace(/("(\\u[a-zA-Z0-9]{{4}}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {{
+                var cls = 'number';
+                if (/^"/.test(match)) {{
+                    if (/:$/.test(match)) {{
+                        cls = 'key';
+                    }} else {{
+                        cls = 'string';
+                    }}
+                }} else if (/true|false/.test(match)) {{
+                    cls = 'boolean';
+                }} else if (/null/.test(match)) {{
+                    cls = 'null';
+                }}
+                return '<span class="' + cls + '">' + match + '</span>';
+            }});
+        }}
+
+        function copyToClipboard(btn) {{
+            const container = btn.closest('.code-container');
+            const pre = container.querySelector('pre');
+            const code = pre.textContent;
+            navigator.clipboard.writeText(code).then(() => {{
+                const originalText = btn.innerText;
+                btn.innerText = 'Copied!';
+                btn.classList.add('is-success');
+                setTimeout(() => {{
+                    btn.innerText = originalText;
+                    btn.classList.remove('is-success');
+                }}, 2000);
+            }});
+        }}
+
+        highlightAll();
+        document.body.addEventListener('htmx:afterSwap', highlightAll);
+    </script>
 </body>
 </html>
 "##,
@@ -280,7 +342,10 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
         </div>
 
         <h2 class="title is-4 mt-6">Configuration</h2>
-        <pre class="config">{}</pre>
+        <div class="code-container">
+            <button class="button is-small is-white copy-btn" onclick="copyToClipboard(this)">Copy</button>
+            <pre class="config json-content">{}</pre>
+        </div>
         "##,
         job.name,
         job.name,
@@ -685,7 +750,10 @@ async fn get_service_details(
         </div>
 
         <h2 class="title is-4 mt-6">Configuration</h2>
-        <pre class="config">{}</pre>
+        <div class="code-container">
+            <button class="button is-small is-white copy-btn" onclick="copyToClipboard(this)">Copy</button>
+            <pre class="config json-content">{}</pre>
+        </div>
 
         {}
         "##,

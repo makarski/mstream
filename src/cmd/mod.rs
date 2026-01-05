@@ -14,9 +14,12 @@ pub async fn listen_streams(
     exit_tx: UnboundedSender<JobStateChange>,
     cfg: Config,
 ) -> anyhow::Result<JobManager> {
-    let service_storage = init_service_storage(&cfg).await?;
+    let mut service_storage = init_service_storage(&cfg).await?;
+    for service in cfg.services.iter().cloned() {
+        service_storage.save(service).await?;
+    }
     let mut service_registry = ServiceRegistry::new(service_storage);
-    service_registry.init(cfg.services.clone()).await?;
+    service_registry.init().await?;
 
     let service_registry = Arc::new(RwLock::new(service_registry));
 

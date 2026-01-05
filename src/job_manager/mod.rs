@@ -17,7 +17,7 @@ pub mod in_memory;
 pub mod mongodb_store;
 
 use crate::{
-    config::{Connector, Service},
+    config::{Connector, Masked, Service},
     provision::{pipeline::builder::PipelineBuilder, registry::ServiceRegistry},
 };
 
@@ -331,6 +331,15 @@ pub struct ServiceStatus {
     #[serde(flatten)]
     pub service: Service,
     pub used_by_jobs: Vec<String>,
+}
+
+impl Masked for ServiceStatus {
+    fn masked(&self) -> Self {
+        ServiceStatus {
+            service: self.service.masked(),
+            used_by_jobs: self.used_by_jobs.clone(),
+        }
+    }
 }
 
 #[async_trait::async_trait]

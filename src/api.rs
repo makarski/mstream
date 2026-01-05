@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -9,8 +10,21 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 
-use crate::config::{Connector, Service};
-use crate::job_manager::{JobManager, JobMetadata, ServiceStatus};
+use crate::config::{Connector, Masked, Service};
+use crate::job_manager::{JobManager, JobMetadata};
+
+struct MaskedJson<T>(T);
+
+impl<T> IntoResponse for MaskedJson<T>
+where
+    T: Serialize + Masked,
+{
+    fn into_response(self) -> Response {
+        let masked_data = self.0.masked();
+        let json_data = Json(masked_data);
+        json_data.into_response()
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -136,13 +150,19 @@ async fn create_start_job(
 }
 
 /// GET /services
-async fn list_services(State(state): State<AppState>) -> (StatusCode, Json<Vec<ServiceStatus>>) {
+async fn list_services(State(state): State<AppState>) -> impl IntoResponse {
     let jm = state.job_manager.lock().await;
     match jm.list_services().await {
-        Ok(services) => (StatusCode::OK, Json(services)),
+        Ok(services) => (StatusCode::OK, MaskedJson(services)).into_response(),
         Err(e) => {
             error!("failed to list services: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
+
+            let msg: Message<()> = Message {
+                message: format!("failed to list services: {}", e),
+                item: None,
+            };
+
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(msg)).into_response()
         }
     }
 }
@@ -151,20 +171,20 @@ async fn list_services(State(state): State<AppState>) -> (StatusCode, Json<Vec<S
 async fn create_service(
     State(state): State<AppState>,
     Json(service_cfg): Json<Service>,
-) -> (StatusCode, Json<Message<Service>>) {
+) -> impl IntoResponse {
     let jm = state.job_manager.lock().await;
     let service = service_cfg.clone();
     match jm.create_service(service_cfg).await {
         Ok(()) => (
             StatusCode::CREATED,
-            Json(Message {
+            MaskedJson(Message {
                 message: "service created successfully".to_string(),
                 item: Some(service),
             }),
         ),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(Message {
+            MaskedJson(Message {
                 message: format!("failed to create service: {}", e),
                 item: None,
             }),
@@ -176,43 +196,79 @@ async fn create_service(
 async fn remove_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> (StatusCode, Json<Message<()>>) {
+) -> impl IntoResponse {
     let jm = state.job_manager.lock().await;
     match jm.remove_service(&name).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(Message {
+        Ok(()) => {
+            let msg = Message::<()> {
                 message: format!("service {} removed successfully", name),
                 item: None,
-            }),
-        ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(Message {
+            };
+            (StatusCode::OK, Json(msg)).into_response()
+        }
+        Err(e) => {
+            let msg = Message::<()> {
                 message: format!("failed to remove service {}: {}", name, e),
                 item: None,
-            }),
-        ),
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(msg)).into_response()
+        }
     }
 }
 
 async fn get_one_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> (StatusCode, Json<Option<ServiceStatus>>) {
+) -> impl IntoResponse {
     let jm = state.job_manager.lock().await;
     match jm.get_service(&name).await {
-        Ok(service) => (StatusCode::OK, Json(Some(service))),
+        Ok(service) => (StatusCode::OK, MaskedJson(service)).into_response(),
         Err(err) => {
             error!("failed to get a service: {}: {}", name, err);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(None))
+            let msg = Message::<()> {
+                message: format!("failed to get service {}: {}", name, err),
+                item: None,
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(msg)).into_response()
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct Message<T> {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     item: Option<T>,
+}
+
+impl<T: Masked> Masked for Message<T> {
+    fn masked(&self) -> Self {
+        let masked_item = match &self.item {
+            Some(item) => Some(item.masked()),
+            None => None,
+        };
+
+        Message {
+            message: self.message.clone(),
+            item: masked_item,
+        }
+    }
+}
+
+impl<T> IntoResponse for Message<T>
+where
+    T: Serialize + Masked,
+{
+    fn into_response(self) -> Response {
+        MaskedJson(self).into_response()
+    }
+}
+
+impl<T> Masked for Vec<T>
+where
+    T: Masked,
+{
+    fn masked(&self) -> Self {
+        self.iter().map(|item| item.masked()).collect()
+    }
 }

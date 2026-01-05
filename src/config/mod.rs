@@ -5,15 +5,19 @@ use crate::config::{
     system::SystemConfig,
 };
 
+pub mod service_config;
+pub mod system;
+
+pub trait Masked {
+    fn masked(&self) -> Self;
+}
+
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct Config {
     pub system: Option<SystemConfig>,
     pub services: Vec<Service>,
     pub connectors: Vec<Connector>,
 }
-
-pub mod service_config;
-pub mod system;
 
 impl Config {
     pub fn load(path: &str) -> anyhow::Result<Self> {
@@ -49,6 +53,18 @@ impl Service {
             Service::MongoDb(c) => &c.name,
             Service::Http(c) => &c.name,
             Service::Udf(c) => &c.name,
+        }
+    }
+}
+
+impl Masked for Service {
+    fn masked(&self) -> Self {
+        match self {
+            Service::PubSub(c) => Service::PubSub(c.masked()),
+            Service::Kafka(c) => Service::Kafka(c.masked()),
+            Service::MongoDb(c) => Service::MongoDb(c.masked()),
+            Service::Http(c) => Service::Http(c.masked()),
+            Service::Udf(c) => Service::Udf(c.masked()),
         }
     }
 }

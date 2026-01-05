@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::config::Masked;
+
 #[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct KafkaConfig {
     pub name: String,
@@ -9,7 +11,6 @@ pub struct KafkaConfig {
     pub offset_seek_back_seconds: Option<u64>,
     #[serde(flatten)]
     #[serde(deserialize_with = "deserialize_hashmap_with_env_vals")]
-    #[serde(serialize_with = "serialize_hashmap_with_secret_vals")]
     pub config: HashMap<String, String>,
 }
 
@@ -42,7 +43,6 @@ pub enum UdfEngine {
 #[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct MongoDbConfig {
     pub name: String,
-    #[serde(serialize_with = "serialize_secret")]
     pub connection_string: String,
     pub db_name: String,
 }
@@ -79,46 +79,9 @@ pub struct PubSubConfig {
 #[serde(tag = "kind")]
 pub enum GcpAuthConfig {
     #[serde(rename = "static_token")]
-    StaticToken {
-        #[serde(serialize_with = "serialize_secret")]
-        env_token_name: String,
-    },
+    StaticToken { env_token_name: String },
     #[serde(rename = "service_account")]
     ServiceAccount { account_key_path: String },
-}
-
-fn serialize_secret<S>(_: &str, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str("****")
-}
-
-fn serialize_hashmap_with_secret_vals<S>(
-    configs: &HashMap<String, String>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeMap;
-    let mut ser_map = serializer.serialize_map(Some(configs.len()))?;
-
-    for (k, v) in configs.iter() {
-        if k.contains("password")
-            || k.contains("secret")
-            || k.contains("token")
-            || k.contains("jaas")
-            || k.ends_with(".key")
-            || k.contains("credential")
-        {
-            ser_map.serialize_entry(k, "****")?;
-        } else {
-            ser_map.serialize_entry(k, v)?;
-        }
-    }
-
-    ser_map.end()
 }
 
 fn deserialize_hashmap_with_env_vals<'de, D>(
@@ -149,6 +112,62 @@ where
     }
 
     Ok(deserialized)
+}
+
+impl Masked for KafkaConfig {
+    fn masked(&self) -> Self {
+        let mut masked_cfg = self.config.clone();
+        for (k, v) in masked_cfg.iter_mut() {
+            if k.contains("password")
+                || k.contains("secret")
+                || k.contains("token")
+                || k.contains("jaas")
+                || k.ends_with(".key")
+                || k.contains("credential")
+            {
+                *v = "****".to_string();
+            }
+        }
+        Self {
+            config: masked_cfg,
+            ..self.clone()
+        }
+    }
+}
+
+impl Masked for UdfConfig {
+    fn masked(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl Masked for MongoDbConfig {
+    fn masked(&self) -> Self {
+        Self {
+            connection_string: "****".to_string(),
+            ..self.clone()
+        }
+    }
+}
+
+impl Masked for HttpConfig {
+    fn masked(&self) -> Self {
+        self.clone()
+    }
+}
+
+impl Masked for PubSubConfig {
+    fn masked(&self) -> Self {
+        match &self.auth {
+            GcpAuthConfig::StaticToken { .. } => Self {
+                auth: GcpAuthConfig::StaticToken {
+                    env_token_name: "****".to_string(),
+                },
+                ..self.clone()
+            },
+            GcpAuthConfig::ServiceAccount { .. } => self.clone(),
+        }
+    }
 }
 
 impl<'a> TryFrom<&'a super::Service> for &'a KafkaConfig {
