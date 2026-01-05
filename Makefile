@@ -63,11 +63,11 @@ db-fixtures: ## Loads the fixtures into the db
         coll_name=$$user_coll_name; \
     fi; \
     echo "\033[3;90m  - fixtures file must be copied to ./db_fixtures/ first\033[0m"; \
-    read -p "> Enter fixtures file (default is $$fixtures): " fixtures; \
+    read -p "> Enter fixtures file (default is $$fixtures): " fixtures_file; \
     if [ -n "$$fixtures_file" ]; then \
-        fixtures=.$fixtures_file; \
+        fixtures=$$fixtures_file; \
     fi; \
-    docker exec mongo1 mongoimport --db $$db_name --collection $$coll_name --file /opt/fixtures/$$fixtures --jsonArray
+    docker exec mongo1 mongoimport --username admin --password adminpassword --authenticationDatabase admin --db $$db_name --collection $$coll_name --file /opt/fixtures/$$fixtures --jsonArray
 
 .PHONY: integration-tests
 integration-tests: ## Runs the integration tests
