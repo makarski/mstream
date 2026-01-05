@@ -101,22 +101,24 @@ async fn get_root() -> Html<String> {
     <div class="columns">
         <div class="column">
             <h2 class="title is-4">Jobs</h2>
-            <div class="box">
+            <div class="box" style="padding: 0; overflow: hidden;">
                 <details>
-                    <summary class="button is-primary is-light is-fullwidth mb-3">
-                        <span>+ Create New Job</span>
+                    <summary class="button is-primary is-light is-fullwidth is-radiusless" style="border: none; height: 3.5em;">
+                        <span class="has-text-weight-bold">+ Create New Job</span>
                     </summary>
-                    <form hx-post="/ui/jobs" hx-target="#jobs-container" hx-swap="innerHTML" class="mt-4 mb-4" hx-disabled-elt="button[type='submit']">
-                        <div class="field">
-                            <label class="label">Configuration (JSON)</label>
-                            <div class="control">
-                                <textarea class="textarea is-family-monospace" name="config_json" placeholder='{{ "name": "my-job", "source": { ... } }}' rows="6"></textarea>
+                    <div class="p-5">
+                        <form hx-post="/ui/jobs" hx-target="#jobs-container" hx-swap="innerHTML" hx-disabled-elt="button[type='submit']">
+                            <div class="field">
+                                <label class="label">Configuration (JSON)</label>
+                                <div class="control">
+                                    <textarea class="textarea is-family-monospace" name="config_json" placeholder='{{ "name": "my-job", "source": { ... } }}' rows="6"></textarea>
+                                </div>
                             </div>
-                        </div>
-                        <div class="control">
-                            <button class="button is-primary" type="submit">Start Job</button>
-                        </div>
-                    </form>
+                            <div class="control">
+                                <button class="button is-primary" type="submit">Start Job</button>
+                            </div>
+                        </form>
+                    </div>
                 </details>
             </div>
             <div id="jobs-container" hx-get="/ui/jobs" hx-trigger="load">
@@ -126,22 +128,24 @@ async fn get_root() -> Html<String> {
 
         <div class="column">
             <h2 class="title is-4">Services</h2>
-            <div class="box">
+            <div class="box" style="padding: 0; overflow: hidden;">
                 <details>
-                    <summary class="button is-info is-light is-fullwidth mb-3">
-                        <span>+ Create New Service</span>
+                    <summary class="button is-info is-light is-fullwidth is-radiusless" style="border: none; height: 3.5em;">
+                        <span class="has-text-weight-bold">+ Create New Service</span>
                     </summary>
-                    <form hx-post="/ui/services" hx-target="#services-container" hx-swap="innerHTML" class="mt-4 mb-4" hx-disabled-elt="button[type='submit']">
-                        <div class="field">
-                            <label class="label">Configuration (JSON)</label>
-                            <div class="control">
-                                <textarea class="textarea is-family-monospace" name="config_json" placeholder='{{ "provider": "kafka", "name": "my-kafka", ... }}' rows="6"></textarea>
+                    <div class="p-5">
+                        <form hx-post="/ui/services" hx-target="#services-container" hx-swap="innerHTML" hx-disabled-elt="button[type='submit']">
+                            <div class="field">
+                                <label class="label">Configuration (JSON)</label>
+                                <div class="control">
+                                    <textarea class="textarea is-family-monospace" name="config_json" placeholder='{{ "provider": "kafka", "name": "my-kafka", ... }}' rows="6"></textarea>
+                                </div>
                             </div>
-                        </div>
-                        <div class="control">
-                            <button class="button is-info" type="submit">Create Service</button>
-                        </div>
-                    </form>
+                            <div class="control">
+                                <button class="button is-info" type="submit">Create Service</button>
+                            </div>
+                        </form>
+                    </div>
                 </details>
             </div>
             <div id="services-container" hx-get="/ui/services" hx-trigger="load, services-update from:body">
