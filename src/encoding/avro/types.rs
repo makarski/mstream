@@ -304,3 +304,544 @@ pub(crate) fn avro_to_bson(avro_val: &AvroTypeValue, field_name: &str) -> anyhow
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apache_avro::types::Value as AvroTypeValue;
+    use mongodb::bson::{Bson, doc};
+
+    // =========================================================================
+    // Helper functions
+    // =========================================================================
+
+    fn string_schema() -> Schema {
+        Schema::String
+    }
+
+    fn int_schema() -> Schema {
+        Schema::Int
+    }
+
+    fn long_schema() -> Schema {
+        Schema::Long
+    }
+
+    fn double_schema() -> Schema {
+        Schema::Double
+    }
+
+    fn boolean_schema() -> Schema {
+        Schema::Boolean
+    }
+
+    fn null_schema() -> Schema {
+        Schema::Null
+    }
+
+    fn array_of_strings_schema() -> Schema {
+        Schema::Array(Box::new(Schema::String))
+    }
+
+    fn array_of_ints_schema() -> Schema {
+        Schema::Array(Box::new(Schema::Int))
+    }
+
+    fn enum_schema() -> Schema {
+        Schema::parse_str(
+            r#"{"type": "enum", "name": "Color", "symbols": ["RED", "GREEN", "BLUE"]}"#,
+        )
+        .unwrap()
+    }
+
+    fn nullable_string_schema() -> Schema {
+        Schema::parse_str(r#"["null", "string"]"#).unwrap()
+    }
+
+    fn simple_record_schema() -> Schema {
+        Schema::parse_str(
+            r#"{
+                "type": "record",
+                "name": "Person",
+                "fields": [
+                    {"name": "name", "type": "string"},
+                    {"name": "age", "type": "int"}
+                ]
+            }"#,
+        )
+        .unwrap()
+    }
+
+    fn decimal_schema() -> Schema {
+        Schema::parse_str(
+            r#"{"type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2}"#,
+        )
+        .unwrap()
+    }
+
+    // =========================================================================
+    // Group 1: BsonWithSchema -> AvroValue (primitive types)
+    // =========================================================================
+
+    #[test]
+    fn bson_to_avro_null() {
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Null, null_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Null);
+    }
+
+    #[test]
+    fn bson_to_avro_boolean_true() {
+        let result =
+            AvroValue::try_from(BsonWithSchema(Bson::Boolean(true), boolean_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Boolean(true));
+    }
+
+    #[test]
+    fn bson_to_avro_boolean_false() {
+        let result =
+            AvroValue::try_from(BsonWithSchema(Bson::Boolean(false), boolean_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Boolean(false));
+    }
+
+    #[test]
+    fn bson_to_avro_int() {
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Int32(42), int_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Int(42));
+    }
+
+    #[test]
+    fn bson_to_avro_int_negative() {
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Int32(-100), int_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Int(-100));
+    }
+
+    #[test]
+    fn bson_to_avro_int_from_i64() {
+        // i64 that fits in i32 should convert
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Int64(100), int_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Int(100));
+    }
+
+    #[test]
+    fn bson_to_avro_long() {
+        let result =
+            AvroValue::try_from(BsonWithSchema(Bson::Int64(9999999999i64), long_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Long(9999999999i64));
+    }
+
+    #[test]
+    fn bson_to_avro_double() {
+        let result =
+            AvroValue::try_from(BsonWithSchema(Bson::Double(3.14159), double_schema())).unwrap();
+        assert_eq!(result.0, AvroTypeValue::Double(3.14159));
+    }
+
+    #[test]
+    fn bson_to_avro_string() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("hello".to_string()),
+            string_schema(),
+        ))
+        .unwrap();
+        assert_eq!(result.0, AvroTypeValue::String("hello".to_string()));
+    }
+
+    #[test]
+    fn bson_to_avro_string_empty() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("".to_string()),
+            string_schema(),
+        ))
+        .unwrap();
+        assert_eq!(result.0, AvroTypeValue::String("".to_string()));
+    }
+
+    // =========================================================================
+    // Group 2: BsonWithSchema -> AvroValue (complex types)
+    // =========================================================================
+
+    #[test]
+    fn bson_to_avro_array_of_strings() {
+        let bson_arr = Bson::Array(vec![
+            Bson::String("a".to_string()),
+            Bson::String("b".to_string()),
+        ]);
+        let result =
+            AvroValue::try_from(BsonWithSchema(bson_arr, array_of_strings_schema())).unwrap();
+
+        if let AvroTypeValue::Array(arr) = result.0 {
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], AvroTypeValue::String("a".to_string()));
+            assert_eq!(arr[1], AvroTypeValue::String("b".to_string()));
+        } else {
+            panic!("expected Array");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_array_of_ints() {
+        let bson_arr = Bson::Array(vec![Bson::Int32(1), Bson::Int32(2), Bson::Int32(3)]);
+        let result = AvroValue::try_from(BsonWithSchema(bson_arr, array_of_ints_schema())).unwrap();
+
+        if let AvroTypeValue::Array(arr) = result.0 {
+            assert_eq!(arr.len(), 3);
+            assert_eq!(arr[0], AvroTypeValue::Int(1));
+            assert_eq!(arr[1], AvroTypeValue::Int(2));
+            assert_eq!(arr[2], AvroTypeValue::Int(3));
+        } else {
+            panic!("expected Array");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_array_empty() {
+        let bson_arr = Bson::Array(vec![]);
+        let result =
+            AvroValue::try_from(BsonWithSchema(bson_arr, array_of_strings_schema())).unwrap();
+
+        if let AvroTypeValue::Array(arr) = result.0 {
+            assert!(arr.is_empty());
+        } else {
+            panic!("expected Array");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_enum() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("GREEN".to_string()),
+            enum_schema(),
+        ))
+        .unwrap();
+
+        if let AvroTypeValue::Enum(idx, symbol) = result.0 {
+            assert_eq!(idx, 1); // GREEN is at index 1
+            assert_eq!(symbol, "GREEN");
+        } else {
+            panic!("expected Enum");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_enum_first() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("RED".to_string()),
+            enum_schema(),
+        ))
+        .unwrap();
+
+        if let AvroTypeValue::Enum(idx, symbol) = result.0 {
+            assert_eq!(idx, 0);
+            assert_eq!(symbol, "RED");
+        } else {
+            panic!("expected Enum");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_union_null() {
+        let result =
+            AvroValue::try_from(BsonWithSchema(Bson::Null, nullable_string_schema())).unwrap();
+
+        if let AvroTypeValue::Union(idx, inner) = result.0 {
+            assert_eq!(idx, 0);
+            assert_eq!(*inner, AvroTypeValue::Null);
+        } else {
+            panic!("expected Union");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_union_string() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("value".to_string()),
+            nullable_string_schema(),
+        ))
+        .unwrap();
+
+        if let AvroTypeValue::Union(idx, inner) = result.0 {
+            assert_eq!(idx, 1); // string is at index 1 in ["null", "string"]
+            assert_eq!(*inner, AvroTypeValue::String("value".to_string()));
+        } else {
+            panic!("expected Union");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_record() {
+        let bson_doc = Bson::Document(doc! {"name": "Alice", "age": 30});
+        let result = AvroValue::try_from(BsonWithSchema(bson_doc, simple_record_schema())).unwrap();
+
+        if let AvroTypeValue::Record(fields) = result.0 {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(
+                fields[0],
+                (
+                    "name".to_string(),
+                    AvroTypeValue::String("Alice".to_string())
+                )
+            );
+            assert_eq!(fields[1], ("age".to_string(), AvroTypeValue::Int(30)));
+        } else {
+            panic!("expected Record");
+        }
+    }
+
+    #[test]
+    fn bson_to_avro_decimal() {
+        let dec = Decimal128::from_str("123.45").unwrap();
+        let result =
+            AvroValue::try_from(BsonWithSchema(Bson::Decimal128(dec), decimal_schema())).unwrap();
+
+        if let AvroTypeValue::Decimal(_) = result.0 {
+            // Decimal conversion succeeded
+        } else {
+            panic!("expected Decimal");
+        }
+    }
+
+    // =========================================================================
+    // Group 3: avro_to_bson (reverse conversion)
+    // =========================================================================
+
+    #[test]
+    fn avro_to_bson_null() {
+        let result = avro_to_bson(&AvroTypeValue::Null, "field").unwrap();
+        assert_eq!(result, Bson::Null);
+    }
+
+    #[test]
+    fn avro_to_bson_boolean() {
+        let result = avro_to_bson(&AvroTypeValue::Boolean(true), "field").unwrap();
+        assert_eq!(result, Bson::Boolean(true));
+    }
+
+    #[test]
+    fn avro_to_bson_int() {
+        let result = avro_to_bson(&AvroTypeValue::Int(42), "field").unwrap();
+        assert_eq!(result, Bson::Int32(42));
+    }
+
+    #[test]
+    fn avro_to_bson_long() {
+        let result = avro_to_bson(&AvroTypeValue::Long(9999999999i64), "field").unwrap();
+        assert_eq!(result, Bson::Int64(9999999999i64));
+    }
+
+    #[test]
+    fn avro_to_bson_float() {
+        let result = avro_to_bson(&AvroTypeValue::Float(3.14f32), "field").unwrap();
+        // Float is converted to Double
+        if let Bson::Double(d) = result {
+            assert!((d - 3.14f64).abs() < 0.001);
+        } else {
+            panic!("expected Double");
+        }
+    }
+
+    #[test]
+    fn avro_to_bson_double() {
+        let result = avro_to_bson(&AvroTypeValue::Double(3.14159), "field").unwrap();
+        assert_eq!(result, Bson::Double(3.14159));
+    }
+
+    #[test]
+    fn avro_to_bson_string() {
+        let result = avro_to_bson(&AvroTypeValue::String("hello".to_string()), "field").unwrap();
+        assert_eq!(result, Bson::String("hello".to_string()));
+    }
+
+    #[test]
+    fn avro_to_bson_array() {
+        let avro_arr = AvroTypeValue::Array(vec![AvroTypeValue::Int(1), AvroTypeValue::Int(2)]);
+        let result = avro_to_bson(&avro_arr, "field").unwrap();
+
+        if let Bson::Array(arr) = result {
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], Bson::Int32(1));
+            assert_eq!(arr[1], Bson::Int32(2));
+        } else {
+            panic!("expected Array");
+        }
+    }
+
+    #[test]
+    fn avro_to_bson_record() {
+        let avro_rec = AvroTypeValue::Record(vec![
+            ("name".to_string(), AvroTypeValue::String("Bob".to_string())),
+            ("age".to_string(), AvroTypeValue::Int(25)),
+        ]);
+        let result = avro_to_bson(&avro_rec, "field").unwrap();
+
+        if let Bson::Document(doc) = result {
+            assert_eq!(doc.get_str("name").unwrap(), "Bob");
+            assert_eq!(doc.get_i32("age").unwrap(), 25);
+        } else {
+            panic!("expected Document");
+        }
+    }
+
+    #[test]
+    fn avro_to_bson_enum() {
+        let avro_enum = AvroTypeValue::Enum(1, "GREEN".to_string());
+        let result = avro_to_bson(&avro_enum, "field").unwrap();
+        assert_eq!(result, Bson::String("GREEN".to_string()));
+    }
+
+    #[test]
+    fn avro_to_bson_union_null() {
+        let avro_union = AvroTypeValue::Union(0, Box::new(AvroTypeValue::Null));
+        let result = avro_to_bson(&avro_union, "field").unwrap();
+        assert_eq!(result, Bson::Null);
+    }
+
+    #[test]
+    fn avro_to_bson_union_value() {
+        let avro_union =
+            AvroTypeValue::Union(1, Box::new(AvroTypeValue::String("test".to_string())));
+        let result = avro_to_bson(&avro_union, "field").unwrap();
+        assert_eq!(result, Bson::String("test".to_string()));
+    }
+
+    // =========================================================================
+    // Group 4: Error cases
+    // =========================================================================
+
+    #[test]
+    fn bson_to_avro_error_type_mismatch_string_to_int() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("not a number".to_string()),
+            int_schema(),
+        ));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bson_to_avro_error_type_mismatch_int_to_string() {
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Int32(42), string_schema()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bson_to_avro_error_enum_invalid_symbol() {
+        let result = AvroValue::try_from(BsonWithSchema(
+            Bson::String("YELLOW".to_string()), // not in [RED, GREEN, BLUE]
+            enum_schema(),
+        ));
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("failed to convert bson to enum"));
+    }
+
+    #[test]
+    fn bson_to_avro_error_record_missing_field() {
+        let bson_doc = Bson::Document(doc! {"name": "Alice"}); // missing "age"
+        let result = AvroValue::try_from(BsonWithSchema(bson_doc, simple_record_schema()));
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("failed to obtain field"));
+    }
+
+    #[test]
+    fn bson_to_avro_error_float_not_supported() {
+        let float_schema = Schema::Float;
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Double(3.14), float_schema));
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("float (32-bit) is not supported"));
+    }
+
+    #[test]
+    fn bson_to_avro_error_null_in_non_nullable_union() {
+        // Union without null variant
+        let non_nullable_union = Schema::parse_str(r#"["string", "int"]"#).unwrap();
+        let result = AvroValue::try_from(BsonWithSchema(Bson::Null, non_nullable_union));
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("non-nullable"));
+    }
+
+    #[test]
+    fn avro_to_bson_error_unsupported_bytes() {
+        let avro_bytes = AvroTypeValue::Bytes(vec![0x01, 0x02]);
+        let result = avro_to_bson(&avro_bytes, "field");
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("unsupported avro type"));
+    }
+
+    // =========================================================================
+    // Group 5: Round-trip tests
+    // =========================================================================
+
+    #[test]
+    fn roundtrip_simple_types() {
+        // Test that BSON -> Avro -> BSON preserves values
+        let test_cases: Vec<(Bson, Schema)> = vec![
+            (Bson::Boolean(true), boolean_schema()),
+            (Bson::Int32(42), int_schema()),
+            (Bson::Int64(9999999999i64), long_schema()),
+            (Bson::Double(3.14159), double_schema()),
+            (Bson::String("hello".to_string()), string_schema()),
+            (Bson::Null, null_schema()),
+        ];
+
+        for (bson_val, schema) in test_cases {
+            let avro = AvroValue::try_from(BsonWithSchema(bson_val.clone(), schema)).unwrap();
+            let bson_back = avro_to_bson(&avro.0, "field").unwrap();
+            assert_eq!(bson_val, bson_back);
+        }
+    }
+
+    #[test]
+    fn roundtrip_array() {
+        let bson_arr = Bson::Array(vec![
+            Bson::String("a".to_string()),
+            Bson::String("b".to_string()),
+        ]);
+        let avro = AvroValue::try_from(BsonWithSchema(bson_arr.clone(), array_of_strings_schema()))
+            .unwrap();
+        let bson_back = avro_to_bson(&avro.0, "field").unwrap();
+        assert_eq!(bson_arr, bson_back);
+    }
+
+    #[test]
+    fn roundtrip_record() {
+        let bson_doc = Bson::Document(doc! {"name": "Alice", "age": 30});
+        let avro =
+            AvroValue::try_from(BsonWithSchema(bson_doc.clone(), simple_record_schema())).unwrap();
+        let bson_back = avro_to_bson(&avro.0, "field").unwrap();
+
+        if let (Bson::Document(orig), Bson::Document(back)) = (bson_doc, bson_back) {
+            assert_eq!(orig.get("name"), back.get("name"));
+            assert_eq!(orig.get("age"), back.get("age"));
+        } else {
+            panic!("expected Documents");
+        }
+    }
+
+    #[test]
+    fn roundtrip_enum() {
+        let bson_enum = Bson::String("BLUE".to_string());
+        let avro = AvroValue::try_from(BsonWithSchema(bson_enum.clone(), enum_schema())).unwrap();
+        let bson_back = avro_to_bson(&avro.0, "field").unwrap();
+        assert_eq!(bson_enum, bson_back);
+    }
+
+    #[test]
+    fn roundtrip_nullable_null() {
+        let avro =
+            AvroValue::try_from(BsonWithSchema(Bson::Null, nullable_string_schema())).unwrap();
+        let bson_back = avro_to_bson(&avro.0, "field").unwrap();
+        assert_eq!(Bson::Null, bson_back);
+    }
+
+    #[test]
+    fn roundtrip_nullable_value() {
+        let bson_val = Bson::String("test".to_string());
+        let avro = AvroValue::try_from(BsonWithSchema(bson_val.clone(), nullable_string_schema()))
+            .unwrap();
+        let bson_back = avro_to_bson(&avro.0, "field").unwrap();
+        assert_eq!(bson_val, bson_back);
+    }
+}
