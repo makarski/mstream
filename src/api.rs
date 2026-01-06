@@ -3,7 +3,6 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -126,7 +125,7 @@ impl From<JobManagerError> for ApiError {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub(crate) pub job_manager: Arc<Mutex<JobManager>>,
+    pub(crate) job_manager: Arc<Mutex<JobManager>>,
 }
 
 impl AppState {
@@ -296,185 +295,17 @@ async fn remove_service(
 async fn get_one_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
-    match jm.get_service(&name).await {
-        Ok(service) => (StatusCode::OK, MaskedJson(service)).into_response(),
-        Err(err) => {
-            error!("failed to get a service: {}: {}", name, err);
-            let msg = Message::<()> {
-                message: format!("failed to get service {}: {}", name, err),
-                item: None,
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(msg)).into_response()
-        }
-    }
+    let service = jm.get_service(&name).await?;
+    Ok((StatusCode::OK, MaskedJson(service)))
 }
 
 #[derive(Serialize, Clone)]
-pub struct Message<T> {
-    pub message: String,
+struct Message<T> {
+    message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub item: Option<T>,
-}
-
-impl<T: Masked> Masked for Message<T> {
-    fn masked(&self) -> Self {
-        let masked_item = match &self.item {
-            Some(item) => Some(item.masked()),
-            None => None,
-        };
-
-        Message {
-            message: self.message.clone(),
-            item: masked_item,
-        }
-    }
-}
-
-impl<T> IntoResponse for Message<T>
-where
-    T: Serialize + Masked,
-{
-    fn into_response(self) -> Response {
-        MaskedJson(self).into_response()
-    }
-}
-
-impl<T> Masked for Vec<T>
-where
-    T: Masked,
-{
-    fn masked(&self) -> Self {
-        self.iter().map(|item| item.masked()).collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Test helper that tracks whether masked() was called
-    #[derive(Clone, Serialize, PartialEq, Debug)]
-    struct TestItem {
-        public: String,
-        secret: String,
-    }
-
-    impl Masked for TestItem {
-        fn masked(&self) -> Self {
-            Self {
-                public: self.public.clone(),
-                secret: "****".to_string(),
-            }
-        }
-    }
-
-    mod message_masked_tests {
-        use super::*;
-
-        #[test]
-        fn masks_item_when_present() {
-            let msg = Message {
-                message: "test message".to_string(),
-                item: Some(TestItem {
-                    public: "visible".to_string(),
-                    secret: "hunter2".to_string(),
-                }),
-            };
-
-            let masked = msg.masked();
-
-            assert_eq!(masked.message, "test message");
-            assert!(masked.item.is_some());
-            let item = masked.item.unwrap();
-            assert_eq!(item.public, "visible");
-            assert_eq!(item.secret, "****");
-        }
-
-        #[test]
-        fn preserves_none_item() {
-            let msg: Message<TestItem> = Message {
-                message: "no item".to_string(),
-                item: None,
-            };
-
-            let masked = msg.masked();
-
-            assert_eq!(masked.message, "no item");
-            assert!(masked.item.is_none());
-        }
-
-        #[test]
-        fn message_unchanged() {
-            let msg = Message {
-                message: "secret info in message".to_string(),
-                item: Some(TestItem {
-                    public: "x".to_string(),
-                    secret: "y".to_string(),
-                }),
-            };
-
-            let masked = msg.masked();
-
-            // Message field is not masked, only item
-            assert_eq!(masked.message, "secret info in message");
-        }
-    }
-
-    mod vec_masked_tests {
-        use super::*;
-
-        #[test]
-        fn masks_all_elements() {
-            let items = vec![
-                TestItem {
-                    public: "a".to_string(),
-                    secret: "secret1".to_string(),
-                },
-                TestItem {
-                    public: "b".to_string(),
-                    secret: "secret2".to_string(),
-                },
-                TestItem {
-                    public: "c".to_string(),
-                    secret: "secret3".to_string(),
-                },
-            ];
-
-            let masked = items.masked();
-
-            assert_eq!(masked.len(), 3);
-            assert_eq!(masked[0].public, "a");
-            assert_eq!(masked[0].secret, "****");
-            assert_eq!(masked[1].public, "b");
-            assert_eq!(masked[1].secret, "****");
-            assert_eq!(masked[2].public, "c");
-            assert_eq!(masked[2].secret, "****");
-        }
-
-        #[test]
-        fn handles_empty_vec() {
-            let items: Vec<TestItem> = vec![];
-
-            let masked = items.masked();
-
-            assert!(masked.is_empty());
-        }
-
-        #[test]
-        fn handles_single_element() {
-            let items = vec![TestItem {
-                public: "only".to_string(),
-                secret: "one".to_string(),
-            }];
-
-            let masked = items.masked();
-
-            assert_eq!(masked.len(), 1);
-            assert_eq!(masked[0].secret, "****");
-        }
-    }
+    item: Option<T>,
 }
 
 impl<T: Masked> Masked for Message<T> {

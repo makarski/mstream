@@ -306,10 +306,6 @@ impl JobManager {
         self.job_store.get(name).await
     }
 
-    pub async fn get_job(&self, name: &str) -> anyhow::Result<Option<JobMetadata>> {
-        self.job_store.get(name).await
-    }
-
     pub async fn create_service(&self, service_cfg: Service) -> Result<()> {
         let service_name = service_cfg.name().to_string();
 
@@ -377,13 +373,21 @@ impl JobManager {
         Ok(())
     }
 
-    pub async fn get_service(&self, service_name: &str) -> anyhow::Result<Service> {
+    pub async fn get_service(&self, service_name: &str) -> Result<ServiceStatus> {
         let registry = self.service_registry.read().await;
         let service = registry
             .service_definition(service_name)
             .await
             .map_err(|_| JobManagerError::ServiceNotFound(service_name.to_string()))?;
-        Ok(service)
+        let used_by = self
+            .job_store
+            .get_dependent_jobs(service_name)
+            .await
+            .map_err(|e| JobManagerError::InternalError(e.to_string()))?;
+        Ok(ServiceStatus {
+            service,
+            used_by_jobs: used_by,
+        })
     }
 
     /// Check if a job exists
@@ -428,6 +432,3 @@ pub trait JobLifecycleStorage {
     async fn get(&self, name: &str) -> anyhow::Result<Option<JobMetadata>>;
     async fn get_dependent_jobs(&self, service_name: &str) -> anyhow::Result<Vec<String>>;
 }
-
-pub mod in_memory;
-pub mod mongodb_store;
