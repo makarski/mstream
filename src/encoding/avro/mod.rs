@@ -125,7 +125,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Failed to parse schema from JSON")]
     fn encode_with_invalid_schema() {
         let raw_schema = r###"
             {
@@ -133,11 +132,11 @@ mod tests {
                 "name" : "Employee"
             }
         "###;
-        Schema::parse_str(raw_schema).expect("Failed to parse schema from JSON");
+        let result = Schema::parse_str(raw_schema);
+        assert!(result.is_err());
     }
 
     #[test]
-    #[should_panic(expected = "failed to find bson property 'name' for schema")]
     fn encode_with_valid_schema_but_invalid_payload() {
         let raw_schema = r###"
             {
@@ -151,7 +150,20 @@ mod tests {
         "###;
         let mongodb_document = doc! {"first_name": "Jon", "last_name": "Doe"};
         let avro_schema = Schema::parse_str(raw_schema).unwrap();
-        encode(mongodb_document, &avro_schema).unwrap();
+        let result = encode(mongodb_document, &avro_schema);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("failed to find bson property"));
+    }
+
+    #[test]
+    fn encode_with_non_record_schema() {
+        let string_schema = Schema::String;
+        let mongodb_document = doc! {"name": "test"};
+        let result = encode(mongodb_document, &string_schema);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("expect a record raw schema"));
     }
 
     #[test]
@@ -256,6 +268,100 @@ mod tests {
         let decoded_project = decoded_doc.get_document("project")?;
         assert_eq!(orig_project.get("title"), decoded_project.get("title"));
         assert_eq!(orig_project.get("rating"), decoded_project.get("rating"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn decode_with_invalid_bytes() {
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "Employee",
+                "fields" : [
+                    { "name" : "name" , "type" : "string" },
+                    { "name" : "age" , "type" : "int" }
+                ]
+            }
+        "###;
+        let avro_schema = Schema::parse_str(raw_schema).unwrap();
+        let invalid_bytes = vec![0xFF, 0xFF, 0xFF, 0xFF];
+        let result = decode(&invalid_bytes, &avro_schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_with_empty_bytes() {
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "Employee",
+                "fields" : [
+                    { "name" : "name" , "type" : "string" }
+                ]
+            }
+        "###;
+        let avro_schema = Schema::parse_str(raw_schema).unwrap();
+        let result = decode(&[], &avro_schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_with_non_record_schema() {
+        let string_schema = Schema::String;
+        let bytes = vec![0x00];
+        let result = decode(&bytes, &string_schema);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("expect a record schema"));
+    }
+
+    #[test]
+    fn encode_decode_with_empty_arrays() -> anyhow::Result<()> {
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "TestRecord",
+                "fields" : [
+                    { "name": "items", "type": {"type": "array", "items": "string"} }
+                ]
+            }
+        "###;
+        let mongodb_document = doc! { "items": Vec::<String>::new() };
+        let avro_schema = Schema::parse_str(raw_schema)?;
+
+        let avro_bytes = encode(mongodb_document.clone(), &avro_schema)?;
+        let decoded_doc = decode(&avro_bytes, &avro_schema)?;
+
+        assert_eq!(decoded_doc.get_array("items")?.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn encode_decode_with_nullable_fields() -> anyhow::Result<()> {
+        let raw_schema = r###"
+            {
+                "type" : "record",
+                "name" : "TestRecord",
+                "fields" : [
+                    { "name": "required", "type": "string" },
+                    { "name": "optional", "type": ["null", "string"], "default": null }
+                ]
+            }
+        "###;
+        let avro_schema = Schema::parse_str(raw_schema)?;
+
+        // Test with null value
+        let doc_with_null = doc! { "required": "test", "optional": null };
+        let avro_bytes = encode(doc_with_null, &avro_schema)?;
+        let decoded = decode(&avro_bytes, &avro_schema)?;
+        assert!(decoded.get("optional").unwrap().as_null().is_some());
+
+        // Test with actual value
+        let doc_with_value = doc! { "required": "test", "optional": "value" };
+        let avro_bytes = encode(doc_with_value, &avro_schema)?;
+        let decoded = decode(&avro_bytes, &avro_schema)?;
+        assert_eq!(decoded.get_str("optional")?, "value");
 
         Ok(())
     }
