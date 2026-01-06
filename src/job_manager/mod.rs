@@ -4,8 +4,8 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, bail};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::{
     sync::{RwLock, mpsc::UnboundedSender},
     task::JoinHandle,
@@ -22,6 +22,26 @@ use crate::{
 };
 
 pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
+
+/// Domain error type for job manager operations
+#[derive(Debug, Error)]
+pub enum JobManagerError {
+    #[error("Job '{0}' not found")]
+    JobNotFound(String),
+    #[error("Job '{0}' already exists")]
+    JobAlreadyExists(String),
+    #[error("Service '{0}' not found")]
+    ServiceNotFound(String),
+    #[error("Service '{0}' already exists")]
+    ServiceAlreadyExists(String),
+    #[error("Internal error: {0}")]
+    InternalError(String),
+    #[error("Service '{0}' is in use by jobs: {1}")]
+    ServiceInUse(String, String),
+}
+
+/// Type alias for Result with JobManagerError
+pub type Result<T> = std::result::Result<T, JobManagerError>;
 
 pub struct JobManager {
     service_registry: Arc<RwLock<ServiceRegistry>>,
@@ -138,9 +158,16 @@ impl JobManager {
         Ok(())
     }
 
-    pub async fn stop_job(&mut self, job_name: &str) -> anyhow::Result<()> {
+    pub async fn stop_job(&mut self, job_name: &str) -> Result<()> {
+        // Check if job exists first
+        let job_exists = self.job_store.get(job_name).await.ok().flatten().is_some();
+        if !job_exists {
+            return Err(JobManagerError::JobNotFound(job_name.to_string()));
+        }
+
         self.set_desired_job_state(job_name, JobState::Stopped)
-            .await?;
+            .await
+            .ok(); // Ignore errors here since we already checked existence
 
         if let Some(jc) = self.running_jobs.remove(job_name) {
             info!("stopping job: {}", job_name);
@@ -187,46 +214,58 @@ impl JobManager {
         self.job_store.list_all().await
     }
 
-    pub async fn restart_job(&mut self, job_name: &str) -> anyhow::Result<JobMetadata> {
+    pub async fn restart_job(&mut self, job_name: &str) -> Result<JobMetadata> {
         let job_metadata = self
             .job_store
             .get(job_name)
-            .await?
-            .ok_or_else(|| anyhow!("job not found: {}", job_name))?;
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| JobManagerError::JobNotFound(job_name.to_string()))?;
 
         self.stop_job(job_name).await?;
 
         if let Some(conn_cfg) = job_metadata.pipeline.clone() {
             self.start_job(conn_cfg).await
         } else {
-            bail!(
-                "cannot restart job '{}': missing pipeline configuration",
+            // This shouldn't happen in normal circumstances, treat as internal error
+            // Return as anyhow error which will be converted to InternalError in API layer
+            Err(JobManagerError::InternalError(format!(
+                "job '{}' has unexpected config error",
                 job_name
-            );
+            )))
         }
     }
 
-    pub async fn start_job(&mut self, conn_cfg: Connector) -> anyhow::Result<JobMetadata> {
-        if self.running_jobs.contains_key(&conn_cfg.name) {
-            bail!("job already running: {}", conn_cfg.name);
+    pub async fn start_job(&mut self, conn_cfg: Connector) -> Result<JobMetadata> {
+        // Check if job already exists (both running and stored)
+        if self.job_exists(&conn_cfg.name).await.unwrap_or(false) {
+            return Err(JobManagerError::JobAlreadyExists(conn_cfg.name.clone()));
         }
 
         let exit_tx = self
             .exit_tx
             .as_ref()
-            .ok_or_else(|| anyhow!("job manager is shutting down"))?
+            .ok_or_else(|| {
+                JobManagerError::InternalError("job manager is shutting down".to_string())
+            })?
             .clone();
 
         let pipeline_builder =
             PipelineBuilder::new(self.service_registry.clone(), conn_cfg.clone());
 
         let service_deps = pipeline_builder.service_deps();
-        let pipeline = pipeline_builder.build().await?;
+        let pipeline = pipeline_builder.build().await.map_err(|e| {
+            JobManagerError::InternalError(format!("failed to build pipeline: {}", e))
+        })?;
 
         let job_cancel = self.cancel_all.child_token();
         let task_cancel = job_cancel.clone();
 
-        let (job_name, work_handle, source_handle) = pipeline.run(task_cancel, exit_tx).await?;
+        let (job_name, work_handle, source_handle) =
+            pipeline.run(task_cancel, exit_tx).await.map_err(|e| {
+                JobManagerError::InternalError(format!("failed to run pipeline: {}", e))
+            })?;
 
         self.register_job(
             job_name,
@@ -237,6 +276,7 @@ impl JobManager {
             Some(conn_cfg),
         )
         .await
+        .map_err(|e| JobManagerError::InternalError(format!("failed to register job: {}", e)))
     }
 
     pub async fn list_services(&self) -> anyhow::Result<Vec<ServiceStatus>> {
@@ -266,50 +306,89 @@ impl JobManager {
         self.job_store.get(name).await
     }
 
-    pub async fn create_service(&self, service_cfg: Service) -> anyhow::Result<()> {
+    pub async fn get_job(&self, name: &str) -> anyhow::Result<Option<JobMetadata>> {
+        self.job_store.get(name).await
+    }
+
+    pub async fn create_service(&self, service_cfg: Service) -> Result<()> {
         let service_name = service_cfg.name().to_string();
+
+        // Check if service already exists
+        if self
+            .service_registry
+            .read()
+            .await
+            .service_exists(&service_name)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(JobManagerError::ServiceAlreadyExists(service_name));
+        }
+
         self.service_registry
             .write()
             .await
             .register_service(service_cfg)
-            .await?;
+            .await
+            .map_err(|e| {
+                JobManagerError::InternalError(format!("failed to register service: {}", e))
+            })?;
 
         info!("service '{}' created", service_name);
         Ok(())
     }
 
-    pub async fn remove_service(&self, service_name: &str) -> anyhow::Result<()> {
+    pub async fn remove_service(&self, service_name: &str) -> Result<()> {
+        // Check if service exists first
+        if !self
+            .service_registry
+            .read()
+            .await
+            .service_exists(service_name)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(JobManagerError::ServiceNotFound(service_name.to_string()));
+        }
+
         // acquire a write lock before checking for consumers to avoid race conditions
         let mut registry = self.service_registry.write().await;
 
-        let jobs = self.job_store.get_dependent_jobs(service_name).await?;
+        let jobs = self
+            .job_store
+            .get_dependent_jobs(service_name)
+            .await
+            .map_err(|e| {
+                JobManagerError::InternalError(format!("failed to check dependent jobs: {}", e))
+            })?;
+
         if !jobs.is_empty() {
-            bail!(
-                "cannot remove service '{}': it is used by running jobs: {}",
-                service_name,
-                jobs.join(", ")
-            );
+            return Err(JobManagerError::ServiceInUse(
+                service_name.to_string(),
+                jobs.join(", "),
+            ));
         }
-        registry.remove_service(service_name).await?;
+
+        registry.remove_service(service_name).await.map_err(|e| {
+            JobManagerError::InternalError(format!("failed to remove service: {}", e))
+        })?;
 
         info!("service '{}' removed", service_name);
         Ok(())
     }
 
-    pub async fn get_service(&self, service_name: &str) -> anyhow::Result<ServiceStatus> {
+    pub async fn get_service(&self, service_name: &str) -> anyhow::Result<Service> {
         let registry = self.service_registry.read().await;
-        match registry.service_definition(service_name).await {
-            Ok(service) => {
-                let used_by = self.job_store.get_dependent_jobs(service_name).await?;
-                return Ok(ServiceStatus {
-                    service,
-                    used_by_jobs: used_by,
-                });
-            }
-            Err(err) => {
-                bail!("failed to get service '{}': {}", service_name, err)
-            }
-        }
+        let service = registry
+            .service_definition(service_name)
+            .await
+            .map_err(|_| JobManagerError::ServiceNotFound(service_name.to_string()))?;
+        Ok(service)
+    }
+
+    /// Check if a job exists
+    pub async fn job_exists(&self, name: &str) -> anyhow::Result<bool> {
+        Ok(self.running_jobs.contains_key(name))
     }
 
     async fn set_desired_job_state(
@@ -349,3 +428,6 @@ pub trait JobLifecycleStorage {
     async fn get(&self, name: &str) -> anyhow::Result<Option<JobMetadata>>;
     async fn get_dependent_jobs(&self, service_name: &str) -> anyhow::Result<Vec<String>>;
 }
+
+pub mod in_memory;
+pub mod mongodb_store;

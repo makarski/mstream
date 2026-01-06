@@ -187,6 +187,11 @@ impl ServiceRegistry {
         Ok(def)
     }
 
+    /// Check if a service with the given name exists
+    pub async fn service_exists(&self, service_name: &str) -> anyhow::Result<bool> {
+        Ok(self.storage.get_by_name(service_name).await.is_ok())
+    }
+
     pub async fn all_service_definitions(&self) -> anyhow::Result<Vec<Service>> {
         let mut definitions = self.storage.get_all().await?;
 
