@@ -25,6 +25,7 @@ pub mod provision;
 pub mod pubsub;
 pub mod schema;
 pub mod source;
+pub mod ui;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path).with_context(|| "failed to load config")?;
@@ -33,7 +34,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let api_port = env::var("MSTREAM_API_PORT")
         .ok()
         .and_then(|port_str| port_str.parse::<u16>().ok())
-        .unwrap_or(8787);
+        .unwrap_or(8719);
 
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<JobStateChange>();
     let jm = cmd::listen_streams(exit_tx, config).await?;
