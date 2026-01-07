@@ -156,15 +156,14 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// GET /jobs
-async fn list_jobs(State(state): State<AppState>) -> (StatusCode, Json<Vec<JobMetadata>>) {
+async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
-    match jm.list_jobs().await {
-        Ok(jobs) => (StatusCode::OK, Json(jobs)),
-        Err(e) => {
-            error!("failed to list jobs: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
-        }
-    }
+    let jobs = jm
+        .list_jobs()
+        .await
+        .map_err(|e| ApiError::InternalError(format!("failed to list jobs: {}", e)))?;
+
+    Ok((StatusCode::OK, Json(jobs)))
 }
 
 /// POST /jobs/{name}/stop
@@ -229,21 +228,14 @@ async fn create_start_job(
 }
 
 /// GET /services
-async fn list_services(State(state): State<AppState>) -> impl IntoResponse {
+async fn list_services(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
-    match jm.list_services().await {
-        Ok(services) => (StatusCode::OK, MaskedJson(services)).into_response(),
-        Err(e) => {
-            error!("failed to list services: {}", e);
+    let services = jm
+        .list_services()
+        .await
+        .map_err(|e| ApiError::InternalError(format!("failed to list services: {}", e)))?;
 
-            let msg: Message<()> = Message {
-                message: format!("failed to list services: {}", e),
-                item: None,
-            };
-
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(msg)).into_response()
-        }
-    }
+    Ok((StatusCode::OK, MaskedJson(services)))
 }
 
 /// POST /services
@@ -272,24 +264,16 @@ async fn create_service(
 async fn remove_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
-    match jm.remove_service(&name).await {
-        Ok(()) => {
-            let msg = Message::<()> {
-                message: format!("service {} removed successfully", name),
-                item: None,
-            };
-            (StatusCode::OK, Json(msg)).into_response()
-        }
-        Err(e) => {
-            let msg = Message::<()> {
-                message: format!("failed to remove service {}: {}", name, e),
-                item: None,
-            };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(msg)).into_response()
-        }
-    }
+    jm.remove_service(&name).await?;
+    Ok((
+        StatusCode::OK,
+        Json(Message::<()> {
+            message: format!("service {} removed successfully", name),
+            item: None,
+        }),
+    ))
 }
 
 async fn get_one_service(
