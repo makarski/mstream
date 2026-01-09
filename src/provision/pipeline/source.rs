@@ -162,6 +162,7 @@ mod tests {
             name: "mongodb-service".to_string(),
             connection_string: "mongodb://localhost:27017".to_string(),
             db_name: "test_db".to_string(),
+            ..Default::default()
         });
 
         let http_service = Service::Http(HttpConfig {

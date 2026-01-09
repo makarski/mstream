@@ -54,6 +54,7 @@ provider = "mongodb"
 name = "mongo-local"
 connection_string = "mongodb://localhost:27017"
 db_name = "app_db"
+write_mode = "insert"  # optional: "insert" (default) or "replace"
 
 [[services]]
 provider = "kafka"
@@ -79,7 +80,7 @@ RUST_LOG=info ./mstream
 
 - [mongo_to_kafka.toml](examples/mongo_to_kafka.toml) — MongoDB Change Stream → Kafka
 - [kafka_to_mongo.toml](examples/kafka_to_mongo.toml) — Kafka → MongoDB
-- [rhai/](examples/rhai) — Rhai transformation scripts
+- [rhai/](examples/rhai) — Rhai transformation scripts (includes [append-only MongoDB pattern](examples/rhai/README.md#append-only-mongodb-sink))
 
 ## Core Concepts
 
@@ -100,7 +101,7 @@ graph LR
 | **Source** | MongoDB | Change Streams (v6.0+) |
 | **Source** | Kafka | Consumer groups, offset management |
 | **Source** | Google PubSub | Subscriptions |
-| **Sink** | MongoDB | Insert/Update/Delete operations |
+| **Sink** | MongoDB | Insert or Replace (upsert by `_id`) |
 | **Sink** | Kafka | Producer |
 | **Sink** | Google PubSub | Publisher |
 | **Sink** | HTTP | POST requests |

@@ -89,7 +89,10 @@ impl SinkBuilder {
             Service::MongoDb(mongo_cfg) => {
                 let mgo_client = registry_read.mongodb_client(&mongo_cfg.name).await?;
                 let db = mgo_client.database(&mongo_cfg.db_name);
-                Ok(SinkProvider::MongoDb(MongoDbPersister::new(db)))
+                Ok(SinkProvider::MongoDb(MongoDbPersister::new(
+                    db,
+                    mongo_cfg.write_mode.clone(),
+                )))
             }
             Service::Http(http_config) => {
                 let http_service = registry_read.http_client(&http_config.name).await?;
