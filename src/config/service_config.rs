@@ -40,11 +40,21 @@ pub enum UdfEngine {
     Undefined,
 }
 
-#[derive(Deserialize, Debug, Clone, Serialize)]
+#[derive(Deserialize, Default, Debug, Clone, Serialize)]
 pub struct MongoDbConfig {
     pub name: String,
     pub connection_string: String,
     pub db_name: String,
+    #[serde(default)]
+    pub write_mode: MongoDbWriteMode,
+}
+
+#[derive(Deserialize, Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MongoDbWriteMode {
+    #[default]
+    Insert,
+    Replace,
 }
 
 #[derive(Deserialize, Debug, Clone, Serialize)]
@@ -286,6 +296,61 @@ mod tests {
         }
     }
 
+    mod mongodb_config_tests {
+        use super::*;
+
+        #[test]
+        fn write_mode_defaults_to_insert() {
+            let toml = r#"
+                name = "mongo"
+                connection_string = "mongodb://localhost:27017"
+                db_name = "testdb"
+            "#;
+            let cfg: MongoDbConfig = toml::from_str(toml).unwrap();
+
+            assert!(matches!(cfg.write_mode, MongoDbWriteMode::Insert));
+        }
+
+        #[test]
+        fn write_mode_parses_insert() {
+            let toml = r#"
+                name = "mongo"
+                connection_string = "mongodb://localhost:27017"
+                db_name = "testdb"
+                write_mode = "insert"
+            "#;
+            let cfg: MongoDbConfig = toml::from_str(toml).unwrap();
+
+            assert!(matches!(cfg.write_mode, MongoDbWriteMode::Insert));
+        }
+
+        #[test]
+        fn write_mode_parses_replace() {
+            let toml = r#"
+                name = "mongo"
+                connection_string = "mongodb://localhost:27017"
+                db_name = "testdb"
+                write_mode = "replace"
+            "#;
+            let cfg: MongoDbConfig = toml::from_str(toml).unwrap();
+
+            assert!(matches!(cfg.write_mode, MongoDbWriteMode::Replace));
+        }
+
+        #[test]
+        fn write_mode_rejects_invalid() {
+            let toml = r#"
+                name = "mongo"
+                connection_string = "mongodb://localhost:27017"
+                db_name = "testdb"
+                write_mode = "upsert"
+            "#;
+            let result: Result<MongoDbConfig, _> = toml::from_str(toml);
+
+            assert!(result.is_err());
+        }
+    }
+
     mod masked_tests {
         use super::*;
 
@@ -322,6 +387,7 @@ mod tests {
                 name: "mongo".to_string(),
                 connection_string: "mongodb://user:pass@host:27017".to_string(),
                 db_name: "testdb".to_string(),
+                ..Default::default()
             };
 
             let masked = cfg.masked();
@@ -397,6 +463,7 @@ mod tests {
                 name: "mongo".to_string(),
                 connection_string: "mongodb://localhost".to_string(),
                 db_name: "test".to_string(),
+                ..Default::default()
             };
             let service = Service::MongoDb(cfg);
 

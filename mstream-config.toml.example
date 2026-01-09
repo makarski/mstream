@@ -30,6 +30,7 @@ provider = "mongodb"
 name = "mongodb-source"
 connection_string = "mongodb://localhost:27017"
 db_name = "example_db"
+write_mode = "insert"  # optional: "insert" (default) or "replace" (upsert by _id)
 
 [[services]]
 provider = "http"

@@ -70,3 +70,49 @@ The embedded Rhai engine exposes several helper functions you can call from your
 - `mask_year_only(date_or_iso_date)`: truncates a date to the first day of its year, handling both plain strings and MongoDB EJSON timestamps.
 
 Use these helpers to keep your Rhai scripts concise and consistent across connectors.
+
+## Append-Only MongoDB Sink
+
+By default, MongoDB Change Streams include an `_id` field in each document. When sinking back to MongoDB with `write_mode = "insert"` (the default), duplicate `_id` values will cause insert failures.
+
+To enable **append-only** behavior (every event creates a new document), use a Rhai middleware to strip the `_id` field before the sink:
+
+```rhai
+// strip_id.rhai - Remove _id to allow append-only inserts
+fn transform(doc, attributes) {
+    doc.remove("_id");
+    result(doc, attributes)
+}
+```
+
+Configuration example:
+
+```toml
+[[services]]
+provider = "mongodb"
+name = "mongo-sink"
+connection_string = "mongodb://localhost:27017"
+db_name = "app_db"
+write_mode = "insert"  # default; will fail on duplicate _id
+
+[[services]]
+provider = "udf"
+name = "udf-rhai"
+engine = { kind = "rhai" }
+script_path = "examples/rhai/scripts/"
+
+[[connectors]]
+enabled = true
+name = "append-only-sync"
+source = { service_name = "mongo-source", resource = "events", output_encoding = "json" }
+middlewares = [
+    { service_name = "udf-rhai", resource = "strip_id.rhai", output_encoding = "json" }
+]
+sinks = [
+    { service_name = "mongo-sink", resource = "events_archive", output_encoding = "bson" }
+]
+```
+
+This pattern is useful for creating audit logs or event archives where each change stream event should be preserved as a separate document.
+
+> **Tip:** If you want upsert behavior instead (update existing documents by `_id`), use `write_mode = "replace"` on the MongoDB service and keep the `_id` field intact.

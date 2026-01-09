@@ -51,6 +51,7 @@ pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<JobStateChange>) 
                     name: "mongodb".to_owned(),
                     connection_string: env::var(DB_CONNECTION_ENV).unwrap(),
                     db_name: DB_NAME.to_owned(),
+                    ..Default::default()
                 }),
             ],
             connectors: vec![Connector {
