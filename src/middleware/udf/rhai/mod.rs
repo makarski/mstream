@@ -53,6 +53,7 @@
 //!     attributes: Some(HashMap::new()),
 //!     encoding: mstream::config::Encoding::Json,
 //!     is_framed_batch: false,
+//!     cursor: None,
 //! };
 //!
 //! // Transform the event
@@ -270,6 +271,7 @@ impl RhaiMiddleware {
     ///     attributes: None,
     ///     encoding: mstream::config::Encoding::Json,
     ///     is_framed_batch: false,
+    ///     cursor: None,
     /// };
     ///
     /// let transformed = middleware.transform(event).await?;

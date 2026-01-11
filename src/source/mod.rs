@@ -21,6 +21,7 @@ pub struct SourceEvent {
     pub attributes: Option<HashMap<String, String>>,
     pub encoding: Encoding,
     pub is_framed_batch: bool,
+    pub cursor: Option<Vec<u8>>,
 }
 
 #[cfg(test)]
@@ -31,6 +32,7 @@ impl Default for SourceEvent {
             attributes: None,
             encoding: Encoding::Json,
             is_framed_batch: false,
+            cursor: None,
         }
     }
 }
@@ -50,6 +52,7 @@ impl SourceEvent {
                 attributes: self.attributes,
                 encoding: target_encoding.clone(),
                 is_framed_batch: self.is_framed_batch,
+                cursor: self.cursor,
             })
     }
 }

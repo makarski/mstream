@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::config::{Connector, Masked, Service};
-use crate::job_manager::{JobManager, JobManagerError, JobMetadata};
+use crate::job_manager::{JobManager, JobMetadata, error::JobManagerError};
 
 struct MaskedJson<T>(T);
 
@@ -26,100 +26,50 @@ where
     }
 }
 
-/// API Error type that maps to appropriate HTTP status codes
-#[derive(Debug)]
-pub enum ApiError {
-    /// 404 Not Found - resource doesn't exist
-    NotFound {
-        resource: String,
-        identifier: String,
-    },
-
-    /// 409 Conflict - request conflicts with current state
-    Conflict(String),
-
-    /// 500 Internal Server Error - unexpected server-side error
-    InternalError(String),
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: ErrorDetail,
-}
-
-#[derive(Serialize)]
-struct ErrorDetail {
-    code: String,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<serde_json::Value>,
-}
-
-impl IntoResponse for ApiError {
+impl IntoResponse for JobManagerError {
     fn into_response(self) -> Response {
-        let (status, code, message, details) = match self {
-            ApiError::NotFound {
-                resource,
-                identifier,
-            } => (
+        let (status, message) = match &self {
+            JobManagerError::JobNotFound(name) => {
+                (StatusCode::NOT_FOUND, format!("Job '{}' not found", name))
+            }
+            JobManagerError::JobAlreadyExists(name) => (
+                StatusCode::CONFLICT,
+                format!("Job '{}' already exists", name),
+            ),
+            JobManagerError::ServiceNotFound(name) => (
                 StatusCode::NOT_FOUND,
-                "NOT_FOUND",
-                format!("{} '{}' not found", resource, identifier),
-                None,
+                format!("Service '{}' not found", name),
             ),
-            ApiError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg, None),
-            ApiError::InternalError(msg) => (
+            JobManagerError::ServiceAlreadyExists(name) => (
+                StatusCode::CONFLICT,
+                format!("Service '{}' already exists", name),
+            ),
+            JobManagerError::ServiceInUse(name, used_by) => (
+                StatusCode::CONFLICT,
+                format!("Service '{}' is in use by jobs: {}", name, used_by),
+            ),
+            JobManagerError::InternalError(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                msg,
-                None,
+                format!("Internal error: {}", msg),
+            ),
+            JobManagerError::Anyhow(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Internal error: {}", e),
             ),
         };
 
-        let error_response = ErrorResponse {
-            error: ErrorDetail {
-                code: code.to_string(),
-                message: message.clone(),
-                details,
-            },
-        };
-
-        // Log errors appropriately
-        match status {
-            StatusCode::NOT_FOUND | StatusCode::CONFLICT => {
-                warn!("[{}] {}", code, message);
-            }
-            _ => {
-                error!("[{}] {}", code, message);
-            }
+        if status.is_server_error() {
+            error!("API Error: {}", message);
+        } else {
+            warn!("API Client Error: {}", message);
         }
 
-        (status, Json(error_response)).into_response()
-    }
-}
+        let body = Json(Message {
+            message,
+            item: None::<()>,
+        });
 
-impl From<JobManagerError> for ApiError {
-    fn from(err: JobManagerError) -> Self {
-        match err {
-            JobManagerError::JobNotFound(name) => ApiError::NotFound {
-                resource: "job".to_string(),
-                identifier: name,
-            },
-            JobManagerError::JobAlreadyExists(name) => {
-                ApiError::Conflict(format!("Job '{}' already exists", name))
-            }
-            JobManagerError::ServiceNotFound(name) => ApiError::NotFound {
-                resource: "service".to_string(),
-                identifier: name,
-            },
-            JobManagerError::ServiceAlreadyExists(name) => {
-                ApiError::Conflict(format!("Service '{}' already exists", name))
-            }
-            JobManagerError::InternalError(msg) => ApiError::InternalError(msg),
-            JobManagerError::ServiceInUse(name, jobs) => {
-                ApiError::Conflict(format!("Service '{}' is in use by jobs: {}", name, jobs))
-            }
-        }
+        (status, body).into_response()
     }
 }
 
@@ -156,12 +106,12 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// GET /jobs
-async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, JobManagerError> {
     let jm = state.job_manager.lock().await;
     let jobs = jm
         .list_jobs()
         .await
-        .map_err(|e| ApiError::InternalError(format!("failed to list jobs: {}", e)))?;
+        .map_err(|e| JobManagerError::InternalError(format!("failed to list jobs: {}", e)))?;
 
     Ok((StatusCode::OK, Json(jobs)))
 }
@@ -170,7 +120,7 @@ async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, A
 async fn stop_job(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<(StatusCode, Json<Message<()>>), ApiError> {
+) -> Result<(StatusCode, Json<Message<()>>), JobManagerError> {
     info!("stopping job: {}", name);
     let mut jm = state.job_manager.lock().await;
 
@@ -190,7 +140,7 @@ async fn stop_job(
 async fn restart_job(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<(StatusCode, Json<Message<JobMetadata>>), ApiError> {
+) -> Result<(StatusCode, Json<Message<JobMetadata>>), JobManagerError> {
     info!("restarting job: {}", name);
     let mut jm = state.job_manager.lock().await;
 
@@ -210,7 +160,7 @@ async fn restart_job(
 async fn create_start_job(
     State(state): State<AppState>,
     Json(conn_cfg): Json<Connector>,
-) -> Result<(StatusCode, Json<Message<JobMetadata>>), ApiError> {
+) -> Result<(StatusCode, Json<Message<JobMetadata>>), JobManagerError> {
     info!("creating new job: {}", conn_cfg.name);
 
     let mut jm = state.job_manager.lock().await;
@@ -228,12 +178,14 @@ async fn create_start_job(
 }
 
 /// GET /services
-async fn list_services(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
+async fn list_services(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, JobManagerError> {
     let jm = state.job_manager.lock().await;
     let services = jm
         .list_services()
         .await
-        .map_err(|e| ApiError::InternalError(format!("failed to list services: {}", e)))?;
+        .map_err(|e| JobManagerError::InternalError(format!("failed to list services: {}", e)))?;
 
     Ok((StatusCode::OK, MaskedJson(services)))
 }
@@ -242,7 +194,7 @@ async fn list_services(State(state): State<AppState>) -> Result<impl IntoRespons
 async fn create_service(
     State(state): State<AppState>,
     Json(service_cfg): Json<Service>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, JobManagerError> {
     info!("creating new service: {}", service_cfg.name());
 
     let jm = state.job_manager.lock().await;
@@ -264,7 +216,7 @@ async fn create_service(
 async fn remove_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, JobManagerError> {
     let jm = state.job_manager.lock().await;
     jm.remove_service(&name).await?;
     Ok((
@@ -279,7 +231,7 @@ async fn remove_service(
 async fn get_one_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<impl IntoResponse, JobManagerError> {
     let jm = state.job_manager.lock().await;
     let service = jm.get_service(&name).await?;
     Ok((StatusCode::OK, MaskedJson(service)))

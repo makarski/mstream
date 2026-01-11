@@ -7,15 +7,17 @@ use tokio::fs;
 use tracing::info;
 
 use crate::{
+    checkpoint::{DynCheckpointer, NoopCheckpointer},
     config::{
         Service,
         service_config::{
             GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine, UdfScript,
         },
+        system::SystemConfig,
     },
     http,
     middleware::udf::rhai::RhaiMiddleware,
-    mongodb::db_client,
+    mongodb::{checkpoint::MongoDbCheckpointer, db_client},
     pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
 };
 
@@ -27,23 +29,27 @@ type RhaiMiddlewareBuilder =
 
 pub struct ServiceRegistry {
     storage: ServiceStorage,
+    system_cfg: Option<SystemConfig>,
     mongo_clients: HashMap<String, Client>,
     gcp_token_providers: HashMap<String, ServiceAccountAuth>,
     http_services: HashMap<String, http::HttpService>,
     udf_middlewares: HashMap<String, RhaiMiddlewareBuilder>,
+    checkpointer: DynCheckpointer,
 }
 
 impl ServiceRegistry {
     /// Creates a new ServiceRegistry instance
     /// This is a noop constructor, services need to be
     /// initialized via `init` method
-    pub fn new(storage: ServiceStorage) -> ServiceRegistry {
+    pub fn new(storage: ServiceStorage, system_cfg: Option<SystemConfig>) -> ServiceRegistry {
         Self {
             storage,
+            system_cfg,
             mongo_clients: HashMap::new(),
             gcp_token_providers: HashMap::new(),
             http_services: HashMap::new(),
             udf_middlewares: HashMap::new(),
+            checkpointer: Arc::new(NoopCheckpointer::new()),
         }
     }
 
@@ -54,6 +60,8 @@ impl ServiceRegistry {
             info!("registering service: {}: {:?}", service.name(), service);
             self.register_service(service).await?;
         }
+
+        self.init_checkpointer().await?;
         Ok(())
     }
 
@@ -101,6 +109,39 @@ impl ServiceRegistry {
 
         let udf_builder = Arc::new(callback);
         self.udf_middlewares.insert(cfg.name.clone(), udf_builder);
+        Ok(())
+    }
+
+    async fn init_checkpointer(&mut self) -> anyhow::Result<()> {
+        let checkpoint_cfg = match self
+            .system_cfg
+            .as_ref()
+            .and_then(|s| s.checkpoints.as_ref())
+        {
+            Some(cfg) => cfg,
+            None => return Ok(()),
+        };
+
+        let service_def = self
+            .storage
+            .get_by_name(&checkpoint_cfg.service_name)
+            .await?;
+
+        let db_name = match &service_def {
+            Service::MongoDb(cfg) => &cfg.db_name,
+            _ => {
+                return Err(anyhow!(
+                    "checkpoints service '{}' must be a MongoDB service",
+                    checkpoint_cfg.service_name
+                ));
+            }
+        };
+
+        let db_client = self.mongodb_client(&checkpoint_cfg.service_name).await?;
+        let db = db_client.database(db_name);
+        let cp = MongoDbCheckpointer::new(db, checkpoint_cfg.resource.clone());
+
+        self.checkpointer = Arc::new(cp);
         Ok(())
     }
 
@@ -159,6 +200,10 @@ impl ServiceRegistry {
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow!("http service not found for service name: {}", name))
+    }
+
+    pub fn checkpointer(&self) -> DynCheckpointer {
+        self.checkpointer.clone()
     }
 
     async fn create_gcp_token_provider(auth: &GcpAuthConfig) -> anyhow::Result<ServiceAccountAuth> {
@@ -315,7 +360,7 @@ mod service_registry_tests {
 
     fn registry_with_in_memory_storage() -> ServiceRegistry {
         let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
-        ServiceRegistry::new(storage)
+        ServiceRegistry::new(storage, None)
     }
 
     #[tokio::test]
@@ -514,7 +559,7 @@ mod service_registry_tests {
             .expect("failed to persist service");
 
         let storage: ServiceStorage = Box::new(storage_impl);
-        let registry = ServiceRegistry::new(storage);
+        let registry = ServiceRegistry::new(storage, None);
 
         let definition = registry
             .service_definition("udf-cold")

@@ -8,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::{
+    checkpoint::DynCheckpointer,
     config::Encoding,
     job_manager::{JobState, JobStateChange},
     provision::pipeline::{
@@ -35,6 +36,8 @@ pub struct Pipeline {
     pub sinks: Vec<SinkDefinition>,
     pub batch_size: usize,
     pub is_batching_enabled: bool,
+    pub checkpointer: DynCheckpointer,
+    pub with_checkpoints: bool,
 }
 
 impl Pipeline {

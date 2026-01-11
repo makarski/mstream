@@ -1,10 +1,13 @@
 use core::iter::Iterator;
 
 use anyhow::{anyhow, bail};
+use chrono::Utc;
 use log::{debug, error, info};
 use tokio::{sync::mpsc::Receiver, task::block_in_place};
+use tracing::warn;
 
 use crate::{
+    checkpoint::Checkpoint,
     provision::pipeline::Pipeline,
     schema::encoding::SchemaEncoder,
     sink::{EventSink, encoding::SinkEvent},
@@ -120,6 +123,7 @@ impl EventHandler {
 
         let source_encoding = batch[0].encoding.clone();
         let attributes = batch[0].attributes.clone();
+        let last_cursor = batch.last().and_then(|event| event.cursor.clone());
         let payloads: Vec<Vec<u8>> = batch.drain(..).map(|event| event.raw_bytes).collect();
 
         let batch_event = block_in_place(|| {
@@ -134,6 +138,7 @@ impl EventHandler {
                 attributes: attributes,
                 encoding: self.pipeline.source_out_encoding.clone(),
                 is_framed_batch: true,
+                cursor: last_cursor,
             })
         })?;
 
@@ -150,47 +155,27 @@ impl EventHandler {
     }
 
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
-        let mut transformed_source_event = source_event;
+        let event_holder = self.apply_middlewares(source_event).await?;
+        let mut all_sinks_succeeded = true;
 
-        for middleware_def in self.pipeline.middlewares.iter_mut() {
-            transformed_source_event = middleware_def
-                .provider
-                .transform(transformed_source_event)
-                .await?;
+        // Extract cursor before the loop for checkpointing
+        let cursor = event_holder.cursor.clone();
 
-            transformed_source_event = block_in_place(|| {
-                transformed_source_event.apply_schema(
-                    Some(&middleware_def.config.output_encoding),
-                    &middleware_def.schema,
-                )
-            })
-            .map_err(|err| {
-                anyhow!(
-                    "middleware: {}:{}. schema: {:?}: {}",
-                    middleware_def.config.service_name,
-                    middleware_def.config.resource,
-                    middleware_def.config.schema_id,
-                    err
-                )
-            })?;
-        }
-
-        let mut event_holder = Some(transformed_source_event);
-        let publishers_len = self.pipeline.sinks.len();
+        let mut event_option = Some(event_holder);
+        let sinks_len = self.pipeline.sinks.len();
 
         for (i, sink_def) in self.pipeline.sinks.iter_mut().enumerate() {
             let sink_event_result = block_in_place(|| {
-                let event = if i == publishers_len - 1 {
-                    // move the last event to avoid clone
-                    event_holder.take().expect("publishers: last event move")
+                let event = if i == sinks_len - 1 {
+                    // Move the event on the last iteration to avoid clone
+                    event_option.take().expect("event should be present")
                 } else {
-                    // clone the event for other publishers
-                    event_holder
+                    // Clone for intermediate sinks
+                    event_option
                         .as_ref()
-                        .expect("publishers: event ref")
+                        .expect("event should be present")
                         .clone()
                 };
-
                 // apply sink schema
                 event.apply_schema(Some(&sink_def.config.output_encoding), &sink_def.schema)
             });
@@ -208,6 +193,7 @@ impl EventHandler {
                         &sink_def.config.schema_id,
                         err
                     );
+                    all_sinks_succeeded = false;
                     continue;
                 }
             };
@@ -232,11 +218,67 @@ impl EventHandler {
                         "failed to publish message to sink: {}:{}, {}",
                         &sink_def.config.service_name, &sink_def.config.resource, err
                     );
+                    all_sinks_succeeded = false;
                     continue;
                 }
             };
         }
 
+        if self.pipeline.with_checkpoints && all_sinks_succeeded {
+            self.save_checkpoint(cursor).await?;
+        }
+
         Ok(())
+    }
+
+    async fn save_checkpoint(&self, cursor: Option<Vec<u8>>) -> anyhow::Result<()> {
+        match cursor {
+            Some(c) => {
+                let cp = Checkpoint {
+                    job_name: self.pipeline.name.clone(),
+                    cursor: c,
+                    updated_at: Utc::now().timestamp_millis(),
+                };
+
+                self.pipeline.checkpointer.save(&cp).await?;
+                Ok(())
+            }
+            None => {
+                warn!(
+                    "checkpointing: missing cursor in source event for connector: {}",
+                    self.pipeline.name
+                );
+                Ok(())
+            }
+        }
+    }
+
+    async fn apply_middlewares(
+        &mut self,
+        source_event: SourceEvent,
+    ) -> anyhow::Result<SourceEvent> {
+        let mut transformed_event = source_event;
+
+        for middleware_def in self.pipeline.middlewares.iter_mut() {
+            transformed_event = middleware_def.provider.transform(transformed_event).await?;
+
+            transformed_event = block_in_place(|| {
+                transformed_event.apply_schema(
+                    Some(&middleware_def.config.output_encoding),
+                    &middleware_def.schema,
+                )
+            })
+            .map_err(|err| {
+                anyhow!(
+                    "middleware: {}:{}. schema: {:?}: {}",
+                    middleware_def.config.service_name,
+                    middleware_def.config.resource,
+                    middleware_def.config.schema_id,
+                    err
+                )
+            })?;
+        }
+
+        Ok(transformed_event)
     }
 }

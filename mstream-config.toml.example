@@ -65,10 +65,17 @@ startup_state = "seed_from_file"
 service_name = "mongodb-source"
 resource = "mstream-services"
 
+# Optional: enable checkpoint persistence to resume connectors from their last position
+[system.checkpoints]
+service_name = "mongodb-source"
+resource = "mstream-checkpoints"
+
 # Connector Configurations
 [[connectors]]
 enabled = true
 name = "mongodb-source-connector"
+# Enable checkpointing to resume from last processed position after restarts
+checkpoint = { enabled = true }
 # Configure the source MongoDB collection to watch for changes
 # Optional: reference a schema by ID
 source = { service_name = "mongodb-source", resource = "example_collection", output_encoding = "bson", schema_id = "basic_schema" }
@@ -98,6 +105,8 @@ sinks = [
 [[connectors]]
 enabled = true
 name = "kafka-source-connector"
+# Enable checkpointing to track Kafka topic/partition/offset
+checkpoint = { enabled = true }
 # Configure Kafka as a source
 source = { service_name = "kafka-cloud", resource = "source_topic", input_encoding = "avro", output_encoding = "json", schema_id = "kafka_schema" }
 # Schema is optional for filtering fields

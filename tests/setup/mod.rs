@@ -58,6 +58,7 @@ pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<JobStateChange>) 
                 enabled: true,
                 name: CONNECTOR_NAME.to_owned(),
                 batch: None,
+                checkpoint: None,
                 source: SourceServiceConfigReference {
                     service_name: "mongodb".to_owned(),
                     resource: DB_COLLECTION.to_owned(),

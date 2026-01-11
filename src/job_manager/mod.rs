@@ -5,7 +5,6 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tokio::{
     sync::{RwLock, mpsc::UnboundedSender},
     task::JoinHandle,
@@ -13,35 +12,21 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
+pub mod error;
 pub mod in_memory;
 pub mod mongodb_store;
 
+use crate::{
+    checkpoint::{Checkpoint, CheckpointerError},
+    config::CheckpointConnectorConfig,
+    job_manager::error::{JobManagerError, Result},
+};
 use crate::{
     config::{Connector, Masked, Service},
     provision::{pipeline::builder::PipelineBuilder, registry::ServiceRegistry},
 };
 
 pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
-
-/// Domain error type for job manager operations
-#[derive(Debug, Error)]
-pub enum JobManagerError {
-    #[error("Job '{0}' not found")]
-    JobNotFound(String),
-    #[error("Job '{0}' already exists")]
-    JobAlreadyExists(String),
-    #[error("Service '{0}' not found")]
-    ServiceNotFound(String),
-    #[error("Service '{0}' already exists")]
-    ServiceAlreadyExists(String),
-    #[error("Internal error: {0}")]
-    InternalError(String),
-    #[error("Service '{0}' is in use by jobs: {1}")]
-    ServiceInUse(String, String),
-}
-
-/// Type alias for Result with JobManagerError
-pub type Result<T> = std::result::Result<T, JobManagerError>;
 
 pub struct JobManager {
     service_registry: Arc<RwLock<ServiceRegistry>>,
@@ -251,8 +236,11 @@ impl JobManager {
             })?
             .clone();
 
+        let checkpoint = self
+            .load_checkpoint(&conn_cfg.name, &conn_cfg.checkpoint)
+            .await;
         let pipeline_builder =
-            PipelineBuilder::new(self.service_registry.clone(), conn_cfg.clone());
+            PipelineBuilder::new(self.service_registry.clone(), conn_cfg.clone(), checkpoint);
 
         let service_deps = pipeline_builder.service_deps();
         let pipeline = pipeline_builder.build().await.map_err(|e| {
@@ -406,6 +394,39 @@ impl JobManager {
         }
 
         Ok(())
+    }
+
+    async fn load_checkpoint(
+        &self,
+        job_name: &str,
+        checkpoint_cfg: &Option<CheckpointConnectorConfig>,
+    ) -> Option<Checkpoint> {
+        if !checkpoint_cfg.as_ref().map_or(false, |cfg| cfg.enabled) {
+            info!("checkpointing disabled for job: {}", job_name);
+            return None;
+        }
+
+        let cp = self
+            .service_registry
+            .read()
+            .await
+            .checkpointer()
+            .load(job_name)
+            .await;
+
+        match cp {
+            Ok(checkpoint) => Some(checkpoint),
+            Err(err) => match err {
+                CheckpointerError::NotFound { job_name } => {
+                    warn!("no checkpoint found for job: {}", job_name);
+                    None
+                }
+                _ => {
+                    error!("failed to load checkpoint for job '{}': {}", job_name, err);
+                    None
+                }
+            },
+        }
     }
 }
 

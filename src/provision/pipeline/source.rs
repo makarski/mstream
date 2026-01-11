@@ -4,6 +4,7 @@ use anyhow::{anyhow, bail};
 use tokio::sync::RwLock;
 
 use crate::{
+    checkpoint::Checkpoint,
     config::{Encoding, Service, SourceServiceConfigReference},
     kafka::consumer::KafkaConsumer,
     mongodb::MongoDbChangeStreamListener,
@@ -19,6 +20,7 @@ use crate::{
 pub(super) struct SourceBuilder {
     registry: Arc<RwLock<ServiceRegistry>>,
     config: SourceServiceConfigReference,
+    checkpoint: Option<Checkpoint>,
 }
 
 pub(super) struct SourceDefinition {
@@ -49,8 +51,13 @@ impl SourceBuilder {
     pub fn new(
         registry: Arc<RwLock<ServiceRegistry>>,
         config: SourceServiceConfigReference,
+        checkpoint: Option<Checkpoint>,
     ) -> Self {
-        SourceBuilder { registry, config }
+        SourceBuilder {
+            registry,
+            config,
+            checkpoint,
+        }
     }
 
     async fn source(&self) -> anyhow::Result<SourceProvider> {
@@ -67,11 +74,15 @@ impl SourceBuilder {
             Service::MongoDb(mongo_conf) => {
                 let mongo_client = registry_read.mongodb_client(&mongo_conf.name).await?;
                 let db = mongo_client.database(&mongo_conf.db_name);
-                Ok(SourceProvider::MongoDb(MongoDbChangeStreamListener::new(
-                    db,
-                    mongo_conf.db_name,
+                let cdc_listener = MongoDbChangeStreamListener::new(
+                    db.clone(),
+                    mongo_conf.db_name.clone(),
                     self.config.resource.clone(),
-                )))
+                    self.checkpoint.clone(),
+                )?;
+
+                let mongo_provider = SourceProvider::MongoDb(cdc_listener);
+                Ok(mongo_provider)
             }
             Service::Kafka(k_conf) => {
                 let consumer = KafkaConsumer::new(
