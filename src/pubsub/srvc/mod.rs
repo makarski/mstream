@@ -223,6 +223,8 @@ impl<I: Interceptor> PubSubSubscriber<I> {
                         attributes: Some(payload.attributes),
                         encoding: self.encoding.clone(),
                         is_framed_batch: false,
+                        // todo: check whether pubsub provides a cursor-like mechanism
+                        cursor: None,
                     };
                     events.send(source_event).await?;
                 }

@@ -27,10 +27,8 @@ pub async fn init_job_storage(
     {
         Some(cfg) => cfg,
         None => {
-            return Ok((
-                Box::new(InMemoryJobStore::new()),
-                StartupState::ForceFromFile,
-            ));
+            let job_store: JobStorage = Box::new(InMemoryJobStore::new());
+            return Ok((job_store, StartupState::ForceFromFile));
         }
     };
 
@@ -43,10 +41,9 @@ pub async fn init_job_storage(
         Service::MongoDb(mongo_config) => {
             let db_client = registry.mongodb_client(&service_name).await?;
             let db = db_client.database(&mongo_config.db_name);
-            Ok((
-                Box::new(MongoDBJobStore::new(db, lifecycle_cfg.resource.clone())),
-                startup_state,
-            ))
+            let job_store: JobStorage =
+                Box::new(MongoDBJobStore::new(db, lifecycle_cfg.resource.clone()));
+            Ok((job_store, startup_state))
         }
         _ => anyhow::bail!(
             "unsupported service provider for job lifecycle management: {}",
@@ -63,7 +60,7 @@ pub async fn init_service_storage(config: &Config) -> anyhow::Result<ServiceStor
     {
         Some((key_path, Some(cfg))) => (key_path, cfg),
         _ => {
-            let in_memory = Box::new(InMemoryServiceStorage::new());
+            let in_memory: ServiceStorage = Box::new(InMemoryServiceStorage::new());
             return Ok(in_memory);
         }
     };
@@ -85,7 +82,7 @@ pub async fn init_service_storage(config: &Config) -> anyhow::Result<ServiceStor
     let encryption_key = encryption::get_encryption_key(enc_key_path).await?;
     let encryptor = Encryptor::new(encryption_key.as_slice())?;
 
-    let service_storage = Box::new(MongoDbServiceStorage::new(
+    let service_storage: ServiceStorage = Box::new(MongoDbServiceStorage::new(
         db,
         &storage_cfg.resource,
         encryptor,

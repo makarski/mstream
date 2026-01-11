@@ -17,6 +17,7 @@ mod mongodb;
 mod sink;
 
 pub mod api;
+pub mod checkpoint;
 pub mod cmd;
 pub mod config;
 pub mod job_manager;

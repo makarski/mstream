@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
-use log::debug;
+use chrono::{DateTime, Utc};
 use mongodb::{
     Client, Database,
-    bson::{RawDocumentBuf, doc},
+    bson::{self, RawDocumentBuf, doc},
     change_stream::{
         ChangeStream,
         event::{ChangeStreamEvent, OperationType, ResumeToken},
@@ -13,10 +13,12 @@ use mongodb::{
     options::{ChangeStreamOptions, ClientOptions, FullDocumentBeforeChangeType, FullDocumentType},
 };
 use tokio::sync::mpsc::Sender;
+use tracing::{debug, info};
 
-use crate::config::Encoding;
 use crate::source::{EventSource, SourceEvent};
+use crate::{checkpoint::Checkpoint, config::Encoding};
 
+pub mod checkpoint;
 pub mod persister;
 
 pub async fn db_client(name: String, conn_str: &str) -> anyhow::Result<Client> {
@@ -36,13 +38,20 @@ pub struct MongoDbChangeStreamListener {
 }
 
 impl MongoDbChangeStreamListener {
-    pub fn new(db: Database, db_name: String, db_collection: String) -> Self {
-        Self {
+    pub fn new(
+        db: Database,
+        db_name: String,
+        db_collection: String,
+        checkpoint: Option<Checkpoint>,
+    ) -> anyhow::Result<Self> {
+        let resume_token = resume_token_from_checkpoint(&db_name, &db_collection, checkpoint)?;
+
+        Ok(Self {
             db,
             db_name,
             db_collection,
-            resume_token: None,
-        }
+            resume_token,
+        })
     }
 
     async fn change_stream(&self) -> anyhow::Result<CStream> {
@@ -66,7 +75,6 @@ impl MongoDbChangeStreamListener {
             })?;
 
         let coll = self.db.collection::<RawDocumentBuf>(&self.db_collection);
-
         let opts = ChangeStreamOptions::builder()
             .full_document(Some(FullDocumentType::UpdateLookup))
             .full_document_before_change(Some(FullDocumentBeforeChangeType::WhenAvailable))
@@ -127,6 +135,7 @@ impl EventSource for MongoDbChangeStreamListener {
 
             if let Some(raw_document) = bson_doc {
                 let bson_raw_bytes = raw_document.as_bytes().to_vec();
+                let cursor = resume_token_to_slice(cs.resume_token())?;
 
                 events
                     .send(SourceEvent {
@@ -134,13 +143,49 @@ impl EventSource for MongoDbChangeStreamListener {
                         attributes,
                         encoding: Encoding::Bson,
                         is_framed_batch: false,
+                        cursor,
                     })
                     .await?;
-
-                // self.resume_token = cs.resume_token();
             }
         }
 
         Ok(())
     }
+}
+
+impl TryFrom<Checkpoint> for ResumeToken {
+    type Error = anyhow::Error;
+
+    fn try_from(cp: Checkpoint) -> Result<Self, Self::Error> {
+        let cursor = bson::from_slice(&cp.cursor)?;
+        Ok(ResumeToken::from(cursor))
+    }
+}
+
+fn resume_token_from_checkpoint(
+    db: &str,
+    coll: &str,
+    checkpoint: Option<Checkpoint>,
+) -> anyhow::Result<Option<ResumeToken>> {
+    match checkpoint {
+        Some(cp) => {
+            info!(
+                "loaded checkpoint for MongoDB change stream on {}.{} with resume token: {}",
+                db,
+                coll,
+                DateTime::<Utc>::from_timestamp_millis(cp.updated_at).unwrap_or_default(),
+            );
+            Ok(Some(ResumeToken::try_from(cp)?))
+        }
+        None => Ok(None),
+    }
+}
+
+fn resume_token_to_slice(rt: Option<ResumeToken>) -> anyhow::Result<Option<Vec<u8>>> {
+    let cursor: Option<Vec<u8>> = match rt {
+        Some(t) => Some(bson::to_vec(&t)?),
+        None => None,
+    };
+
+    Ok(cursor)
 }

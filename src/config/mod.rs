@@ -77,6 +77,7 @@ pub struct Connector {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchConfig>,
+    pub checkpoint: Option<CheckpointConnectorConfig>,
     pub source: SourceServiceConfigReference,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub middlewares: Option<Vec<ServiceConfigReference>>,
@@ -138,4 +139,15 @@ pub enum Encoding {
     Avro,
     Json,
     Bson,
+}
+
+#[derive(Deserialize, Debug, Clone, Serialize)]
+pub struct CheckpointConnectorConfig {
+    pub enabled: bool,
+}
+
+impl Default for CheckpointConnectorConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
 }

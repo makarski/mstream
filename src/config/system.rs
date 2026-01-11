@@ -7,6 +7,7 @@ pub struct SystemConfig {
     // pub generate_encryption_key: bool,
     pub job_lifecycle: Option<JobLifecycle>,
     pub service_lifecycle: Option<ServiceLifecycle>,
+    pub checkpoints: Option<CheckpointSystemConfig>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -30,4 +31,10 @@ pub enum StartupState {
     SeedFromFile,
     ForceFromFile,
     Keep,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct CheckpointSystemConfig {
+    pub service_name: String,
+    pub resource: String,
 }

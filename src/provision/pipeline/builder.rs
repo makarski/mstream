@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use crate::{
+    checkpoint::{Checkpoint, NoopCheckpointer},
     config::Connector,
     provision::{
         pipeline::{
@@ -29,6 +30,7 @@ pub(crate) trait ComponentBuilder {
 type ComponentBuilderImpl<T> = Box<dyn ComponentBuilder<Output = T> + Send + Sync>;
 
 pub struct PipelineBuilder {
+    registry: Arc<RwLock<ServiceRegistry>>,
     source_builder: ComponentBuilderImpl<SourceDefinition>,
     schema_builder: ComponentBuilderImpl<Vec<SchemaDefinition>>,
     middleware_builder: ComponentBuilderImpl<Vec<MiddlewareDefinition>>,
@@ -37,8 +39,14 @@ pub struct PipelineBuilder {
 }
 
 impl PipelineBuilder {
-    pub fn new(registry: Arc<RwLock<ServiceRegistry>>, connector: Connector) -> Self {
+    pub fn new(
+        registry: Arc<RwLock<ServiceRegistry>>,
+        connector: Connector,
+        checkpoint: Option<Checkpoint>,
+    ) -> Self {
         let (batch_size, is_batching_enabled) = connector.batch_config();
+        let with_checkpoints = connector.checkpoint.as_ref().map_or(false, |cp| cp.enabled);
+
         let pipeline = Pipeline {
             name: connector.name.clone(),
             batch_size,
@@ -49,13 +57,17 @@ impl PipelineBuilder {
             middlewares: Vec::new(),
             schemas: Vec::new(),
             sinks: Vec::new(),
+            checkpointer: Arc::new(NoopCheckpointer::new()),
+            with_checkpoints,
         };
 
         Self {
+            registry: registry.clone(),
             pipeline,
             source_builder: Box::new(SourceBuilder::new(
                 registry.clone(),
                 connector.source.clone(),
+                checkpoint,
             )),
             schema_builder: Box::new(SchemaBuilder::new(registry.clone(), &connector.schemas)),
             middleware_builder: Box::new(MiddlewareBuilder::new(
@@ -71,6 +83,7 @@ impl PipelineBuilder {
         self.init_middlewares().await?;
         self.init_source().await?;
         self.init_sinks().await?;
+        self.init_checkpointer().await;
 
         Ok(self.pipeline)
     }
@@ -84,6 +97,12 @@ impl PipelineBuilder {
         names.sort_unstable();
         names.dedup();
         names
+    }
+
+    async fn init_checkpointer(&mut self) {
+        if self.pipeline.with_checkpoints {
+            self.pipeline.checkpointer = self.registry.read().await.checkpointer();
+        }
     }
 
     async fn init_schemas(&mut self) -> anyhow::Result<()> {

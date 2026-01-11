@@ -18,12 +18,12 @@ pub async fn listen_streams(
     for service in cfg.services.iter().cloned() {
         service_storage.save(service).await?;
     }
-    let mut service_registry = ServiceRegistry::new(service_storage);
+    let mut service_registry = ServiceRegistry::new(service_storage, cfg.system.clone());
     service_registry.init().await?;
 
     let service_registry = Arc::new(RwLock::new(service_registry));
-
     let (job_store, startup_state) = init_job_storage(&cfg, service_registry.clone()).await?;
+
     let mut job_manager = JobManager::new(service_registry, job_store, exit_tx);
 
     match startup_state {

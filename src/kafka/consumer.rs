@@ -9,6 +9,7 @@ use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use tokio::sync::mpsc::Sender;
 
 use crate::config::Encoding;
+use crate::kafka::KafkaOffset;
 use crate::source::{EventSource, SourceEvent};
 
 pub struct KafkaConsumer {
@@ -175,6 +176,14 @@ impl EventSource for KafkaConsumer {
                     let payload_vec = payload.to_vec();
                     let encoding = self.encoding.clone();
 
+                    let offset = KafkaOffset {
+                        topic: msg.topic().to_string(),
+                        partition: msg.partition(),
+                        offset: msg.offset(),
+                    };
+
+                    let cursor = offset.try_into()?;
+
                     let attr = HashMap::from([
                         ("origin".to_string(), "kafka".to_string()),
                         ("topic".to_string(), msg.topic().to_string()),
@@ -189,6 +198,7 @@ impl EventSource for KafkaConsumer {
                                 attributes: Some(attr),
                                 encoding,
                                 is_framed_batch: false,
+                                cursor: Some(cursor),
                             })
                             .await
                         {
