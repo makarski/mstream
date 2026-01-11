@@ -26,6 +26,7 @@ Access the dashboard at `http://localhost:8719/`.
 - **Powerful Middleware** — Transform data in-flight using HTTP services or embedded Rhai scripts
 - **Schema Validation** — Enforce data quality with Avro schema validation
 - **Batch Processing** — Optimized high-throughput batch handling
+- **Checkpoint Persistence** — Resume streaming from the last processed position after restarts
 
 ## Installation
 
@@ -135,6 +136,43 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `POST` | `/services` | Create a new service |
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
+
+## Checkpoints
+
+Checkpoints allow connectors to resume from their last processed position after a restart, preventing data loss or reprocessing.
+
+### System Configuration
+
+Enable checkpoints globally by configuring a MongoDB backend:
+
+```toml
+[system.checkpoints]
+service_name = "mongo-local"  # Must reference an existing MongoDB service
+resource = "mstream-checkpoints"  # Collection to store checkpoint data
+```
+
+### Connector Configuration
+
+Enable checkpointing per connector:
+
+```toml
+[[connectors]]
+name = "users-sync"
+checkpoint = { enabled = true }
+source = { service_name = "mongo-local", resource = "users", output_encoding = "json" }
+sinks = [
+    { service_name = "kafka-local", resource = "users-topic", output_encoding = "json" }
+]
+```
+
+### Supported Sources
+
+| Source | Checkpoint Data |
+|--------|-----------------|
+| MongoDB Change Stream | Resume token |
+| Kafka | Topic, partition, offset |
+
+When a connector restarts with checkpoints enabled, it automatically resumes from the last saved position.
 
 ## Documentation
 

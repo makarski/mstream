@@ -156,10 +156,26 @@ impl EventHandler {
 
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
         let event_holder = self.apply_middlewares(source_event).await?;
+        let mut all_sinks_succeeded = true;
 
-        for sink_def in self.pipeline.sinks.iter_mut() {
+        // Extract cursor before the loop for checkpointing
+        let cursor = event_holder.cursor.clone();
+
+        let mut event_option = Some(event_holder);
+        let sinks_len = self.pipeline.sinks.len();
+
+        for (i, sink_def) in self.pipeline.sinks.iter_mut().enumerate() {
             let sink_event_result = block_in_place(|| {
-                let event = event_holder.clone();
+                let event = if i == sinks_len - 1 {
+                    // Move the event on the last iteration to avoid clone
+                    event_option.take().expect("event should be present")
+                } else {
+                    // Clone for intermediate sinks
+                    event_option
+                        .as_ref()
+                        .expect("event should be present")
+                        .clone()
+                };
                 // apply sink schema
                 event.apply_schema(Some(&sink_def.config.output_encoding), &sink_def.schema)
             });
@@ -177,6 +193,7 @@ impl EventHandler {
                         &sink_def.config.schema_id,
                         err
                     );
+                    all_sinks_succeeded = false;
                     continue;
                 }
             };
@@ -201,20 +218,21 @@ impl EventHandler {
                         "failed to publish message to sink: {}:{}, {}",
                         &sink_def.config.service_name, &sink_def.config.resource, err
                     );
+                    all_sinks_succeeded = false;
                     continue;
                 }
             };
         }
 
-        if self.pipeline.with_checkpoints {
-            self.save_checkpoint(event_holder).await?;
+        if self.pipeline.with_checkpoints && all_sinks_succeeded {
+            self.save_checkpoint(cursor).await?;
         }
 
         Ok(())
     }
 
-    async fn save_checkpoint(&self, event: SourceEvent) -> anyhow::Result<()> {
-        match event.cursor {
+    async fn save_checkpoint(&self, cursor: Option<Vec<u8>>) -> anyhow::Result<()> {
+        match cursor {
             Some(c) => {
                 let cp = Checkpoint {
                     job_name: self.pipeline.name.clone(),
@@ -230,7 +248,7 @@ impl EventHandler {
                     "checkpointing: missing cursor in source event for connector: {}",
                     self.pipeline.name
                 );
-                return Ok(());
+                Ok(())
             }
         }
     }

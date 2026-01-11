@@ -43,7 +43,6 @@ impl Checkpointer for MongoDbCheckpointer {
         let coll = self.collection();
         coll.insert_one(checkpoint).await?;
 
-        // Find the cutoff point (5th newest)
         let filter = doc! { "job_name": &checkpoint.job_name };
         let mut cursor = coll
             .find(filter.clone())
@@ -55,7 +54,7 @@ impl Checkpointer for MongoDbCheckpointer {
         if let Some(oldest_to_keep) = cursor.try_next().await? {
             let delete_filter = doc! {
                 "job_name": &checkpoint.job_name,
-                "updated_at": { "$lte": oldest_to_keep.updated_at }
+                "updated_at": { "$lt": oldest_to_keep.updated_at }
             };
             coll.delete_many(delete_filter).await?;
         }

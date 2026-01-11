@@ -1,6 +1,6 @@
 use std::{collections::HashMap, ffi::OsStr, path::Path, sync::Arc};
 
-use anyhow::{Context, Ok, anyhow};
+use anyhow::{Context, anyhow};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
 use tokio::fs;
@@ -122,8 +122,23 @@ impl ServiceRegistry {
             None => return Ok(()),
         };
 
+        let service_def = self
+            .storage
+            .get_by_name(&checkpoint_cfg.service_name)
+            .await?;
+
+        let db_name = match &service_def {
+            Service::MongoDb(cfg) => &cfg.db_name,
+            _ => {
+                return Err(anyhow!(
+                    "checkpoints service '{}' must be a MongoDB service",
+                    checkpoint_cfg.service_name
+                ));
+            }
+        };
+
         let db_client = self.mongodb_client(&checkpoint_cfg.service_name).await?;
-        let db = db_client.database(&checkpoint_cfg.resource);
+        let db = db_client.database(db_name);
         let cp = MongoDbCheckpointer::new(db, checkpoint_cfg.resource.clone());
 
         self.checkpointer = Arc::new(cp);

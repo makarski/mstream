@@ -151,3 +151,37 @@ impl Default for CheckpointConnectorConfig {
         Self { enabled: false }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_connector_config_default_is_disabled() {
+        let config = CheckpointConnectorConfig::default();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn checkpoint_connector_config_deserialize_enabled() {
+        let toml_str = r#"enabled = true"#;
+        let config: CheckpointConnectorConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn checkpoint_connector_config_deserialize_disabled() {
+        let toml_str = r#"enabled = false"#;
+        let config: CheckpointConnectorConfig = toml::from_str(toml_str).expect("deserialize");
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn checkpoint_connector_config_serialize_roundtrip() {
+        let config = CheckpointConnectorConfig { enabled: true };
+        let serialized = serde_json::to_string(&config).expect("serialize");
+        let deserialized: CheckpointConnectorConfig =
+            serde_json::from_str(&serialized).expect("deserialize");
+        assert!(deserialized.enabled);
+    }
+}

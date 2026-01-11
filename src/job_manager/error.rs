@@ -25,3 +25,61 @@ pub enum JobManagerError {
 }
 
 pub type Result<T> = std::result::Result<T, JobManagerError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn job_not_found_display() {
+        let err = JobManagerError::JobNotFound("my-job".to_string());
+        assert_eq!(err.to_string(), "Job 'my-job' not found");
+    }
+
+    #[test]
+    fn job_already_exists_display() {
+        let err = JobManagerError::JobAlreadyExists("existing-job".to_string());
+        assert_eq!(err.to_string(), "Job 'existing-job' already exists");
+    }
+
+    #[test]
+    fn service_not_found_display() {
+        let err = JobManagerError::ServiceNotFound("kafka-service".to_string());
+        assert_eq!(err.to_string(), "Service 'kafka-service' not found");
+    }
+
+    #[test]
+    fn service_already_exists_display() {
+        let err = JobManagerError::ServiceAlreadyExists("mongo-service".to_string());
+        assert_eq!(err.to_string(), "Service 'mongo-service' already exists");
+    }
+
+    #[test]
+    fn internal_error_display() {
+        let err = JobManagerError::InternalError("connection timeout".to_string());
+        assert_eq!(err.to_string(), "Internal error: connection timeout");
+    }
+
+    #[test]
+    fn service_in_use_display() {
+        let err =
+            JobManagerError::ServiceInUse("shared-mongo".to_string(), "job-a, job-b".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Service 'shared-mongo' is in use by jobs: job-a, job-b"
+        );
+    }
+
+    #[test]
+    fn from_anyhow_error() {
+        let anyhow_err = anyhow::anyhow!("something went wrong");
+        let job_err: JobManagerError = anyhow_err.into();
+
+        match job_err {
+            JobManagerError::Anyhow(e) => {
+                assert_eq!(e.to_string(), "something went wrong");
+            }
+            _ => panic!("expected Anyhow variant"),
+        }
+    }
+}

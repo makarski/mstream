@@ -401,7 +401,7 @@ impl JobManager {
         job_name: &str,
         checkpoint_cfg: &Option<CheckpointConnectorConfig>,
     ) -> Option<Checkpoint> {
-        if checkpoint_cfg.as_ref().map_or(false, |cfg| !cfg.enabled) {
+        if !checkpoint_cfg.as_ref().map_or(false, |cfg| cfg.enabled) {
             info!("checkpointing disabled for job: {}", job_name);
             return None;
         }
