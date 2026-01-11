@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::Context;
 use async_trait::async_trait;
 use encoding::SinkEvent;
 
@@ -65,7 +65,7 @@ impl EventSink for SinkProvider {
                     sink_event.is_framed_batch,
                 )
                 .await
-                .map_err(|err| anyhow!("failed to persist to collection: {}. {}", topic, err)),
+                .with_context(|| format!("failed to persist to collection: {}", topic)),
             SinkProvider::Http(p) => {
                 p.post(
                     &topic,

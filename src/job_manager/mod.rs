@@ -396,7 +396,7 @@ impl JobManager {
         Ok(())
     }
 
-    async fn load_checkpoint(
+    pub async fn load_checkpoint(
         &self,
         job_name: &str,
         checkpoint_cfg: &Option<CheckpointConnectorConfig>,
@@ -426,6 +426,24 @@ impl JobManager {
                     None
                 }
             },
+        }
+    }
+
+    /// List all checkpoints for a job (history)
+    pub async fn list_checkpoints(&self, job_name: &str) -> Vec<Checkpoint> {
+        match self
+            .service_registry
+            .read()
+            .await
+            .checkpointer()
+            .load_all(job_name)
+            .await
+        {
+            Ok(checkpoints) => checkpoints,
+            Err(err) => {
+                error!("failed to load checkpoints for job '{}': {}", job_name, err);
+                vec![]
+            }
         }
     }
 }

@@ -127,6 +127,7 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `POST` | `/jobs` | Create a new job |
 | `POST` | `/jobs/{name}/stop` | Stop a job |
 | `POST` | `/jobs/{name}/restart` | Restart a job |
+| `GET` | `/jobs/{name}/checkpoints` | List checkpoint history for a job |
 
 ### Services
 
@@ -167,12 +168,17 @@ sinks = [
 
 ### Supported Sources
 
-| Source | Checkpoint Data |
-|--------|-----------------|
-| MongoDB Change Stream | Resume token |
-| Kafka | Topic, partition, offset |
+| Source | Checkpoint Data | Notes |
+|--------|-----------------|-------|
+| MongoDB Change Stream | Resume token | Automatic resume on restart |
+| Kafka | Topic, partition, offset | `offset_seek_back_seconds` takes priority over checkpoint when set |
+| Google PubSub | — | Not yet supported |
 
-When a connector restarts with checkpoints enabled, it automatically resumes from the last saved position.
+### Behavior
+
+- When a connector restarts with checkpoints enabled, it resumes from the last saved position
+- For Kafka: if `offset_seek_back_seconds` is configured, it takes priority over the checkpoint (useful for reprocessing historical data)
+- Checkpoints are saved after all sinks successfully process each event
 
 ## Documentation
 

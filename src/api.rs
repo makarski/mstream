@@ -10,8 +10,10 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+use crate::checkpoint::Checkpoint;
 use crate::config::{Connector, Masked, Service};
 use crate::job_manager::{JobManager, JobMetadata, error::JobManagerError};
+use crate::kafka::KafkaOffset;
 
 struct MaskedJson<T>(T);
 
@@ -95,6 +97,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}", get(get_one_service))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
+        .route("/jobs/{name}/checkpoints", get(list_checkpoints))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -276,9 +279,201 @@ where
     }
 }
 
+/// Human-readable checkpoint response for API
+#[derive(Clone, Debug, Serialize)]
+struct CheckpointResponse {
+    job_name: String,
+    updated_at: String,
+    cursor: CursorInfo,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+enum CursorInfo {
+    Kafka {
+        topic: String,
+        partition: i32,
+        offset: i64,
+    },
+    #[serde(rename = "mongodb")]
+    MongoDB {
+        data: serde_json::Value,
+    },
+    Unknown {
+        raw_bytes: usize,
+    },
+}
+
+impl From<Checkpoint> for CheckpointResponse {
+    fn from(cp: Checkpoint) -> Self {
+        let cursor = decode_cursor(&cp.cursor);
+        let updated_at = chrono::DateTime::from_timestamp_millis(cp.updated_at)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        CheckpointResponse {
+            job_name: cp.job_name,
+            updated_at,
+            cursor,
+        }
+    }
+}
+
+fn decode_cursor(cursor: &[u8]) -> CursorInfo {
+    // Try Kafka offset first
+    if let Ok(kafka) = mongodb::bson::from_slice::<KafkaOffset>(cursor) {
+        return CursorInfo::Kafka {
+            topic: kafka.topic,
+            partition: kafka.partition,
+            offset: kafka.offset,
+        };
+    }
+
+    // Try MongoDB cursor (any BSON document - resume token, _id, or custom field)
+    if let Ok(bson_doc) = mongodb::bson::from_slice::<mongodb::bson::Document>(cursor) {
+        if let Ok(json_value) = serde_json::to_value(&bson_doc) {
+            return CursorInfo::MongoDB { data: json_value };
+        }
+    }
+
+    // Fallback to unknown
+    CursorInfo::Unknown {
+        raw_bytes: cursor.len(),
+    }
+}
+
+/// GET /jobs/{name}/checkpoints
+async fn list_checkpoints(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, JobManagerError> {
+    let jm = state.job_manager.lock().await;
+
+    // Verify job exists
+    jm.get_job(&name)
+        .await
+        .map_err(|e| JobManagerError::InternalError(format!("failed to get job: {}", e)))?
+        .ok_or_else(|| JobManagerError::JobNotFound(name.clone()))?;
+
+    let checkpoints: Vec<CheckpointResponse> = jm
+        .list_checkpoints(&name)
+        .await
+        .into_iter()
+        .map(CheckpointResponse::from)
+        .collect();
+
+    Ok((StatusCode::OK, Json(checkpoints)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checkpoint::Checkpoint;
+
+    mod checkpoint_response_tests {
+        use super::*;
+
+        #[test]
+        fn decode_cursor_kafka_offset() {
+            let kafka_offset = KafkaOffset {
+                topic: "test-topic".to_string(),
+                partition: 2,
+                offset: 12345,
+            };
+            let cursor = mongodb::bson::to_vec(&kafka_offset).unwrap();
+
+            let result = decode_cursor(&cursor);
+
+            match result {
+                CursorInfo::Kafka {
+                    topic,
+                    partition,
+                    offset,
+                } => {
+                    assert_eq!(topic, "test-topic");
+                    assert_eq!(partition, 2);
+                    assert_eq!(offset, 12345);
+                }
+                _ => panic!("expected Kafka cursor info"),
+            }
+        }
+
+        #[test]
+        fn decode_cursor_mongodb_resume_token() {
+            let doc = mongodb::bson::doc! { "_data": "82696425F900000001" };
+            let cursor = mongodb::bson::to_vec(&doc).unwrap();
+
+            let result = decode_cursor(&cursor);
+
+            match result {
+                CursorInfo::MongoDB { data } => {
+                    assert!(data.is_object());
+                    assert_eq!(data["_data"], "82696425F900000001");
+                }
+                _ => panic!("expected MongoDB cursor info"),
+            }
+        }
+
+        #[test]
+        fn decode_cursor_unknown_format() {
+            let cursor = vec![0x00, 0x01, 0x02, 0x03];
+
+            let result = decode_cursor(&cursor);
+
+            match result {
+                CursorInfo::Unknown { raw_bytes } => {
+                    assert_eq!(raw_bytes, 4);
+                }
+                _ => panic!("expected Unknown cursor info"),
+            }
+        }
+
+        #[test]
+        fn checkpoint_response_from_kafka_checkpoint() {
+            let kafka_offset = KafkaOffset {
+                topic: "events".to_string(),
+                partition: 0,
+                offset: 999,
+            };
+            let cursor = mongodb::bson::to_vec(&kafka_offset).unwrap();
+
+            let checkpoint = Checkpoint {
+                job_name: "kafka-job".to_string(),
+                cursor,
+                updated_at: 1704067200000, // 2024-01-01 00:00:00 UTC
+            };
+
+            let response = CheckpointResponse::from(checkpoint);
+
+            assert_eq!(response.job_name, "kafka-job");
+            assert_eq!(response.updated_at, "2024-01-01 00:00:00 UTC");
+            match response.cursor {
+                CursorInfo::Kafka {
+                    topic,
+                    partition,
+                    offset,
+                } => {
+                    assert_eq!(topic, "events");
+                    assert_eq!(partition, 0);
+                    assert_eq!(offset, 999);
+                }
+                _ => panic!("expected Kafka cursor"),
+            }
+        }
+
+        #[test]
+        fn checkpoint_response_formats_timestamp() {
+            let checkpoint = Checkpoint {
+                job_name: "test".to_string(),
+                cursor: vec![0x00],
+                updated_at: 1704153600000, // 2024-01-02 00:00:00 UTC
+            };
+
+            let response = CheckpointResponse::from(checkpoint);
+
+            assert_eq!(response.updated_at, "2024-01-02 00:00:00 UTC");
+        }
+    }
 
     // Test helper that tracks whether masked() was called
     #[derive(Clone, Serialize, PartialEq, Debug)]

@@ -90,6 +90,7 @@ impl SourceBuilder {
                     self.config.resource.clone(),
                     input_encoding,
                     k_conf.offset_seek_back_seconds,
+                    self.checkpoint.clone(),
                 )?;
 
                 Ok(SourceProvider::Kafka(consumer))
