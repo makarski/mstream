@@ -78,6 +78,14 @@ impl KafkaConsumer {
             None => return Ok(false),
         };
 
+        if checkpoint.topic != self.topic {
+            bail!(
+                "checkpoint topic mismatch: expected {}, got {}",
+                self.topic,
+                checkpoint.topic
+            );
+        }
+
         info!(
             "seeking to checkpoint: topic={}, partition={}, offset={}",
             checkpoint.topic, checkpoint.partition, checkpoint.offset
@@ -220,10 +228,13 @@ impl EventSource for KafkaConsumer {
         // Priority: timestamp config > checkpoint > default subscribe
         // If user explicitly sets offset_seek_back_seconds, they want to reprocess from that time
         if self.start_timestamp_ms.is_some() {
+            // seek_to_timestamp uses assign() - don't call subscribe() as they are mutually exclusive
             self.seek_to_timestamp()
                 .context("failed to seek to timestamp")?;
-            self.consumer.subscribe(&[&self.topic])?;
-            info!("subscribed to topic: {}", self.topic);
+            info!(
+                "assigned to topic partitions via timestamp seek: {}",
+                self.topic
+            );
         } else {
             let used_checkpoint = self
                 .seek_to_checkpoint()

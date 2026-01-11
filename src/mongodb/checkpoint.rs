@@ -46,6 +46,7 @@ impl Checkpointer for MongoDbCheckpointer {
             .collection()
             .find(filter)
             .sort(doc! { "updated_at": -1 })
+            .limit(MAX_CHECKPOINTS_PER_JOB as i64)
             .await?;
 
         let mut checkpoints = Vec::new();
