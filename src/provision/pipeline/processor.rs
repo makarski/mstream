@@ -215,7 +215,7 @@ impl EventHandler {
                 }
                 Err(err) => {
                     error!(
-                        "failed to publish message to sink: {}:{}, {}",
+                        "failed to publish message to sink: {}:{}, {:#}",
                         &sink_def.config.service_name, &sink_def.config.resource, err
                     );
                     all_sinks_succeeded = false;

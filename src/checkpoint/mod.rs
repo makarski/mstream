@@ -23,6 +23,7 @@ pub type DynCheckpointer = Arc<dyn Checkpointer + Send + Sync>;
 #[async_trait::async_trait]
 pub trait Checkpointer: Send + Sync {
     async fn load(&self, job_name: &str) -> Result<Checkpoint, CheckpointerError>;
+    async fn load_all(&self, job_name: &str) -> Result<Vec<Checkpoint>, CheckpointerError>;
     async fn save(&self, checkpoint: &Checkpoint) -> Result<(), CheckpointerError>;
 }
 
@@ -40,6 +41,10 @@ impl Checkpointer for NoopCheckpointer {
         Err(CheckpointerError::NotFound {
             job_name: "noop".to_string(),
         })
+    }
+
+    async fn load_all(&self, _job_name: &str) -> Result<Vec<Checkpoint>, CheckpointerError> {
+        Ok(vec![])
     }
 
     async fn save(&self, _checkpoint: &Checkpoint) -> Result<(), CheckpointerError> {
@@ -117,5 +122,14 @@ mod tests {
 
         let result = checkpointer.save(&checkpoint).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn noop_checkpointer_load_all_returns_empty() {
+        let checkpointer = NoopCheckpointer::new();
+        let result = checkpointer.load_all("any-job").await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }

@@ -39,6 +39,24 @@ impl Checkpointer for MongoDbCheckpointer {
         })
     }
 
+    async fn load_all(&self, job_name: &str) -> Result<Vec<Checkpoint>, CheckpointerError> {
+        let filter = doc! { "job_name": job_name };
+
+        let mut cursor = self
+            .collection()
+            .find(filter)
+            .sort(doc! { "updated_at": -1 })
+            .limit(MAX_CHECKPOINTS_PER_JOB as i64)
+            .await?;
+
+        let mut checkpoints = Vec::new();
+        while let Some(cp) = cursor.try_next().await? {
+            checkpoints.push(cp);
+        }
+
+        Ok(checkpoints)
+    }
+
     async fn save(&self, checkpoint: &Checkpoint) -> Result<(), CheckpointerError> {
         let coll = self.collection();
         coll.insert_one(checkpoint).await?;

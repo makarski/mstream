@@ -2,6 +2,7 @@ use crate::api::AppState;
 use crate::config::service_config::UdfConfig;
 use crate::config::{BatchConfig, Connector, Masked, Service};
 use crate::job_manager::{JobMetadata, JobState as JState, ServiceStatus};
+use crate::kafka::KafkaOffset;
 use axum::{
     Router,
     extract::{Form, Path, State},
@@ -255,6 +256,9 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
         }
     };
 
+    let checkpoint_cfg = job.pipeline.as_ref().and_then(|p| p.checkpoint.clone());
+    let latest_checkpoint = jm.load_checkpoint(&name, &checkpoint_cfg).await;
+
     let status_tag = match job.state {
         JState::Running => "is-success",
         JState::Stopped => "is-light",
@@ -276,6 +280,42 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
             BatchConfig::Count { size } => format!("Count: {}", size),
         })
         .unwrap_or_else(|| "None".to_string());
+
+    let checkpoint_enabled = checkpoint_cfg.as_ref().map_or(false, |c| c.enabled);
+
+    let checkpoint_info = if checkpoint_enabled {
+        match &latest_checkpoint {
+            Some(cp) => {
+                let ts = chrono::DateTime::from_timestamp_millis(cp.updated_at)
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+
+                // Try to decode Kafka offset for display
+                let cursor_info = mongodb::bson::from_slice::<KafkaOffset>(&cp.cursor)
+                    .ok()
+                    .map(|k| format!("offset: {}", k.offset))
+                    .unwrap_or_default();
+
+                let cursor_html = if cursor_info.is_empty() {
+                    String::new()
+                } else {
+                    format!(r#"<p class="is-size-7 has-text-grey">{}</p>"#, cursor_info)
+                };
+
+                format!(
+                    r#"<span class="tag is-link">Enabled</span>
+                    <p class="is-size-7 mt-1">Last: {}</p>
+                    {}"#,
+                    ts, cursor_html
+                )
+            }
+            None => r#"<span class="tag is-link">Enabled</span>
+                <p class="is-size-7 mt-1 has-text-grey">No checkpoint yet</p>"#
+                .to_string(),
+        }
+    } else {
+        r#"<span class="tag is-light">Disabled</span>"#.to_string()
+    };
 
     let pipeline_json = job
         .pipeline
@@ -348,6 +388,10 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
                     <p class="title is-5">{}</p>
                 </div>
                 <div class="column">
+                    <p class="heading">Checkpoint</p>
+                    <div>{}</div>
+                </div>
+                <div class="column">
                     <p class="heading">Dependencies</p>
                     <p class="title is-5">{}</p>
                 </div>
@@ -374,6 +418,7 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
         job.started_at.format("%Y-%m-%d %H:%M:%S UTC"),
         duration,
         batch_info,
+        checkpoint_info,
         service_deps,
         pipeline_viz,
         pipeline_json
