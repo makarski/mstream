@@ -691,9 +691,8 @@ fn layout(title: &str, content: &str) -> Html<String> {
     ))
 }
 
-async fn get_root() -> Html<String> {
-    let content = r##"
-    <div class="level mb-5">
+fn render_dashboard_header() -> &'static str {
+    r#"<div class="level mb-5">
         <div class="level-left">
             <div class="level-item">
                 <div>
@@ -702,89 +701,104 @@ async fn get_root() -> Html<String> {
                 </div>
             </div>
         </div>
+    </div>"#
+}
 
-    </div>
+fn render_jobs_panel() -> &'static str {
+    r##"<div class="section-card">
+        <div class="section-card-header">
+            <h2 class="title is-5 mb-0">Jobs</h2>
+            <div class="buttons are-small mb-0">
+                <button class="button is-light" hx-get="/ui/jobs" hx-target="#jobs-container" hx-swap="innerHTML" title="Refresh">
+                    ↻
+                </button>
+            </div>
+        </div>
+        <div class="section-card-body">
+            <details>
+                <summary class="button is-primary is-light is-fullwidth is-radiusless" style="border: none; height: 3rem; border-radius: 0;">
+                    <span class="has-text-weight-semibold">+ Create New Job</span>
+                </summary>
+                <div class="p-5" style="background: var(--gray-50); border-bottom: 1px solid var(--gray-200);">
+                    <form hx-post="/ui/jobs" hx-target="#jobs-container" hx-swap="innerHTML" hx-disabled-elt="button[type='submit']" data-success-msg="Job created successfully">
+                        <div class="field">
+                            <label class="label is-small">Configuration (JSON)</label>
+                            <div class="control">
+                                <textarea class="textarea is-family-monospace is-small" name="config_json" placeholder='{{ "name": "my-job", "source": {{ ... }} }}' rows="5"></textarea>
+                            </div>
+                        </div>
+                        <div class="control">
+                            <button class="button is-primary" type="submit">Start Job</button>
+                        </div>
+                    </form>
+                </div>
+            </details>
+            <div id="jobs-container" hx-get="/ui/jobs" hx-trigger="load, every 10s">
+                <div class="p-5 has-text-centered">
+                    <span class="has-text-grey">Loading...</span>
+                </div>
+            </div>
+        </div>
+    </div>"##
+}
 
+fn render_services_panel() -> &'static str {
+    r##"<div class="section-card">
+        <div class="section-card-header">
+            <h2 class="title is-5 mb-0">Services</h2>
+            <div class="buttons are-small mb-0">
+                <button class="button is-light" hx-get="/ui/services" hx-target="#services-container" hx-swap="innerHTML" title="Refresh">
+                    ↻
+                </button>
+            </div>
+        </div>
+        <div class="section-card-body">
+            <details>
+                <summary class="button is-info is-light is-fullwidth is-radiusless" style="border: none; height: 3rem; border-radius: 0;">
+                    <span class="has-text-weight-semibold">+ Create New Service</span>
+                </summary>
+                <div class="p-5" style="background: var(--gray-50); border-bottom: 1px solid var(--gray-200);">
+                    <form hx-post="/ui/services" hx-target="#services-container" hx-swap="innerHTML" hx-disabled-elt="button[type='submit']" data-success-msg="Service created successfully">
+                        <div class="field">
+                            <label class="label is-small">Configuration (JSON)</label>
+                            <div class="control">
+                                <textarea class="textarea is-family-monospace is-small" name="config_json" placeholder='{{ "provider": "kafka", "name": "my-kafka", ... }}' rows="5"></textarea>
+                            </div>
+                        </div>
+                        <div class="control">
+                            <button class="button is-info" type="submit">Create Service</button>
+                        </div>
+                    </form>
+                </div>
+            </details>
+            <div id="services-container" hx-get="/ui/services" hx-trigger="load, services-update from:body">
+                <div class="p-5 has-text-centered">
+                    <span class="has-text-grey">Loading...</span>
+                </div>
+            </div>
+        </div>
+    </div>"##
+}
+
+async fn get_root() -> Html<String> {
+    let content = format!(
+        r#"
+    {}
     <div class="columns">
         <div class="column is-7">
-            <div class="section-card">
-                <div class="section-card-header">
-                    <h2 class="title is-5 mb-0">Jobs</h2>
-                    <div class="buttons are-small mb-0">
-                        <button class="button is-light" hx-get="/ui/jobs" hx-target="#jobs-container" hx-swap="innerHTML" title="Refresh">
-                            ↻
-                        </button>
-                    </div>
-                </div>
-                <div class="section-card-body">
-                    <details>
-                        <summary class="button is-primary is-light is-fullwidth is-radiusless" style="border: none; height: 3rem; border-radius: 0;">
-                            <span class="has-text-weight-semibold">+ Create New Job</span>
-                        </summary>
-                        <div class="p-5" style="background: var(--gray-50); border-bottom: 1px solid var(--gray-200);">
-                            <form hx-post="/ui/jobs" hx-target="#jobs-container" hx-swap="innerHTML" hx-disabled-elt="button[type='submit']" data-success-msg="Job created successfully">
-                                <div class="field">
-                                    <label class="label is-small">Configuration (JSON)</label>
-                                    <div class="control">
-                                        <textarea class="textarea is-family-monospace is-small" name="config_json" placeholder='{{ "name": "my-job", "source": {{ ... }} }}' rows="5"></textarea>
-                                    </div>
-                                </div>
-                                <div class="control">
-                                    <button class="button is-primary" type="submit">Start Job</button>
-                                </div>
-                            </form>
-                        </div>
-                    </details>
-                    <div id="jobs-container" hx-get="/ui/jobs" hx-trigger="load, every 10s">
-                        <div class="p-5 has-text-centered">
-                            <span class="has-text-grey">Loading...</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            {}
         </div>
-
         <div class="column is-5">
-            <div class="section-card">
-                <div class="section-card-header">
-                    <h2 class="title is-5 mb-0">Services</h2>
-                    <div class="buttons are-small mb-0">
-                        <button class="button is-light" hx-get="/ui/services" hx-target="#services-container" hx-swap="innerHTML" title="Refresh">
-                            ↻
-                        </button>
-                    </div>
-                </div>
-                <div class="section-card-body">
-                    <details>
-                        <summary class="button is-info is-light is-fullwidth is-radiusless" style="border: none; height: 3rem; border-radius: 0;">
-                            <span class="has-text-weight-semibold">+ Create New Service</span>
-                        </summary>
-                        <div class="p-5" style="background: var(--gray-50); border-bottom: 1px solid var(--gray-200);">
-                            <form hx-post="/ui/services" hx-target="#services-container" hx-swap="innerHTML" hx-disabled-elt="button[type='submit']" data-success-msg="Service created successfully">
-                                <div class="field">
-                                    <label class="label is-small">Configuration (JSON)</label>
-                                    <div class="control">
-                                        <textarea class="textarea is-family-monospace is-small" name="config_json" placeholder='{{ "provider": "kafka", "name": "my-kafka", ... }}' rows="5"></textarea>
-                                    </div>
-                                </div>
-                                <div class="control">
-                                    <button class="button is-info" type="submit">Create Service</button>
-                                </div>
-                            </form>
-                        </div>
-                    </details>
-                    <div id="services-container" hx-get="/ui/services" hx-trigger="load, services-update from:body">
-                        <div class="p-5 has-text-centered">
-                            <span class="has-text-grey">Loading...</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
+            {}
         </div>
     </div>
-    "##;
+    "#,
+        render_dashboard_header(),
+        render_jobs_panel(),
+        render_services_panel()
+    );
 
-    layout("Dashboard", content)
+    layout("Dashboard", &content)
 }
 
 // --- JOBS ---
@@ -1174,7 +1188,37 @@ async fn create_job_ui(
     )
 }
 
-/// Renders a table with optional error message.
+/// Configuration for rendering a table with empty state fallback.
+struct TableConfig {
+    headers: &'static [&'static str],
+    empty_icon: &'static str,
+    empty_title: &'static str,
+    empty_description: &'static str,
+}
+
+fn render_table_or_empty<T, F>(
+    items: &[T],
+    config: TableConfig,
+    render_row: F,
+    error: Option<&str>,
+) -> Html<String>
+where
+    F: Fn(&T) -> String,
+{
+    if items.is_empty() && error.is_none() {
+        return Html(format!(
+            r#"<div class="empty-state">
+                <div class="empty-state-icon">{}</div>
+                <p class="is-size-5">{}</p>
+                <p>{}</p>
+            </div>"#,
+            config.empty_icon, config.empty_title, config.empty_description
+        ));
+    }
+    let rows: String = items.iter().map(render_row).collect();
+    render_table(config.headers, &rows, error)
+}
+
 fn render_table(headers: &[&str], rows: &str, error: Option<&str>) -> Html<String> {
     let error_html = error
         .map(|err| {
@@ -1208,20 +1252,15 @@ fn render_table(headers: &[&str], rows: &str, error: Option<&str>) -> Html<Strin
 }
 
 fn render_jobs_table(jobs: &[JobMetadata], error: Option<&str>) -> Html<String> {
-    if jobs.is_empty() && error.is_none() {
-        return Html(
-            r#"<div class="empty-state">
-                <div class="empty-state-icon">📋</div>
-                <p class="is-size-5">No jobs running</p>
-                <p>Create a job to start streaming data</p>
-            </div>"#
-                .to_string(),
-        );
-    }
-    let rows: String = jobs.iter().map(render_job_row).collect();
-    render_table(
-        &["Name", "State", "Checkpoint", "Started At", ""],
-        &rows,
+    render_table_or_empty(
+        jobs,
+        TableConfig {
+            headers: &["Name", "State", "Checkpoint", "Started At", ""],
+            empty_icon: "📋",
+            empty_title: "No jobs running",
+            empty_description: "Create a job to start streaming data",
+        },
+        render_job_row,
         error,
     )
 }
@@ -1636,18 +1675,17 @@ async fn remove_service_ui(
 }
 
 fn render_services_table(services: &[ServiceStatus], error: Option<&str>) -> Html<String> {
-    if services.is_empty() && error.is_none() {
-        return Html(
-            r#"<div class="empty-state">
-                <div class="empty-state-icon">🔌</div>
-                <p class="is-size-5">No services configured</p>
-                <p>Create a service to connect to MongoDB, Kafka, or PubSub</p>
-            </div>"#
-                .to_string(),
-        );
-    }
-    let rows: String = services.iter().map(render_service_row).collect();
-    render_table(&["Name", "Provider", "Used By", ""], &rows, error)
+    render_table_or_empty(
+        services,
+        TableConfig {
+            headers: &["Name", "Provider", "Used By", ""],
+            empty_icon: "🔌",
+            empty_title: "No services configured",
+            empty_description: "Create a service to connect to MongoDB, Kafka, or PubSub",
+        },
+        render_service_row,
+        error,
+    )
 }
 
 fn render_service_row(status: &ServiceStatus) -> String {
