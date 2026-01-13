@@ -1,10 +1,95 @@
 use core::convert::TryFrom;
 
 use apache_avro::Schema as AvroSchema;
-use mongodb::bson::{self, Document};
+use mongodb::bson::{self, Bson, Document};
+use serde_json::Value as JsonValue;
 
 use crate::encoding::avro;
 use crate::schema::Schema;
+
+/// Converts a BSON value to a flat JSON value, unwrapping Extended JSON wrappers.
+/// - ObjectId → string hex
+/// - DateTime → ISO 8601 string
+/// - Int32/Int64 → number
+/// - Binary → base64 string
+/// - Decimal128 → string
+/// - Timestamp → object with t and i fields
+/// - etc.
+fn bson_to_flat_json(bson: Bson) -> JsonValue {
+    match bson {
+        Bson::Double(f) => {
+            if f.is_nan() {
+                JsonValue::String("NaN".to_string())
+            } else if f.is_infinite() {
+                JsonValue::String(
+                    if f.is_sign_positive() {
+                        "Infinity"
+                    } else {
+                        "-Infinity"
+                    }
+                    .to_string(),
+                )
+            } else {
+                serde_json::Number::from_f64(f)
+                    .map(JsonValue::Number)
+                    .unwrap_or(JsonValue::Null)
+            }
+        }
+        Bson::String(s) => JsonValue::String(s),
+        Bson::Array(arr) => JsonValue::Array(arr.into_iter().map(bson_to_flat_json).collect()),
+        Bson::Document(doc) => document_to_flat_json(doc),
+        Bson::Boolean(b) => JsonValue::Bool(b),
+        Bson::Null => JsonValue::Null,
+        Bson::RegularExpression(regex) => {
+            JsonValue::String(format!("/{}/{}", regex.pattern, regex.options))
+        }
+        Bson::JavaScriptCode(code) => JsonValue::String(code),
+        Bson::JavaScriptCodeWithScope(code_with_scope) => {
+            let mut map = serde_json::Map::new();
+            map.insert("code".to_string(), JsonValue::String(code_with_scope.code));
+            map.insert(
+                "scope".to_string(),
+                document_to_flat_json(code_with_scope.scope),
+            );
+            JsonValue::Object(map)
+        }
+        Bson::Int32(i) => JsonValue::Number(i.into()),
+        Bson::Int64(i) => JsonValue::Number(i.into()),
+        Bson::Timestamp(ts) => {
+            let mut map = serde_json::Map::new();
+            map.insert("t".to_string(), JsonValue::Number(ts.time.into()));
+            map.insert("i".to_string(), JsonValue::Number(ts.increment.into()));
+            JsonValue::Object(map)
+        }
+        Bson::Binary(bin) => {
+            use base64::{Engine, engine::general_purpose::STANDARD};
+            JsonValue::String(STANDARD.encode(&bin.bytes))
+        }
+        Bson::ObjectId(oid) => JsonValue::String(oid.to_hex()),
+        Bson::DateTime(dt) => JsonValue::String(
+            dt.try_to_rfc3339_string()
+                .unwrap_or_else(|_| dt.timestamp_millis().to_string()),
+        ),
+        Bson::Symbol(s) => JsonValue::String(s),
+        Bson::Decimal128(d) => JsonValue::String(d.to_string()),
+        Bson::Undefined => JsonValue::Null,
+        Bson::MaxKey => JsonValue::String("MaxKey".to_string()),
+        Bson::MinKey => JsonValue::String("MinKey".to_string()),
+        Bson::DbPointer(dbp) => {
+            // DbPointer fields are private, so we use Debug representation
+            JsonValue::String(format!("{:?}", dbp))
+        }
+    }
+}
+
+/// Converts a BSON Document to a flat JSON object.
+fn document_to_flat_json(doc: Document) -> JsonValue {
+    let map: serde_json::Map<String, JsonValue> = doc
+        .into_iter()
+        .map(|(k, v)| (k, bson_to_flat_json(v)))
+        .collect();
+    JsonValue::Object(map)
+}
 
 trait ApplyAvroSchema {
     fn apply_avro_schema(self, avro_schema: &AvroSchema) -> anyhow::Result<Document>;
@@ -95,7 +180,8 @@ impl TryFrom<BsonBytes> for JsonBytes {
 
     fn try_from(value: BsonBytes) -> Result<Self, Self::Error> {
         let doc: Document = bson::from_slice(&value.0)?;
-        Ok(JsonBytes(serde_json::to_vec(&doc)?))
+        let flat_json = document_to_flat_json(doc);
+        Ok(JsonBytes(serde_json::to_vec(&flat_json)?))
     }
 }
 
@@ -160,7 +246,8 @@ impl TryFrom<BsonBytesWithSchema<'_>> for JsonBytes {
         match value.schema {
             Schema::Avro(avro_schema) => {
                 let bson_doc: Document = BsonBytes(value.data).apply_avro_schema(avro_schema)?;
-                Ok(JsonBytes(serde_json::to_vec(&bson_doc)?))
+                let flat_json = document_to_flat_json(bson_doc);
+                Ok(JsonBytes(serde_json::to_vec(&flat_json)?))
             }
             Schema::Undefined => BsonBytes(value.data).try_into(),
         }
@@ -359,6 +446,173 @@ mod tests {
         let json_str = String::from_utf8(json_bytes.0).unwrap();
         assert!(json_str.contains("frank"));
         assert!(json_str.contains("true"));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_objectid() {
+        use mongodb::bson::oid::ObjectId;
+        let oid = ObjectId::parse_str("60002e5e19e23b5c08a6c03c").unwrap();
+        let doc = doc! {"_id": oid};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        // Should be flat string, not {"$oid": "..."}
+        assert_eq!(json_str, r#"{"_id":"60002e5e19e23b5c08a6c03c"}"#);
+    }
+
+    #[test]
+    fn bson_to_json_flattens_datetime() {
+        use mongodb::bson::DateTime;
+        // 2026-01-09T05:23:58.852Z in millis
+        let dt = DateTime::from_millis(1767957838852);
+        let doc = doc! {"lastCalculated": dt};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        // Should be ISO 8601 string, not {"$date": {"$numberLong": "..."}}
+        assert!(json_str.contains("2026-01-09"));
+        assert!(!json_str.contains("$date"));
+        assert!(!json_str.contains("$numberLong"));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_binary() {
+        use mongodb::bson::Binary;
+        let bin = Binary {
+            subtype: mongodb::bson::spec::BinarySubtype::Generic,
+            bytes: vec![0x01, 0x02, 0x03, 0x04],
+        };
+        let doc = doc! {"data": bin};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        // Should be base64 string, not {"$binary": {...}}
+        assert!(!json_str.contains("$binary"));
+        assert!(json_str.contains("AQIDBA==")); // base64 of [1,2,3,4]
+    }
+
+    #[test]
+    fn bson_to_json_flattens_int64() {
+        let doc = doc! {"bigNum": 9223372036854775807_i64};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        // Should be plain number, not {"$numberLong": "..."}
+        assert!(!json_str.contains("$numberLong"));
+        assert!(json_str.contains("9223372036854775807"));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_decimal128() {
+        use std::str::FromStr;
+        let dec = mongodb::bson::Decimal128::from_str("123.456").unwrap();
+        let doc = doc! {"price": dec};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        // Should be string representation, not {"$numberDecimal": "..."}
+        assert!(!json_str.contains("$numberDecimal"));
+        assert!(json_str.contains("123.456"));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_timestamp() {
+        use mongodb::bson::Timestamp;
+        let ts = Timestamp {
+            time: 1234567890,
+            increment: 42,
+        };
+        let doc = doc! {"ts": ts};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        // Should be {t: ..., i: ...}, not {"$timestamp": {...}}
+        assert!(!json_str.contains("$timestamp"));
+        assert!(json_str.contains(r#""t":1234567890"#));
+        assert!(json_str.contains(r#""i":42"#));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_nested_documents() {
+        use mongodb::bson::DateTime;
+        use mongodb::bson::oid::ObjectId;
+        let oid = ObjectId::parse_str("507f1f77bcf86cd799439011").unwrap();
+        let dt = DateTime::from_millis(1704067200000); // 2024-01-01
+        let doc = doc! {
+            "user": {
+                "_id": oid,
+                "createdAt": dt,
+                "profile": {
+                    "active": true
+                }
+            }
+        };
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        assert!(!json_str.contains("$oid"));
+        assert!(!json_str.contains("$date"));
+        assert!(json_str.contains("507f1f77bcf86cd799439011"));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_arrays_with_special_types() {
+        use mongodb::bson::oid::ObjectId;
+        let oid1 = ObjectId::parse_str("60002e5e19e23b5c08a6c03c").unwrap();
+        let oid2 = ObjectId::parse_str("60002e5e19e23b5c08a6c03d").unwrap();
+        let doc = doc! {
+            "ids": [oid1, oid2],
+            "nested": [{"id": oid1}, {"id": oid2}]
+        };
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        assert!(!json_str.contains("$oid"));
+        assert!(json_str.contains("60002e5e19e23b5c08a6c03c"));
+        assert!(json_str.contains("60002e5e19e23b5c08a6c03d"));
+    }
+
+    #[test]
+    fn bson_to_json_flattens_customer_lp_like_document() {
+        use mongodb::bson::DateTime;
+        use mongodb::bson::oid::ObjectId;
+        let doc = doc! {
+            "_id": ObjectId::parse_str("60002e5e19e23b5c08a6c03c").unwrap(),
+            "email": "paul@mycustomerlens.com",
+            "lastCalculated": DateTime::from_millis(1767957838852_i64),
+            "lastSynced": DateTime::from_millis(1767957865461_i64),
+            "syncPending": false,
+            "productsDownloaded": { "STUDIO_3T": true },
+            "buyingRoles": {
+                "LICENSE_OWNER": false,
+                "LICENSE_ADMINISTRATOR": true
+            }
+        };
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+
+        // Verify no Extended JSON wrappers
+        assert!(!json_str.contains("$oid"), "Should not contain $oid");
+        assert!(!json_str.contains("$date"), "Should not contain $date");
+        assert!(
+            !json_str.contains("$numberLong"),
+            "Should not contain $numberLong"
+        );
+
+        // Verify flat values are present
+        assert!(json_str.contains(r#""_id":"60002e5e19e23b5c08a6c03c""#));
+        assert!(json_str.contains("paul@mycustomerlens.com"));
+        assert!(json_str.contains("2026-01-09")); // ISO date
     }
 
     #[test]
