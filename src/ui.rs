@@ -676,7 +676,7 @@ fn layout(title: &str, content: &str) -> Html<String> {
             <div class="footer-content">
                 <span>mstream v{version}</span>
                 <div class="footer-links">
-                    <a href="https://github.com/makarski/mstream" target="_blank">GitHub</a>
+                    <a href="https://github.com/makarski/mstream" target="_blank" rel="noopener noreferrer">GitHub</a>
                 </div>
             </div>
         </div>
