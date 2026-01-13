@@ -218,6 +218,15 @@ const LAYOUT_CSS: &str = r#"
         0%, 100% { opacity: 1; }
         50% { opacity: 0.5; }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+        *, ::before, ::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+        }
+    }
     details > summary { list-style: none; cursor: pointer; }
     details > summary::-webkit-details-marker { display: none; }
     details[open] > summary { border-radius: var(--radius) var(--radius) 0 0; }
@@ -456,8 +465,9 @@ const LAYOUT_JS: &str = r#"
         toast.className = `toast ${type}`;
         toast.innerHTML = `
             <span>${message}</span>
-            <button class="toast-close" onclick="closeToast(this)">&times;</button>
+            <button class="toast-close">&times;</button>
         `;
+        toast.querySelector('.toast-close').addEventListener('click', function() { closeToast(this); });
         container.appendChild(toast);
         setTimeout(() => {
             toast.style.animation = 'slideOut 0.3s ease-in forwards';
@@ -556,6 +566,16 @@ const LAYOUT_JS: &str = r#"
 
     // Hamburger menu toggle
     document.addEventListener('DOMContentLoaded', () => {
+        // Modal close handlers
+        document.querySelectorAll('[data-close-modal]').forEach(el => {
+            el.addEventListener('click', closeModal);
+        });
+
+        // Copy button handlers
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', () => copyToClipboard(btn));
+        });
+
         const burgers = document.querySelectorAll('.navbar-burger');
         burgers.forEach(burger => {
             burger.addEventListener('click', () => {
@@ -634,17 +654,17 @@ fn layout(title: &str, content: &str) -> Html<String> {
 
     <!-- Confirmation Modal -->
     <div id="confirm-modal" class="modal">
-        <div class="modal-background" onclick="closeModal()"></div>
+        <div class="modal-background" data-close-modal></div>
         <div class="modal-card">
             <header class="modal-card-head">
                 <p class="modal-card-title" id="confirm-title">Confirm</p>
-                <button class="delete" aria-label="close" onclick="closeModal()"></button>
+                <button class="delete" aria-label="close" data-close-modal></button>
             </header>
             <section class="modal-card-body">
                 <p id="confirm-message"></p>
             </section>
             <footer class="modal-card-foot">
-                <button class="button" onclick="closeModal()">Cancel</button>
+                <button class="button" data-close-modal>Cancel</button>
                 <button class="button is-danger" id="confirm-btn">Confirm</button>
             </footer>
         </div>
@@ -735,7 +755,7 @@ fn render_jobs_panel() -> &'static str {
                     </form>
                 </div>
             </details>
-            <div id="jobs-container" hx-get="/ui/jobs" hx-trigger="load, every 10s">
+            <div id="jobs-container" hx-get="/ui/jobs" hx-trigger="load, every 30s">
                 <div class="p-5 has-text-centered">
                     <span class="has-text-grey">Loading...</span>
                 </div>
@@ -988,7 +1008,7 @@ async fn get_job_details(State(state): State<AppState>, Path(name): Path<String>
 
         <h2 class="title is-4 mt-6">Configuration</h2>
         <div class="code-container">
-            <button class="button is-small is-white copy-btn" onclick="copyToClipboard(this)">Copy</button>
+            <button class="button is-small is-white copy-btn">Copy</button>
             <pre class="config json-content">{}</pre>
         </div>
         "##,
@@ -1350,7 +1370,7 @@ async fn stop_job_ui(
     if let Err(e) = &stop_result {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(r#"{{"message": "{}"}}"#, e)),
+            Html(serde_json::json!({ "message": e.to_string() }).to_string()),
         )
             .into_response();
     }
@@ -1382,10 +1402,10 @@ async fn stop_job_ui(
 
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Html(format!(
-            r#"{{"message": "Error stopping job {}"}}"#,
-            escape_html(&name)
-        )),
+        Html(
+            serde_json::json!({ "message": format!("Error stopping job {}", escape_html(&name)) })
+                .to_string(),
+        ),
     )
         .into_response()
 }
@@ -1410,7 +1430,7 @@ async fn restart_job_ui(
                     .into_response(),
                 Err(e) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Html(format!(r#"{{"message": "{}"}}"#, e)),
+                    Html(serde_json::json!({ "message": e.to_string() }).to_string()),
                 )
                     .into_response(),
             };
@@ -1426,7 +1446,7 @@ async fn restart_job_ui(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(r#"{{"message": "{}"}}"#, e)),
+            Html(serde_json::json!({ "message": e.to_string() }).to_string()),
         )
             .into_response(),
     }
@@ -1531,7 +1551,7 @@ async fn get_service_details(
 
         <h2 class="title is-4 mt-6">Configuration</h2>
         <div class="code-container">
-            <button class="button is-small is-white copy-btn" onclick="copyToClipboard(this)">Copy</button>
+            <button class="button is-small is-white copy-btn">Copy</button>
             <pre class="config json-content">{}</pre>
         </div>
 
