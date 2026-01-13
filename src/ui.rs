@@ -561,7 +561,9 @@ const LAYOUT_JS: &str = r#"
             burger.addEventListener('click', () => {
                 const target = document.getElementById(burger.dataset.target);
                 burger.classList.toggle('is-active');
-                target.classList.toggle('is-active');
+                if (target) {
+                    target.classList.toggle('is-active');
+                }
             });
         });
 
