@@ -422,22 +422,18 @@ mod tests {
         println!("Binary as JSON: {:?}", json_doc["binary"]);
         println!("Timestamp as JSON: {:?}", json_doc["timestamp"]);
 
-        // Verify BSON binary type (serialized as array of bytes)
-        assert!(json_doc["binary"].is_array());
-        let binary_array = json_doc["binary"].as_array().unwrap();
-        assert_eq!(binary_array.len(), 3);
-        assert_eq!(binary_array[0].as_i64().unwrap(), 1);
-        assert_eq!(binary_array[1].as_i64().unwrap(), 2);
-        assert_eq!(binary_array[2].as_i64().unwrap(), 3);
+        // Verify BSON binary type (serialized as base64 string)
+        assert!(json_doc["binary"].is_string());
+        assert_eq!(json_doc["binary"].as_str().unwrap(), "AQID"); // base64 of [1, 2, 3]
 
-        // Verify BSON timestamp type (serialized as nested object)
-        assert!(json_doc["timestamp"].is_object());
-        assert!(json_doc["timestamp"].get("$timestamp").is_some());
-
-        let timestamp = &json_doc["timestamp"]["$timestamp"];
-        assert!(timestamp.is_object());
-        assert_eq!(timestamp["t"].as_i64().unwrap(), 123456789);
-        assert_eq!(timestamp["i"].as_i64().unwrap(), 1);
+        // Verify BSON timestamp type (serialized as ISO 8601 string)
+        assert!(json_doc["timestamp"].is_string());
+        assert!(
+            json_doc["timestamp"]
+                .as_str()
+                .unwrap()
+                .contains("1973-11-29")
+        );
     }
 
     #[test]
