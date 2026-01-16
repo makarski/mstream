@@ -15,33 +15,37 @@ use crate::schema::Schema;
 /// - Decimal128 → string
 /// - Timestamp → object with t and i fields
 /// - etc.
+/// Converts an f64 to a JSON value, handling special cases (NaN, Infinity).
+fn f64_to_json(f: f64) -> JsonValue {
+    if f.is_nan() {
+        return JsonValue::String("NaN".to_string());
+    }
+    if f.is_infinite() {
+        let s = if f.is_sign_positive() {
+            "Infinity"
+        } else {
+            "-Infinity"
+        };
+        return JsonValue::String(s.to_string());
+    }
+    serde_json::Number::from_f64(f)
+        .map(JsonValue::Number)
+        .unwrap_or(JsonValue::Null)
+}
+
 fn bson_to_flat_json(bson: Bson) -> JsonValue {
     match bson {
-        Bson::Double(f) => {
-            if f.is_nan() {
-                JsonValue::String("NaN".to_string())
-            } else if f.is_infinite() {
-                JsonValue::String(
-                    if f.is_sign_positive() {
-                        "Infinity"
-                    } else {
-                        "-Infinity"
-                    }
-                    .to_string(),
-                )
-            } else {
-                serde_json::Number::from_f64(f)
-                    .map(JsonValue::Number)
-                    .unwrap_or(JsonValue::Null)
-            }
-        }
+        Bson::Double(f) => f64_to_json(f),
         Bson::String(s) => JsonValue::String(s),
         Bson::Array(arr) => JsonValue::Array(arr.into_iter().map(bson_to_flat_json).collect()),
         Bson::Document(doc) => document_to_flat_json(doc),
         Bson::Boolean(b) => JsonValue::Bool(b),
         Bson::Null => JsonValue::Null,
         Bson::RegularExpression(regex) => {
-            JsonValue::String(format!("/{}/{}", regex.pattern, regex.options))
+            let mut map = serde_json::Map::new();
+            map.insert("pattern".to_string(), JsonValue::String(regex.pattern));
+            map.insert("options".to_string(), JsonValue::String(regex.options));
+            JsonValue::Object(map)
         }
         Bson::JavaScriptCode(code) => JsonValue::String(code),
         Bson::JavaScriptCodeWithScope(code_with_scope) => {
@@ -56,10 +60,12 @@ fn bson_to_flat_json(bson: Bson) -> JsonValue {
         Bson::Int32(i) => JsonValue::Number(i.into()),
         Bson::Int64(i) => JsonValue::Number(i.into()),
         Bson::Timestamp(ts) => {
-            let mut map = serde_json::Map::new();
-            map.insert("t".to_string(), JsonValue::Number(ts.time.into()));
-            map.insert("i".to_string(), JsonValue::Number(ts.increment.into()));
-            JsonValue::Object(map)
+            // Convert seconds since epoch to ISO 8601 string
+            let dt = chrono::DateTime::from_timestamp(ts.time as i64, 0);
+            match dt {
+                Some(datetime) => JsonValue::String(datetime.to_rfc3339()),
+                None => JsonValue::Number(ts.time.into()), // fallback to seconds
+            }
         }
         Bson::Binary(bin) => {
             use base64::{Engine, engine::general_purpose::STANDARD};
@@ -507,6 +513,48 @@ mod tests {
     }
 
     #[test]
+    fn bson_to_json_handles_double_nan() {
+        let doc = doc! {"value": f64::NAN};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        assert_eq!(json_str, r#"{"value":"NaN"}"#);
+    }
+
+    #[test]
+    fn bson_to_json_handles_double_infinity() {
+        let doc = doc! {"value": f64::INFINITY};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        assert_eq!(json_str, r#"{"value":"Infinity"}"#);
+    }
+
+    #[test]
+    fn bson_to_json_handles_double_neg_infinity() {
+        let doc = doc! {"value": f64::NEG_INFINITY};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        assert_eq!(json_str, r#"{"value":"-Infinity"}"#);
+    }
+
+    #[test]
+    fn bson_to_json_handles_normal_double() {
+        let doc = doc! {"value": 3.14159};
+        let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
+        let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
+
+        let json_str = String::from_utf8(json_bytes.0).unwrap();
+        assert!(json_str.contains("3.14159"));
+        // Should be a number, not a string
+        assert!(!json_str.contains(r#""3.14159""#));
+    }
+
+    #[test]
     fn bson_to_json_flattens_decimal128() {
         use std::str::FromStr;
         let dec = mongodb::bson::Decimal128::from_str("123.456").unwrap();
@@ -524,7 +572,7 @@ mod tests {
     fn bson_to_json_flattens_timestamp() {
         use mongodb::bson::Timestamp;
         let ts = Timestamp {
-            time: 1234567890,
+            time: 1234567890, // 2009-02-13T23:31:30Z
             increment: 42,
         };
         let doc = doc! {"ts": ts};
@@ -532,10 +580,10 @@ mod tests {
         let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
 
         let json_str = String::from_utf8(json_bytes.0).unwrap();
-        // Should be {t: ..., i: ...}, not {"$timestamp": {...}}
+        // Should be ISO 8601 string, not {"$timestamp": {...}}
         assert!(!json_str.contains("$timestamp"));
-        assert!(json_str.contains(r#""t":1234567890"#));
-        assert!(json_str.contains(r#""i":42"#));
+        assert!(json_str.contains("2009-02-13"));
+        assert!(json_str.contains("23:31:30"));
     }
 
     #[test]
