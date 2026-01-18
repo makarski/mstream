@@ -1559,7 +1559,9 @@ async fn get_service_details(
         "##,
         service_name,
         service_name,
-        if status.used_by_jobs.is_empty() {
+        if status.is_system {
+            r#"<span class="tag is-warning is-light mr-2">🔒 System Service</span><button class="button is-danger is-light" disabled title="Cannot delete system service">Delete Service</button>"#.to_string()
+        } else if status.used_by_jobs.is_empty() {
             format!(
                 r##"<button class="button is-danger is-light"
                     hx-delete="/ui/services/{}"
@@ -1720,6 +1722,12 @@ fn render_service_row(status: &ServiceStatus) -> String {
         Service::Udf(_) => "UDF",
     };
 
+    let system_badge = if status.is_system {
+        r#" <span class="tag is-warning is-light">🔒 System</span>"#
+    } else {
+        ""
+    };
+
     let used_by = if status.used_by_jobs.is_empty() {
         "<span class='has-text-grey'>-</span>".to_string()
     } else {
@@ -1731,7 +1739,9 @@ fn render_service_row(status: &ServiceStatus) -> String {
             .join(", ")
     };
 
-    let delete_btn = if status.used_by_jobs.is_empty() {
+    let delete_btn = if status.is_system {
+        r#"<button class="button is-small is-danger is-light" disabled title="Cannot delete system service">Delete</button>"#.to_string()
+    } else if status.used_by_jobs.is_empty() {
         format!(
             r##"<button class="button is-small is-danger is-light"
                 hx-delete="/ui/services/{}"
@@ -1743,19 +1753,19 @@ fn render_service_row(status: &ServiceStatus) -> String {
             name, name
         )
     } else {
-        r#"<button class="button is-small is-danger is-light" disabled>Delete</button>"#.to_string()
+        r#"<button class="button is-small is-danger is-light" disabled title="Cannot delete service while in use">Delete</button>"#.to_string()
     };
 
     format!(
         r#"
         <tr>
-            <td><a href="/ui/services/{}" class="has-text-weight-medium">{}</a></td>
+            <td><a href="/ui/services/{}" class="has-text-weight-medium">{}</a>{}</td>
             <td>{}</td>
             <td>{}</td>
             <td>{}</td>
         </tr>
         "#,
-        name, name, provider, used_by, delete_btn
+        name, name, system_badge, provider, used_by, delete_btn
     )
 }
 
