@@ -159,7 +159,28 @@ impl ServiceRegistry {
         Ok(())
     }
 
+    /// Returns true if the service is used by system configuration
+    pub fn is_system_service(&self, service_name: &str) -> bool {
+        self.system_cfg
+            .as_ref()
+            .map(|cfg| cfg.has_system_components(service_name).is_some())
+            .unwrap_or(false)
+    }
+
     pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
+        if let Some(system_cfg) = &self.system_cfg {
+            match system_cfg.has_system_components(service_name) {
+                Some(components) => {
+                    anyhow::bail!(
+                        "cannot remove service '{}' as it is used by system components: {:?}",
+                        service_name,
+                        components
+                    );
+                }
+                None => {}
+            }
+        }
+
         let config_removed = self.storage.remove(service_name).await?;
         if config_removed {
             self.mongo_clients.remove(service_name);
@@ -573,6 +594,228 @@ mod service_registry_tests {
                 assert_eq!("fn cold() { 1 }", scripts[0].content);
             }
             other => panic!("expected udf service, got {:?}", other),
+        }
+    }
+
+    mod is_system_service_tests {
+        use super::*;
+        use crate::config::system::{
+            CheckpointSystemConfig, JobLifecycle, ServiceLifecycle, StartupState, SystemConfig,
+        };
+
+        fn registry_with_system_config(system_cfg: SystemConfig) -> ServiceRegistry {
+            let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
+            ServiceRegistry::new(storage, Some(system_cfg))
+        }
+
+        #[test]
+        fn returns_false_when_no_system_config() {
+            let registry = registry_with_in_memory_storage();
+            assert!(!registry.is_system_service("any-service"));
+        }
+
+        #[test]
+        fn returns_false_when_service_not_in_system_config() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: Some(JobLifecycle {
+                    service_name: "system-db".to_string(),
+                    resource: "jobs".to_string(),
+                    startup_state: StartupState::default(),
+                }),
+                service_lifecycle: None,
+                checkpoints: None,
+            };
+            let registry = registry_with_system_config(system_cfg);
+
+            assert!(!registry.is_system_service("other-service"));
+        }
+
+        #[test]
+        fn returns_true_when_service_used_by_job_lifecycle() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: Some(JobLifecycle {
+                    service_name: "system-db".to_string(),
+                    resource: "jobs".to_string(),
+                    startup_state: StartupState::default(),
+                }),
+                service_lifecycle: None,
+                checkpoints: None,
+            };
+            let registry = registry_with_system_config(system_cfg);
+
+            assert!(registry.is_system_service("system-db"));
+        }
+
+        #[test]
+        fn returns_true_when_service_used_by_checkpoints() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: None,
+                service_lifecycle: None,
+                checkpoints: Some(CheckpointSystemConfig {
+                    service_name: "checkpoint-db".to_string(),
+                    resource: "checkpoints".to_string(),
+                }),
+            };
+            let registry = registry_with_system_config(system_cfg);
+
+            assert!(registry.is_system_service("checkpoint-db"));
+        }
+
+        #[test]
+        fn returns_true_when_service_used_by_multiple_components() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: Some(JobLifecycle {
+                    service_name: "system-db".to_string(),
+                    resource: "jobs".to_string(),
+                    startup_state: StartupState::default(),
+                }),
+                service_lifecycle: Some(ServiceLifecycle {
+                    service_name: "system-db".to_string(),
+                    resource: "services".to_string(),
+                }),
+                checkpoints: Some(CheckpointSystemConfig {
+                    service_name: "system-db".to_string(),
+                    resource: "checkpoints".to_string(),
+                }),
+            };
+            let registry = registry_with_system_config(system_cfg);
+
+            assert!(registry.is_system_service("system-db"));
+        }
+    }
+
+    mod remove_system_service_tests {
+        use super::*;
+        use crate::config::system::{JobLifecycle, ServiceLifecycle, StartupState, SystemConfig};
+
+        fn registry_with_system_config(system_cfg: SystemConfig) -> ServiceRegistry {
+            let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
+            ServiceRegistry::new(storage, Some(system_cfg))
+        }
+
+        #[tokio::test]
+        async fn remove_service_rejects_system_service() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: Some(JobLifecycle {
+                    service_name: "system-db".to_string(),
+                    resource: "jobs".to_string(),
+                    startup_state: StartupState::default(),
+                }),
+                service_lifecycle: None,
+                checkpoints: None,
+            };
+            let mut registry = registry_with_system_config(system_cfg);
+
+            // Register the service first
+            let http_service = Service::Http(HttpConfig {
+                name: "system-db".to_string(),
+                host: "http://example.com".to_string(),
+                max_retries: None,
+                base_backoff_ms: None,
+                connection_timeout_sec: None,
+                timeout_sec: None,
+                tcp_keepalive_sec: None,
+            });
+            registry
+                .register_service(http_service)
+                .await
+                .expect("failed to register service");
+
+            // Attempt to remove - should fail
+            let result = registry.remove_service("system-db").await;
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("cannot remove service") && err_msg.contains("system components"),
+                "unexpected error: {}",
+                err_msg
+            );
+        }
+
+        #[tokio::test]
+        async fn remove_service_succeeds_for_non_system_service() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: Some(JobLifecycle {
+                    service_name: "system-db".to_string(),
+                    resource: "jobs".to_string(),
+                    startup_state: StartupState::default(),
+                }),
+                service_lifecycle: None,
+                checkpoints: None,
+            };
+            let mut registry = registry_with_system_config(system_cfg);
+
+            // Register a non-system service
+            let http_service = Service::Http(HttpConfig {
+                name: "user-service".to_string(),
+                host: "http://example.com".to_string(),
+                max_retries: None,
+                base_backoff_ms: None,
+                connection_timeout_sec: None,
+                timeout_sec: None,
+                tcp_keepalive_sec: None,
+            });
+            registry
+                .register_service(http_service)
+                .await
+                .expect("failed to register service");
+
+            // Remove should succeed
+            let result = registry.remove_service("user-service").await;
+            assert!(
+                result.is_ok(),
+                "should be able to remove non-system service"
+            );
+
+            // Verify it's gone
+            assert!(registry.service_definition("user-service").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn remove_service_error_includes_component_names() {
+            let system_cfg = SystemConfig {
+                encryption_key_path: None,
+                job_lifecycle: Some(JobLifecycle {
+                    service_name: "multi-use-db".to_string(),
+                    resource: "jobs".to_string(),
+                    startup_state: StartupState::default(),
+                }),
+                service_lifecycle: Some(ServiceLifecycle {
+                    service_name: "multi-use-db".to_string(),
+                    resource: "services".to_string(),
+                }),
+                checkpoints: None,
+            };
+            let mut registry = registry_with_system_config(system_cfg);
+
+            let http_service = Service::Http(HttpConfig {
+                name: "multi-use-db".to_string(),
+                host: "http://example.com".to_string(),
+                max_retries: None,
+                base_backoff_ms: None,
+                connection_timeout_sec: None,
+                timeout_sec: None,
+                tcp_keepalive_sec: None,
+            });
+            registry
+                .register_service(http_service)
+                .await
+                .expect("failed to register service");
+
+            let result = registry.remove_service("multi-use-db").await;
+            assert!(result.is_err());
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("job_lifecycle") && err_msg.contains("service_lifecycle"),
+                "error should list all components using the service: {}",
+                err_msg
+            );
         }
     }
 }
