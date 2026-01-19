@@ -138,6 +138,40 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
 
+### Transform (Playground)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/transform/run` | Test a Rhai script on a sample document |
+
+#### Request Body
+
+```json
+{
+  "script": "fn transform(data, attributes) { result(data, attributes) }",
+  "payload": "{\"email\": \"john@example.com\"}",
+  "attributes": {"source": "playground"}
+}
+```
+
+- `script` — Rhai script with `transform(data, attributes)` function (required)
+- `payload` — JSON string of the input document or array (required)
+- `attributes` — Optional key-value metadata passed to the script
+
+> **Note:** For batch processing, pass a JSON array as the payload (e.g., `"[{...}, {...}]"`). The script receives the array directly and can iterate over it.
+
+#### Response
+
+```json
+{
+  "message": "success",
+  "item": {
+    "document": {"email": "j***@example.com"},
+    "attributes": {"source": "playground", "processed": "true"}
+  }
+}
+```
+
 ## Checkpoints
 
 Checkpoints allow connectors to resume from their last processed position after a restart, preventing data loss or reprocessing.

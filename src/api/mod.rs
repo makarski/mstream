@@ -2,78 +2,23 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use serde::Serialize;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::info;
 
-use crate::checkpoint::Checkpoint;
-use crate::config::{Connector, Masked, Service};
+use crate::api::types::{
+    CheckpointResponse, MaskedJson, Message, TransformTestRequest, TransformTestResponse,
+};
+use crate::config::{Connector, Encoding, Service};
 use crate::job_manager::{JobManager, JobMetadata, error::JobManagerError};
-use crate::kafka::KafkaOffset;
+use crate::middleware::udf::rhai::{RhaiMiddleware, RhaiMiddlewareError};
+use crate::source::SourceEvent;
 
-struct MaskedJson<T>(T);
-
-impl<T> IntoResponse for MaskedJson<T>
-where
-    T: Serialize + Masked,
-{
-    fn into_response(self) -> Response {
-        let masked_data = self.0.masked();
-        let json_data = Json(masked_data);
-        json_data.into_response()
-    }
-}
-
-impl IntoResponse for JobManagerError {
-    fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            JobManagerError::JobNotFound(name) => {
-                (StatusCode::NOT_FOUND, format!("Job '{}' not found", name))
-            }
-            JobManagerError::JobAlreadyExists(name) => (
-                StatusCode::CONFLICT,
-                format!("Job '{}' already exists", name),
-            ),
-            JobManagerError::ServiceNotFound(name) => (
-                StatusCode::NOT_FOUND,
-                format!("Service '{}' not found", name),
-            ),
-            JobManagerError::ServiceAlreadyExists(name) => (
-                StatusCode::CONFLICT,
-                format!("Service '{}' already exists", name),
-            ),
-            JobManagerError::ServiceInUse(name, used_by) => (
-                StatusCode::CONFLICT,
-                format!("Service '{}' is in use by jobs: {}", name, used_by),
-            ),
-            JobManagerError::InternalError(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Internal error: {}", msg),
-            ),
-            JobManagerError::Anyhow(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Internal error: {}", e),
-            ),
-        };
-
-        if status.is_server_error() {
-            error!("API Error: {}", message);
-        } else {
-            warn!("API Client Error: {}", message);
-        }
-
-        let body = Json(Message {
-            message,
-            item: None::<()>,
-        });
-
-        (status, body).into_response()
-    }
-}
+pub(crate) mod error;
+pub(crate) mod types;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -98,6 +43,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
         .route("/jobs/{name}/checkpoints", get(list_checkpoints))
+        .route("/transform/run", post(transform_run))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -231,6 +177,42 @@ async fn remove_service(
     ))
 }
 
+async fn transform_run(
+    Json(transform_req): Json<TransformTestRequest>,
+) -> Result<impl IntoResponse, RhaiMiddlewareError> {
+    let mut middleware = RhaiMiddleware::with_script(transform_req.script)?;
+
+    let source_event = SourceEvent {
+        cursor: None,
+        attributes: transform_req.attributes,
+        encoding: Encoding::Json,
+        is_framed_batch: false,
+        raw_bytes: transform_req.payload.as_bytes().to_vec(),
+    };
+
+    let transformed = middleware.transform(source_event).await?;
+    let json_value: serde_json::Value =
+        serde_json::from_slice(&transformed.raw_bytes).map_err(|e| {
+            RhaiMiddlewareError::ExecutionError {
+                message: format!("Output is not valid JSON: {}", e),
+                path: "<inline>".to_string(),
+            }
+        })?;
+
+    let response = TransformTestResponse {
+        document: json_value,
+        attributes: transformed.attributes,
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(Message {
+            message: "success".to_string(),
+            item: Some(response),
+        }),
+    ))
+}
+
 async fn get_one_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -238,108 +220,6 @@ async fn get_one_service(
     let jm = state.job_manager.lock().await;
     let service = jm.get_service(&name).await?;
     Ok((StatusCode::OK, MaskedJson(service)))
-}
-
-#[derive(Serialize, Clone)]
-struct Message<T> {
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    item: Option<T>,
-}
-
-impl<T: Masked> Masked for Message<T> {
-    fn masked(&self) -> Self {
-        let masked_item = match &self.item {
-            Some(item) => Some(item.masked()),
-            None => None,
-        };
-
-        Message {
-            message: self.message.clone(),
-            item: masked_item,
-        }
-    }
-}
-
-impl<T> IntoResponse for Message<T>
-where
-    T: Serialize + Masked,
-{
-    fn into_response(self) -> Response {
-        MaskedJson(self).into_response()
-    }
-}
-
-impl<T> Masked for Vec<T>
-where
-    T: Masked,
-{
-    fn masked(&self) -> Self {
-        self.iter().map(|item| item.masked()).collect()
-    }
-}
-
-/// Human-readable checkpoint response for API
-#[derive(Clone, Debug, Serialize)]
-struct CheckpointResponse {
-    job_name: String,
-    updated_at: String,
-    cursor: CursorInfo,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "source", rename_all = "snake_case")]
-enum CursorInfo {
-    Kafka {
-        topic: String,
-        partition: i32,
-        offset: i64,
-    },
-    #[serde(rename = "mongodb")]
-    MongoDB {
-        data: serde_json::Value,
-    },
-    Unknown {
-        raw_bytes: usize,
-    },
-}
-
-impl From<Checkpoint> for CheckpointResponse {
-    fn from(cp: Checkpoint) -> Self {
-        let cursor = decode_cursor(&cp.cursor);
-        let updated_at = chrono::DateTime::from_timestamp_millis(cp.updated_at)
-            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        CheckpointResponse {
-            job_name: cp.job_name,
-            updated_at,
-            cursor,
-        }
-    }
-}
-
-fn decode_cursor(cursor: &[u8]) -> CursorInfo {
-    // Try Kafka offset first
-    if let Ok(kafka) = mongodb::bson::from_slice::<KafkaOffset>(cursor) {
-        return CursorInfo::Kafka {
-            topic: kafka.topic,
-            partition: kafka.partition,
-            offset: kafka.offset,
-        };
-    }
-
-    // Try MongoDB cursor (any BSON document - resume token, _id, or custom field)
-    if let Ok(bson_doc) = mongodb::bson::from_slice::<mongodb::bson::Document>(cursor) {
-        if let Ok(json_value) = serde_json::to_value(&bson_doc) {
-            return CursorInfo::MongoDB { data: json_value };
-        }
-    }
-
-    // Fallback to unknown
-    CursorInfo::Unknown {
-        raw_bytes: cursor.len(),
-    }
 }
 
 /// GET /jobs/{name}/checkpoints
@@ -367,10 +247,17 @@ async fn list_checkpoints(
 
 #[cfg(test)]
 mod tests {
+    use serde::Serialize;
+
     use super::*;
-    use crate::checkpoint::Checkpoint;
+    use crate::{checkpoint::Checkpoint, config::Masked};
 
     mod checkpoint_response_tests {
+        use crate::{
+            api::types::{CursorInfo, decode_cursor},
+            kafka::KafkaOffset,
+        };
+
         use super::*;
 
         #[test]
@@ -594,6 +481,252 @@ mod tests {
 
             assert_eq!(masked.len(), 1);
             assert_eq!(masked[0].secret, "****");
+        }
+    }
+
+    mod transform_request_tests {
+        use super::*;
+
+        #[test]
+        fn deserialize_minimal_request() {
+            let json = r#"{
+                "script": "fn transform(data, attributes) { result(data, attributes) }",
+                "payload": "{\"name\": \"test\"}"
+            }"#;
+
+            let req: TransformTestRequest = serde_json::from_str(json).unwrap();
+
+            assert_eq!(
+                req.script,
+                "fn transform(data, attributes) { result(data, attributes) }"
+            );
+            assert_eq!(req.payload, "{\"name\": \"test\"}");
+            assert!(req.attributes.is_none());
+        }
+
+        #[test]
+        fn deserialize_full_request() {
+            let json = r#"{
+                "script": "fn transform(data, attributes) { result(data, attributes) }",
+                "payload": "[{\"a\": 1}, {\"a\": 2}]",
+                "attributes": {"source": "test", "env": "dev"}
+            }"#;
+
+            let req: TransformTestRequest = serde_json::from_str(json).unwrap();
+
+            assert_eq!(req.payload, "[{\"a\": 1}, {\"a\": 2}]");
+            let attrs = req.attributes.unwrap();
+            assert_eq!(attrs.get("source"), Some(&"test".to_string()));
+            assert_eq!(attrs.get("env"), Some(&"dev".to_string()));
+        }
+    }
+
+    mod transform_response_tests {
+        use std::collections::HashMap;
+
+        use super::*;
+
+        #[test]
+        fn serialize_response_with_document() {
+            let response = TransformTestResponse {
+                document: serde_json::json!({"masked": true, "email": "j***@example.com"}),
+                attributes: None,
+            };
+
+            let json = serde_json::to_string(&response).unwrap();
+
+            assert!(json.contains("\"masked\":true"));
+            assert!(json.contains("\"email\":\"j***@example.com\""));
+        }
+
+        #[test]
+        fn serialize_response_with_attributes() {
+            let mut attrs = HashMap::new();
+            attrs.insert("processed".to_string(), "true".to_string());
+            attrs.insert("source".to_string(), "playground".to_string());
+
+            let response = TransformTestResponse {
+                document: serde_json::json!({"data": "test"}),
+                attributes: Some(attrs),
+            };
+
+            let json = serde_json::to_string(&response).unwrap();
+
+            assert!(json.contains("\"processed\":\"true\""));
+            assert!(json.contains("\"source\":\"playground\""));
+        }
+
+        #[test]
+        fn serialize_batch_response() {
+            let response = TransformTestResponse {
+                document: serde_json::json!([
+                    {"id": 1, "masked": true},
+                    {"id": 2, "masked": true}
+                ]),
+                attributes: None,
+            };
+
+            let json = serde_json::to_string(&response).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            assert!(parsed["document"].is_array());
+            assert_eq!(parsed["document"].as_array().unwrap().len(), 2);
+        }
+    }
+
+    mod transform_run_integration_tests {
+        use std::collections::HashMap;
+
+        use super::*;
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn transform_single_document() {
+            let script = r#"
+                fn transform(data, attributes) {
+                    data.processed = true;
+                    result(data, attributes)
+                }
+            "#;
+            let payload = r#"{"name": "test"}"#;
+
+            let mut middleware = RhaiMiddleware::with_script(script.to_string()).unwrap();
+            let source_event = SourceEvent {
+                cursor: None,
+                attributes: None,
+                encoding: Encoding::Json,
+                is_framed_batch: false,
+                raw_bytes: payload.as_bytes().to_vec(),
+            };
+
+            let transformed = middleware.transform(source_event).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&transformed.raw_bytes).unwrap();
+
+            assert_eq!(json["name"], "test");
+            assert_eq!(json["processed"], true);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn transform_with_attributes() {
+            let script = r#"
+                fn transform(data, attributes) {
+                    attributes["modified"] = "yes";
+                    result(data, attributes)
+                }
+            "#;
+            let payload = r#"{"value": 42}"#;
+
+            let mut attrs = HashMap::new();
+            attrs.insert("source".to_string(), "test".to_string());
+
+            let mut middleware = RhaiMiddleware::with_script(script.to_string()).unwrap();
+            let source_event = SourceEvent {
+                cursor: None,
+                attributes: Some(attrs),
+                encoding: Encoding::Json,
+                is_framed_batch: false,
+                raw_bytes: payload.as_bytes().to_vec(),
+            };
+
+            let transformed = middleware.transform(source_event).await.unwrap();
+
+            let result_attrs = transformed.attributes.unwrap();
+            assert_eq!(result_attrs.get("source"), Some(&"test".to_string()));
+            assert_eq!(result_attrs.get("modified"), Some(&"yes".to_string()));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn transform_array_payload() {
+            // Note: is_framed_batch=false means we treat the JSON array as a single document
+            // The script receives the array and processes it directly
+            let script = r#"
+                fn transform(data, attributes) {
+                    let results = [];
+                    for doc in data {
+                        doc.batch = true;
+                        results.push(doc);
+                    }
+                    result(results, attributes)
+                }
+            "#;
+            let payload = r#"[{"id": 1}, {"id": 2}, {"id": 3}]"#;
+
+            let mut middleware = RhaiMiddleware::with_script(script.to_string()).unwrap();
+            let source_event = SourceEvent {
+                cursor: None,
+                attributes: None,
+                encoding: Encoding::Json,
+                is_framed_batch: false, // JSON array is parsed as a single value
+                raw_bytes: payload.as_bytes().to_vec(),
+            };
+
+            let transformed = middleware.transform(source_event).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&transformed.raw_bytes).unwrap();
+
+            assert!(json.is_array());
+            let arr = json.as_array().unwrap();
+            assert_eq!(arr.len(), 3);
+            assert_eq!(arr[0]["batch"], true);
+            assert_eq!(arr[1]["batch"], true);
+            assert_eq!(arr[2]["batch"], true);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn transform_with_masking_functions() {
+            let script = r#"
+                fn transform(data, attributes) {
+                    data.email = mask_email(data.email);
+                    data.phone = mask_phone(data.phone);
+                    result(data, attributes)
+                }
+            "#;
+            let payload = r#"{"email": "john@example.com", "phone": "+1-555-123-4567"}"#;
+
+            let mut middleware = RhaiMiddleware::with_script(script.to_string()).unwrap();
+            let source_event = SourceEvent {
+                cursor: None,
+                attributes: None,
+                encoding: Encoding::Json,
+                is_framed_batch: false,
+                raw_bytes: payload.as_bytes().to_vec(),
+            };
+
+            let transformed = middleware.transform(source_event).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&transformed.raw_bytes).unwrap();
+
+            // mask_email: john@example.com -> j***@example.com
+            assert_eq!(json["email"], "j***@example.com");
+            // mask_phone: +1-555-123-4567 -> ***********4567
+            assert_eq!(json["phone"], "***********4567");
+        }
+
+        #[test]
+        fn invalid_script_returns_compile_error() {
+            let script = r#"
+                fn transform(data, attributes {
+                    result(data, attributes)
+                }
+            "#;
+
+            let result = RhaiMiddleware::with_script(script.to_string());
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(matches!(err, RhaiMiddlewareError::CompileError { .. }));
+        }
+
+        #[test]
+        fn missing_transform_function_returns_error() {
+            let script = r#"
+                fn process(data, attributes) {
+                    result(data, attributes)
+                }
+            "#;
+
+            let result = RhaiMiddleware::with_script(script.to_string());
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(matches!(err, RhaiMiddlewareError::MissingTransformFunction));
         }
     }
 }
