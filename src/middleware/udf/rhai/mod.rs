@@ -174,7 +174,7 @@ pub enum RhaiMiddlewareError {
 /// ```
 #[derive(Debug)]
 pub struct RhaiMiddleware {
-    script_path: String,
+    script_path: Option<String>,
     compiled_script: rhai::AST,
     engine: rhai::Engine,
 }
@@ -233,7 +233,22 @@ impl RhaiMiddleware {
         Self::assert_udf_exists(&compiled_script)?;
 
         Ok(Self {
-            script_path: full_path.to_string_lossy().to_string(),
+            script_path: Some(full_path.to_string_lossy().to_string()),
+            compiled_script,
+            engine,
+        })
+    }
+
+    pub fn with_script(script_content: String) -> Result<Self, RhaiMiddlewareError> {
+        let engine = Self::sandboxed_engine();
+        let compiled_script = engine
+            .compile(&script_content)
+            .map_err(|e| RhaiMiddlewareError::CompileError { source: e })?;
+
+        Self::assert_udf_exists(&compiled_script)?;
+
+        Ok(Self {
+            script_path: None,
             compiled_script,
             engine,
         })
@@ -291,7 +306,7 @@ impl RhaiMiddleware {
                 .decode_rhai(&event.raw_bytes, event.is_framed_batch)
                 .map_err(|e| RhaiMiddlewareError::DecodeError {
                     source: e,
-                    path: self.script_path.clone(),
+                    path: self.script_path.clone().unwrap_or_default(),
                 })?;
 
             // 2. Execute Script
@@ -305,7 +320,7 @@ impl RhaiMiddleware {
                 )
                 .map_err(|err| RhaiMiddlewareError::ExecutionError {
                     message: err.to_string(),
-                    path: self.script_path.clone(),
+                    path: self.script_path.clone().unwrap_or_default(),
                 })?;
 
             let attributes = result.attributes().or_else(|| event.attributes);
@@ -318,7 +333,7 @@ impl RhaiMiddleware {
                 .encode_rhai(result.data, event.is_framed_batch)
                 .map_err(|e| RhaiMiddlewareError::ExecutionError {
                     message: e.to_string(),
-                    path: self.script_path.clone(),
+                    path: self.script_path.clone().unwrap_or_default(),
                 })?;
 
             Ok(SourceEvent {
