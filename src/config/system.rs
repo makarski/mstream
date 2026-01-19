@@ -13,20 +13,16 @@ pub struct SystemConfig {
 impl SystemConfig {
     pub fn has_system_components(&self, service_name: &str) -> Option<Vec<&'static str>> {
         let mut components = Vec::new();
-        if let Some(job_lifecycle) = &self.job_lifecycle {
-            if job_lifecycle.service_name == service_name {
-                components.push("job_lifecycle");
-            }
+        if self.has_job_lifecycle(service_name) {
+            components.push("job_lifecycle");
         }
-        if let Some(service_lifecycle) = &self.service_lifecycle {
-            if service_lifecycle.service_name == service_name {
-                components.push("service_lifecycle");
-            }
+
+        if self.has_service_lifecycle(service_name) {
+            components.push("service_lifecycle");
         }
-        if let Some(checkpoints) = &self.checkpoints {
-            if checkpoints.service_name == service_name {
-                components.push("checkpoints");
-            }
+
+        if self.has_checkpoints(service_name) {
+            components.push("checkpoints");
         }
 
         if components.is_empty() {
@@ -34,6 +30,27 @@ impl SystemConfig {
         } else {
             Some(components)
         }
+    }
+
+    fn has_job_lifecycle(&self, service_name: &str) -> bool {
+        self.job_lifecycle
+            .as_ref()
+            .filter(|jlc| -> bool { jlc.service_name == service_name })
+            .is_some()
+    }
+
+    fn has_service_lifecycle(&self, service_name: &str) -> bool {
+        self.service_lifecycle
+            .as_ref()
+            .filter(|slc| -> bool { slc.service_name == service_name })
+            .is_some()
+    }
+
+    fn has_checkpoints(&self, service_name: &str) -> bool {
+        self.checkpoints
+            .as_ref()
+            .filter(|cp| -> bool { cp.service_name == service_name })
+            .is_some()
     }
 }
 
@@ -70,20 +87,36 @@ pub struct CheckpointSystemConfig {
 mod tests {
     use super::*;
 
+    fn job_lifecycle(service_name: &str) -> JobLifecycle {
+        JobLifecycle {
+            service_name: service_name.to_string(),
+            resource: "jobs".to_string(),
+            startup_state: StartupState::default(),
+        }
+    }
+
+    fn service_lifecycle(service_name: &str) -> ServiceLifecycle {
+        ServiceLifecycle {
+            service_name: service_name.to_string(),
+            resource: "services".to_string(),
+        }
+    }
+
+    fn checkpoints(service_name: &str) -> CheckpointSystemConfig {
+        CheckpointSystemConfig {
+            service_name: service_name.to_string(),
+            resource: "checkpoints".to_string(),
+        }
+    }
+
     mod has_system_components_tests {
         use super::*;
 
         #[test]
         fn returns_none_when_service_not_used() {
             let config = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: None,
-                checkpoints: None,
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                ..Default::default()
             };
 
             assert!(config.has_system_components("other-service").is_none());
@@ -92,77 +125,46 @@ mod tests {
         #[test]
         fn returns_job_lifecycle_when_matched() {
             let config = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: None,
-                checkpoints: None,
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                ..Default::default()
             };
 
             let components = config.has_system_components("system-db");
-            assert!(components.is_some());
             assert_eq!(components.unwrap(), vec!["job_lifecycle"]);
         }
 
         #[test]
         fn returns_service_lifecycle_when_matched() {
             let config = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: None,
-                service_lifecycle: Some(ServiceLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "services".to_string(),
-                }),
-                checkpoints: None,
+                service_lifecycle: Some(service_lifecycle("system-db")),
+                ..Default::default()
             };
 
             let components = config.has_system_components("system-db");
-            assert!(components.is_some());
             assert_eq!(components.unwrap(), vec!["service_lifecycle"]);
         }
 
         #[test]
         fn returns_checkpoints_when_matched() {
             let config = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: None,
-                service_lifecycle: None,
-                checkpoints: Some(CheckpointSystemConfig {
-                    service_name: "checkpoint-db".to_string(),
-                    resource: "checkpoints".to_string(),
-                }),
+                checkpoints: Some(checkpoints("checkpoint-db")),
+                ..Default::default()
             };
 
             let components = config.has_system_components("checkpoint-db");
-            assert!(components.is_some());
             assert_eq!(components.unwrap(), vec!["checkpoints"]);
         }
 
         #[test]
         fn returns_multiple_components_when_service_used_by_all() {
             let config = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: Some(ServiceLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "services".to_string(),
-                }),
-                checkpoints: Some(CheckpointSystemConfig {
-                    service_name: "system-db".to_string(),
-                    resource: "checkpoints".to_string(),
-                }),
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                service_lifecycle: Some(service_lifecycle("system-db")),
+                checkpoints: Some(checkpoints("system-db")),
+                ..Default::default()
             };
 
-            let components = config.has_system_components("system-db");
-            assert!(components.is_some());
-            let components = components.unwrap();
+            let components = config.has_system_components("system-db").unwrap();
             assert_eq!(components.len(), 3);
             assert!(components.contains(&"job_lifecycle"));
             assert!(components.contains(&"service_lifecycle"));
@@ -178,31 +180,24 @@ mod tests {
         #[test]
         fn returns_partial_match_when_different_services_configured() {
             let config = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "jobs-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: Some(ServiceLifecycle {
-                    service_name: "services-db".to_string(),
-                    resource: "services".to_string(),
-                }),
-                checkpoints: Some(CheckpointSystemConfig {
-                    service_name: "checkpoint-db".to_string(),
-                    resource: "checkpoints".to_string(),
-                }),
+                job_lifecycle: Some(job_lifecycle("jobs-db")),
+                service_lifecycle: Some(service_lifecycle("services-db")),
+                checkpoints: Some(checkpoints("checkpoint-db")),
+                ..Default::default()
             };
 
-            let jobs_components = config.has_system_components("jobs-db");
-            assert_eq!(jobs_components.unwrap(), vec!["job_lifecycle"]);
-
-            let services_components = config.has_system_components("services-db");
-            assert_eq!(services_components.unwrap(), vec!["service_lifecycle"]);
-
-            let checkpoint_components = config.has_system_components("checkpoint-db");
-            assert_eq!(checkpoint_components.unwrap(), vec!["checkpoints"]);
-
+            assert_eq!(
+                config.has_system_components("jobs-db").unwrap(),
+                vec!["job_lifecycle"]
+            );
+            assert_eq!(
+                config.has_system_components("services-db").unwrap(),
+                vec!["service_lifecycle"]
+            );
+            assert_eq!(
+                config.has_system_components("checkpoint-db").unwrap(),
+                vec!["checkpoints"]
+            );
             assert!(config.has_system_components("unknown-db").is_none());
         }
     }
