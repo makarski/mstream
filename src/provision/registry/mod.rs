@@ -375,6 +375,9 @@ mod service_registry_tests {
     use crate::config::{
         Service,
         service_config::{HttpConfig, UdfConfig, UdfEngine, UdfScript},
+        system::{
+            CheckpointSystemConfig, JobLifecycle, ServiceLifecycle, StartupState, SystemConfig,
+        },
     };
     use crate::provision::registry::ServiceLifecycleStorage;
     use tempfile::tempdir;
@@ -382,6 +385,66 @@ mod service_registry_tests {
     fn registry_with_in_memory_storage() -> ServiceRegistry {
         let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
         ServiceRegistry::new(storage, None)
+    }
+
+    fn registry_with_system_config(system_cfg: SystemConfig) -> ServiceRegistry {
+        let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
+        ServiceRegistry::new(storage, Some(system_cfg))
+    }
+
+    fn job_lifecycle(service_name: &str) -> JobLifecycle {
+        JobLifecycle {
+            service_name: service_name.to_string(),
+            resource: "jobs".to_string(),
+            startup_state: StartupState::default(),
+        }
+    }
+
+    fn service_lifecycle(service_name: &str) -> ServiceLifecycle {
+        ServiceLifecycle {
+            service_name: service_name.to_string(),
+            resource: "services".to_string(),
+        }
+    }
+
+    fn checkpoints(service_name: &str) -> CheckpointSystemConfig {
+        CheckpointSystemConfig {
+            service_name: service_name.to_string(),
+            resource: "checkpoints".to_string(),
+        }
+    }
+
+    fn http_service(name: &str) -> Service {
+        Service::Http(HttpConfig {
+            name: name.to_string(),
+            host: "http://example.com".to_string(),
+            max_retries: None,
+            base_backoff_ms: None,
+            connection_timeout_sec: None,
+            timeout_sec: None,
+            tcp_keepalive_sec: None,
+        })
+    }
+
+    fn udf_service(
+        name: &str,
+        script_path: &str,
+        engine: UdfEngine,
+        sources: Option<Vec<UdfScript>>,
+    ) -> Service {
+        Service::Udf(UdfConfig {
+            name: name.to_string(),
+            script_path: script_path.to_string(),
+            engine,
+            sources,
+        })
+    }
+
+    fn udf_script(filename: &str, content: &str) -> UdfScript {
+        UdfScript {
+            filename: filename.to_string(),
+            content: content.to_string(),
+        }
     }
 
     #[tokio::test]
@@ -419,18 +482,8 @@ mod service_registry_tests {
     async fn remove_service_clears_cached_clients_and_storage() {
         let mut registry = registry_with_in_memory_storage();
 
-        let http_service = Service::Http(HttpConfig {
-            name: "http-remove".to_string(),
-            host: "http://example.com".to_string(),
-            max_retries: None,
-            base_backoff_ms: None,
-            connection_timeout_sec: None,
-            timeout_sec: None,
-            tcp_keepalive_sec: None,
-        });
-
         registry
-            .register_service(http_service)
+            .register_service(http_service("http-remove"))
             .await
             .expect("failed to register service");
 
@@ -454,20 +507,17 @@ mod service_registry_tests {
         let mut registry = registry_with_in_memory_storage();
         let temp_dir = tempdir().expect("failed to create temp dir");
         let script_path = temp_dir.path().join("scripts");
-        let script_path_str = script_path.to_string_lossy().to_string();
-
-        let udf_service = Service::Udf(UdfConfig {
-            name: "udf-alpha".to_string(),
-            script_path: script_path_str,
-            engine: UdfEngine::Rhai,
-            sources: Some(vec![UdfScript {
-                filename: "script.rhai".to_string(),
-                content: "fn transform(input, attrs) { result(input, attrs) }".to_string(),
-            }]),
-        });
 
         registry
-            .register_service(udf_service)
+            .register_service(udf_service(
+                "udf-alpha",
+                &script_path.to_string_lossy(),
+                UdfEngine::Rhai,
+                Some(vec![udf_script(
+                    "script.rhai",
+                    "fn transform(input, attrs) { result(input, attrs) }",
+                )]),
+            ))
             .await
             .expect("failed to register udf service");
 
@@ -490,70 +540,50 @@ mod service_registry_tests {
     }
 
     #[tokio::test]
-    async fn register_udf_service_rejects_unsupported_engine() {
-        let mut registry = registry_with_in_memory_storage();
+    async fn register_udf_service_rejects_invalid_configs() {
         let temp_dir = tempdir().expect("failed to create temp dir");
-        let udf_service = Service::Udf(UdfConfig {
-            name: "udf-unsupported".to_string(),
-            script_path: temp_dir.path().to_string_lossy().to_string(),
-            engine: UdfEngine::Undefined,
-            sources: Some(vec![UdfScript {
-                filename: "script.rhai".to_string(),
-                content: "fn noop() {}".to_string(),
-            }]),
-        });
+        let base_path = temp_dir.path();
 
-        let err = registry.register_service(udf_service).await.unwrap_err();
-        assert!(
-            err.to_string().contains("unsupported udf engine"),
-            "unexpected error: {}",
-            err
-        );
-    }
+        let test_cases = [
+            (
+                udf_service(
+                    "udf-unsupported",
+                    &base_path.to_string_lossy(),
+                    UdfEngine::Undefined,
+                    Some(vec![udf_script("script.rhai", "fn noop() {}")]),
+                ),
+                "unsupported udf engine",
+            ),
+            (
+                udf_service(
+                    "udf-invalid-filename",
+                    &base_path.join("scripts").to_string_lossy(),
+                    UdfEngine::Rhai,
+                    Some(vec![udf_script("../script.rhai", "fn noop() {}")]),
+                ),
+                "invalid filename",
+            ),
+            (
+                udf_service(
+                    "udf-empty",
+                    &base_path.join("empty").to_string_lossy(),
+                    UdfEngine::Rhai,
+                    None,
+                ),
+                "no udf sources provided",
+            ),
+        ];
 
-    #[tokio::test]
-    async fn register_udf_service_rejects_invalid_filename() {
-        let mut registry = registry_with_in_memory_storage();
-        let temp_dir = tempdir().expect("failed to create temp dir");
-        let script_path = temp_dir.path().join("scripts");
-
-        let udf_service = Service::Udf(UdfConfig {
-            name: "udf-invalid-filename".to_string(),
-            script_path: script_path.to_string_lossy().to_string(),
-            engine: UdfEngine::Rhai,
-            sources: Some(vec![UdfScript {
-                filename: "../script.rhai".to_string(),
-                content: "fn noop() {}".to_string(),
-            }]),
-        });
-
-        let err = registry.register_service(udf_service).await.unwrap_err();
-        assert!(
-            err.to_string().contains("invalid filename"),
-            "unexpected error: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn register_udf_service_rejects_empty_directory_without_sources() {
-        let mut registry = registry_with_in_memory_storage();
-        let temp_dir = tempdir().expect("failed to create temp dir");
-        let script_path = temp_dir.path().join("empty");
-
-        let udf_service = Service::Udf(UdfConfig {
-            name: "udf-empty".to_string(),
-            script_path: script_path.to_string_lossy().to_string(),
-            engine: UdfEngine::Rhai,
-            sources: None,
-        });
-
-        let err = registry.register_service(udf_service).await.unwrap_err();
-        assert!(
-            err.to_string().contains("no udf sources provided"),
-            "unexpected error: {}",
-            err
-        );
+        for (service, expected_error) in test_cases {
+            let mut registry = registry_with_in_memory_storage();
+            let err = registry.register_service(service).await.unwrap_err();
+            assert!(
+                err.to_string().contains(expected_error),
+                "expected error containing '{}', got: {}",
+                expected_error,
+                err
+            );
+        }
     }
 
     #[tokio::test]
@@ -568,14 +598,13 @@ mod service_registry_tests {
             .expect("failed to write script");
 
         let mut storage_impl = InMemoryServiceStorage::new();
-        let service = Service::Udf(UdfConfig {
-            name: "udf-cold".to_string(),
-            script_path: scripts_dir.to_string_lossy().to_string(),
-            engine: UdfEngine::Rhai,
-            sources: None,
-        });
         storage_impl
-            .save(service)
+            .save(udf_service(
+                "udf-cold",
+                &scripts_dir.to_string_lossy(),
+                UdfEngine::Rhai,
+                None,
+            ))
             .await
             .expect("failed to persist service");
 
@@ -599,14 +628,6 @@ mod service_registry_tests {
 
     mod is_system_service_tests {
         use super::*;
-        use crate::config::system::{
-            CheckpointSystemConfig, JobLifecycle, ServiceLifecycle, StartupState, SystemConfig,
-        };
-
-        fn registry_with_system_config(system_cfg: SystemConfig) -> ServiceRegistry {
-            let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
-            ServiceRegistry::new(storage, Some(system_cfg))
-        }
 
         #[test]
         fn returns_false_when_no_system_config() {
@@ -617,14 +638,8 @@ mod service_registry_tests {
         #[test]
         fn returns_false_when_service_not_in_system_config() {
             let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: None,
-                checkpoints: None,
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                ..Default::default()
             };
             let registry = registry_with_system_config(system_cfg);
 
@@ -634,14 +649,8 @@ mod service_registry_tests {
         #[test]
         fn returns_true_when_service_used_by_job_lifecycle() {
             let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: None,
-                checkpoints: None,
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                ..Default::default()
             };
             let registry = registry_with_system_config(system_cfg);
 
@@ -651,13 +660,8 @@ mod service_registry_tests {
         #[test]
         fn returns_true_when_service_used_by_checkpoints() {
             let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: None,
-                service_lifecycle: None,
-                checkpoints: Some(CheckpointSystemConfig {
-                    service_name: "checkpoint-db".to_string(),
-                    resource: "checkpoints".to_string(),
-                }),
+                checkpoints: Some(checkpoints("checkpoint-db")),
+                ..Default::default()
             };
             let registry = registry_with_system_config(system_cfg);
 
@@ -667,20 +671,10 @@ mod service_registry_tests {
         #[test]
         fn returns_true_when_service_used_by_multiple_components() {
             let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: Some(ServiceLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "services".to_string(),
-                }),
-                checkpoints: Some(CheckpointSystemConfig {
-                    service_name: "system-db".to_string(),
-                    resource: "checkpoints".to_string(),
-                }),
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                service_lifecycle: Some(service_lifecycle("system-db")),
+                checkpoints: Some(checkpoints("system-db")),
+                ..Default::default()
             };
             let registry = registry_with_system_config(system_cfg);
 
@@ -690,132 +684,44 @@ mod service_registry_tests {
 
     mod remove_system_service_tests {
         use super::*;
-        use crate::config::system::{JobLifecycle, ServiceLifecycle, StartupState, SystemConfig};
-
-        fn registry_with_system_config(system_cfg: SystemConfig) -> ServiceRegistry {
-            let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
-            ServiceRegistry::new(storage, Some(system_cfg))
-        }
 
         #[tokio::test]
-        async fn remove_service_rejects_system_service() {
+        async fn remove_service_respects_system_config() {
             let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: None,
-                checkpoints: None,
+                job_lifecycle: Some(job_lifecycle("system-db")),
+                service_lifecycle: Some(service_lifecycle("system-db")),
+                ..Default::default()
             };
             let mut registry = registry_with_system_config(system_cfg);
 
-            // Register the service first
-            let http_service = Service::Http(HttpConfig {
-                name: "system-db".to_string(),
-                host: "http://example.com".to_string(),
-                max_retries: None,
-                base_backoff_ms: None,
-                connection_timeout_sec: None,
-                timeout_sec: None,
-                tcp_keepalive_sec: None,
-            });
-            registry
-                .register_service(http_service)
-                .await
-                .expect("failed to register service");
+            // Register both system and non-system services
+            for name in ["system-db", "user-service"] {
+                registry
+                    .register_service(http_service(name))
+                    .await
+                    .expect("failed to register service");
+            }
 
-            // Attempt to remove - should fail
-            let result = registry.remove_service("system-db").await;
-            assert!(result.is_err());
-            let err_msg = result.unwrap_err().to_string();
+            // System service removal should fail with component names in error
+            let err_msg = registry
+                .remove_service("system-db")
+                .await
+                .unwrap_err()
+                .to_string();
             assert!(
-                err_msg.contains("cannot remove service") && err_msg.contains("system components"),
-                "unexpected error: {}",
+                err_msg.contains("cannot remove service")
+                    && err_msg.contains("job_lifecycle")
+                    && err_msg.contains("service_lifecycle"),
+                "expected system components in error, got: {}",
                 err_msg
             );
-        }
 
-        #[tokio::test]
-        async fn remove_service_succeeds_for_non_system_service() {
-            let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "system-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: None,
-                checkpoints: None,
-            };
-            let mut registry = registry_with_system_config(system_cfg);
-
-            // Register a non-system service
-            let http_service = Service::Http(HttpConfig {
-                name: "user-service".to_string(),
-                host: "http://example.com".to_string(),
-                max_retries: None,
-                base_backoff_ms: None,
-                connection_timeout_sec: None,
-                timeout_sec: None,
-                tcp_keepalive_sec: None,
-            });
+            // Non-system service removal should succeed
             registry
-                .register_service(http_service)
+                .remove_service("user-service")
                 .await
-                .expect("failed to register service");
-
-            // Remove should succeed
-            let result = registry.remove_service("user-service").await;
-            assert!(
-                result.is_ok(),
-                "should be able to remove non-system service"
-            );
-
-            // Verify it's gone
+                .expect("should remove non-system service");
             assert!(registry.service_definition("user-service").await.is_err());
-        }
-
-        #[tokio::test]
-        async fn remove_service_error_includes_component_names() {
-            let system_cfg = SystemConfig {
-                encryption_key_path: None,
-                job_lifecycle: Some(JobLifecycle {
-                    service_name: "multi-use-db".to_string(),
-                    resource: "jobs".to_string(),
-                    startup_state: StartupState::default(),
-                }),
-                service_lifecycle: Some(ServiceLifecycle {
-                    service_name: "multi-use-db".to_string(),
-                    resource: "services".to_string(),
-                }),
-                checkpoints: None,
-            };
-            let mut registry = registry_with_system_config(system_cfg);
-
-            let http_service = Service::Http(HttpConfig {
-                name: "multi-use-db".to_string(),
-                host: "http://example.com".to_string(),
-                max_retries: None,
-                base_backoff_ms: None,
-                connection_timeout_sec: None,
-                timeout_sec: None,
-                tcp_keepalive_sec: None,
-            });
-            registry
-                .register_service(http_service)
-                .await
-                .expect("failed to register service");
-
-            let result = registry.remove_service("multi-use-db").await;
-            assert!(result.is_err());
-            let err_msg = result.unwrap_err().to_string();
-            assert!(
-                err_msg.contains("job_lifecycle") && err_msg.contains("service_lifecycle"),
-                "error should list all components using the service: {}",
-                err_msg
-            );
         }
     }
 }
