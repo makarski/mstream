@@ -268,22 +268,20 @@ impl JobManager {
     }
 
     pub async fn list_services(&self) -> anyhow::Result<Vec<ServiceStatus>> {
-        let all_conf_services = self
-            .service_registry
-            .read()
-            .await
-            .all_service_definitions()
-            .await?;
+        let registry = self.service_registry.read().await;
+        let all_conf_services = registry.all_service_definitions().await?;
 
         let mut statuses = Vec::with_capacity(all_conf_services.len());
 
         for service in all_conf_services {
             let name = service.name();
             let used_by = self.job_store.get_dependent_jobs(&name).await?;
+            let is_system = registry.is_system_service(&name);
 
             statuses.push(ServiceStatus {
                 service,
                 used_by_jobs: used_by,
+                is_system,
             });
         }
 
@@ -337,7 +335,6 @@ impl JobManager {
 
         // acquire a write lock before checking for consumers to avoid race conditions
         let mut registry = self.service_registry.write().await;
-
         let jobs = self
             .job_store
             .get_dependent_jobs(service_name)
@@ -366,15 +363,17 @@ impl JobManager {
         let service = registry
             .service_definition(service_name)
             .await
-            .map_err(|_| JobManagerError::ServiceNotFound(service_name.to_string()))?;
+            .map_err(|e| JobManagerError::InternalError(e.to_string()))?;
         let used_by = self
             .job_store
-            .get_dependent_jobs(service_name)
+            .get_dependent_jobs(&service_name)
             .await
             .map_err(|e| JobManagerError::InternalError(e.to_string()))?;
+        let is_system = registry.is_system_service(service_name);
         Ok(ServiceStatus {
             service,
             used_by_jobs: used_by,
+            is_system,
         })
     }
 
@@ -453,6 +452,7 @@ pub struct ServiceStatus {
     #[serde(flatten)]
     pub service: Service,
     pub used_by_jobs: Vec<String>,
+    pub is_system: bool,
 }
 
 impl Masked for ServiceStatus {
@@ -460,6 +460,7 @@ impl Masked for ServiceStatus {
         ServiceStatus {
             service: self.service.masked(),
             used_by_jobs: self.used_by_jobs.clone(),
+            is_system: self.is_system,
         }
     }
 }
