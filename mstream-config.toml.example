@@ -70,6 +70,11 @@ resource = "mstream-services"
 service_name = "mongodb-source"
 resource = "mstream-checkpoints"
 
+# Optional: configure log buffer for /logs and /logs/stream endpoints
+[system.logs]
+buffer_capacity = 10000       # Max entries in ring buffer (default: 10000)
+stream_preload_count = 100    # Entries sent on SSE connect (default: 100)
+
 # Connector Configurations
 [[connectors]]
 enabled = true
