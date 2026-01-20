@@ -135,9 +135,14 @@ struct FieldVisitor {
     job_name: Option<String>,
 }
 
+/// Check if string is surrounded by double quotes
+fn is_quoted(s: &str) -> bool {
+    s.len() >= 2 && s.starts_with('"') && s.ends_with('"')
+}
+
 /// Strip surrounding quotes from Debug-formatted strings
 fn strip_debug_quotes(mut s: String) -> String {
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+    if is_quoted(&s) {
         s.pop();
         s.remove(0);
     }
