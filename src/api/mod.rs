@@ -12,22 +12,31 @@ use tracing::info;
 use crate::api::types::{
     CheckpointResponse, MaskedJson, Message, TransformTestRequest, TransformTestResponse,
 };
+use crate::config::system::LogsConfig;
 use crate::config::{Connector, Encoding, Service};
 use crate::job_manager::{JobManager, JobMetadata, error::JobManagerError};
+use crate::logs::LogBuffer;
 use crate::middleware::udf::rhai::{RhaiMiddleware, RhaiMiddlewareError};
 use crate::source::SourceEvent;
 
 pub(crate) mod error;
+pub(crate) mod logs;
 pub(crate) mod types;
 
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) job_manager: Arc<Mutex<JobManager>>,
+    pub(crate) log_buffer: LogBuffer,
+    pub(crate) logs_config: LogsConfig,
 }
 
 impl AppState {
-    pub fn new(jb: Arc<Mutex<JobManager>>) -> Self {
-        Self { job_manager: jb }
+    pub fn new(jb: Arc<Mutex<JobManager>>, log_buffer: LogBuffer, logs_config: LogsConfig) -> Self {
+        Self {
+            job_manager: jb,
+            log_buffer,
+            logs_config,
+        }
     }
 }
 
@@ -44,6 +53,8 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}", delete(remove_service))
         .route("/jobs/{name}/checkpoints", get(list_checkpoints))
         .route("/transform/run", post(transform_run))
+        .route("/logs", get(logs::get_logs))
+        .route("/logs/stream", get(logs::stream_logs))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);
@@ -70,7 +81,7 @@ async fn stop_job(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Message<()>>), JobManagerError> {
-    info!("stopping job: {}", name);
+    info!(job_name = %name, "stopping job");
     let mut jm = state.job_manager.lock().await;
 
     // Stop the job - will return JobNotFound if not found
@@ -90,7 +101,7 @@ async fn restart_job(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<(StatusCode, Json<Message<JobMetadata>>), JobManagerError> {
-    info!("restarting job: {}", name);
+    info!(job_name = %name, "restarting job");
     let mut jm = state.job_manager.lock().await;
 
     // Restart the job - will return JobNotFound if not found
@@ -110,7 +121,7 @@ async fn create_start_job(
     State(state): State<AppState>,
     Json(conn_cfg): Json<Connector>,
 ) -> Result<(StatusCode, Json<Message<JobMetadata>>), JobManagerError> {
-    info!("creating new job: {}", conn_cfg.name);
+    info!(job_name = %conn_cfg.name, "creating new job");
 
     let mut jm = state.job_manager.lock().await;
 

@@ -1,6 +1,6 @@
 [package]
 name = "mstream"
-version = "0.33.0"
+version = "0.34.0"
 edition = "2024"
 authors = ["Simon Makarski"]
 
@@ -16,7 +16,7 @@ anyhow = "1"
 tonic = { version = "0.13", features = ["tls-ring", "tls-webpki-roots"] }
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "signal"] }
 toml = "0.8.20"
-serde = "1"
+serde = { version = "1", features = ["rc"] }
 serde_derive = "1"
 serde_json = "1"
 log = "0.4"
@@ -26,7 +26,7 @@ prost = "0.13"
 prost-types = "0.13"
 rdkafka = { version = "0.37", features = ["ssl"] }
 futures = "0.3.31"
-tokio-stream = "0.1.17"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 reqwest = "0.12.15"
 rand = "0.9.0"
 thiserror = "2.0.12"
@@ -37,8 +37,9 @@ pprof = { version = "0.14", features = ["flamegraph", "protobuf", "protobuf-code
 sha2 = "0.10.9"
 chrono = { version = "0.4.42", features = ["serde"] }
 tracing = "0.1.43"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "parking_lot"] }
 tracing-appender = "0.2.4"
+parking_lot = "0.12"
 tokio-util = { version = "0.7.17", features = ["full"] }
 axum = "0.8.7"
 aes-gcm = "0.10.3"

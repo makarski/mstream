@@ -127,7 +127,7 @@ impl JobManager {
     pub async fn handle_job_exit(&mut self, state_change: JobStateChange) -> anyhow::Result<()> {
         let job_name = &state_change.job_name;
         if let Some(jc) = self.running_jobs.remove(job_name) {
-            warn!("handling exited job: {}", job_name);
+            warn!(job_name = %job_name, "handling exited job");
             jc.cancel_token.cancel();
         }
 
@@ -137,7 +137,7 @@ impl JobManager {
             metadata.service_deps.clear();
             self.job_store.save(metadata).await?;
         } else {
-            warn!("failed to find metadata for exited job: {}", job_name);
+            warn!(job_name = %job_name, "failed to find metadata for exited job");
         }
 
         Ok(())
@@ -155,20 +155,20 @@ impl JobManager {
             .ok(); // Ignore errors here since we already checked existence
 
         if let Some(jc) = self.running_jobs.remove(job_name) {
-            info!("stopping job: {}", job_name);
+            info!(job_name = %job_name, "stopping job");
             jc.cancel_token.cancel();
 
             // wait for the job to finish
             let (work_res, source_res) = tokio::join!(jc.work_handle, jc.source_handle);
             if let Err(err) = work_res {
-                error!("job work task panicked: {}: {}", err, job_name);
+                error!(job_name = %job_name, "job work task panicked: {}", err);
             }
 
             if let Err(err) = source_res {
-                error!("job source task panicked: {}: {}", err, job_name);
+                error!(job_name = %job_name, "job source task panicked: {}", err);
             }
 
-            info!("job stopped: {}", job_name);
+            info!(job_name = %job_name, "job stopped");
         }
 
         Ok(())
@@ -188,7 +188,7 @@ impl JobManager {
 
         for job in jobs {
             if let Err(err) = self.stop_job(&job.name).await {
-                error!("failed to stop job during reset '{}': {}", job.name, err);
+                error!(job_name = %job.name, "failed to stop job during reset: {}", err);
             }
         }
 
@@ -401,7 +401,7 @@ impl JobManager {
         checkpoint_cfg: &Option<CheckpointConnectorConfig>,
     ) -> Option<Checkpoint> {
         if !checkpoint_cfg.as_ref().map_or(false, |cfg| cfg.enabled) {
-            info!("checkpointing disabled for job: {}", job_name);
+            info!(job_name = %job_name, "checkpointing disabled for job");
             return None;
         }
 
@@ -417,11 +417,11 @@ impl JobManager {
             Ok(checkpoint) => Some(checkpoint),
             Err(err) => match err {
                 CheckpointerError::NotFound { job_name } => {
-                    warn!("no checkpoint found for job: {}", job_name);
+                    warn!(job_name = %job_name, "no checkpoint found for job");
                     None
                 }
                 _ => {
-                    error!("failed to load checkpoint for job '{}': {}", job_name, err);
+                    error!(job_name = %job_name, "failed to load checkpoint for job: {}", err);
                     None
                 }
             },
@@ -440,7 +440,7 @@ impl JobManager {
         {
             Ok(checkpoints) => checkpoints,
             Err(err) => {
-                error!("failed to load checkpoints for job '{}': {}", job_name, err);
+                error!(job_name = %job_name, "failed to load checkpoints for job: {}", err);
                 vec![]
             }
         }
