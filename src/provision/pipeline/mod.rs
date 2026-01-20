@@ -5,7 +5,7 @@ use tokio::{
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{Instrument, error, info, info_span, warn};
 
 use crate::{
     checkpoint::DynCheckpointer,
@@ -81,20 +81,24 @@ impl PipelineRuntime {
         let events_tx = self.events_tx.clone();
         let cancel_token = self.cancel_token.clone();
 
-        tokio::spawn(async move {
-            info!("spawning a listener for connector: {}", name);
+        let span = info_span!("source_listener", job_name = %name);
+        tokio::spawn(
+            async move {
+                info!("spawning source listener");
 
-            select! {
-                _ = cancel_token.cancelled() => {
-                    warn!("cancelling source listener for connector: {}", name);
-                }
-                res = source_provider.listen(events_tx) => {
-                    if let Err(err) = res {
-                        error!("source listener failed. connector: {}: {}", name, err)
+                select! {
+                    _ = cancel_token.cancelled() => {
+                        warn!("cancelling source listener");
+                    }
+                    res = source_provider.listen(events_tx) => {
+                        if let Err(err) = res {
+                            error!("source listener failed: {}", err)
+                        }
                     }
                 }
             }
-        })
+            .instrument(span),
+        )
     }
 
     fn do_work(
@@ -108,12 +112,12 @@ impl PipelineRuntime {
 
             let job_state = select! {
                 _ = self.cancel_token.cancelled() => {
-                    info!("cancelling job: {}", cnt_name);
+                    info!(job_name = %cnt_name, "cancelling job");
                     JobState::Stopped
                 }
                 res = eh.handle(self.events_rx) => {
                     if let Err(err) = res {
-                        error!("job {} failed: {}", cnt_name, err);
+                        error!(job_name = %cnt_name, "job failed: {}", err);
                     }
                     JobState::Failed
                 }

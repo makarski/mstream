@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use futures::future::try_join_all;
-use log::debug;
 use rdkafka::{
     ClientConfig,
     message::{Header, OwnedHeaders},
@@ -18,7 +17,6 @@ pub struct KafkaProducer {
 
 impl KafkaProducer {
     pub fn new(configs: &HashMap<String, String>) -> anyhow::Result<Self> {
-        debug!("Kafka configs: {:?}", configs);
         let mut cfg = ClientConfig::new();
         configs.iter().for_each(|(k, v)| {
             cfg.set(k, v);

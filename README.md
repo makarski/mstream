@@ -115,6 +115,16 @@ graph LR
 | `MSTREAM_ENC_KEY` | Hex-encoded AES-256 key for service encryption | — |
 | `RUST_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `info` |
 
+## Logs Configuration
+
+Configure the in-memory log buffer for the Logs API:
+
+```toml
+[system.logs]
+buffer_capacity = 10000       # Max entries in ring buffer (default: 10000)
+stream_preload_count = 100    # Entries sent on SSE connect (default: 100)
+```
+
 ## Management API
 
 REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
@@ -137,6 +147,30 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `POST` | `/services` | Create a new service |
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
+
+### Logs
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/logs` | Query log entries with optional filters |
+| `GET` | `/logs/stream` | SSE stream of live log entries |
+
+#### Query Parameters for `/logs`
+
+| Parameter | Description |
+|-----------|-------------|
+| `job_name` | Filter by job name |
+| `level` | Minimum log level (`trace`, `debug`, `info`, `warn`, `error`) |
+| `limit` | Maximum number of entries to return (default: 100) |
+| `since` | Only entries after this timestamp (RFC3339 format) |
+
+#### Query Parameters for `/logs/stream`
+
+| Parameter | Description |
+|-----------|-------------|
+| `job_name` | Filter by job name |
+| `level` | Minimum log level |
+| `initial` | Number of historical entries to send initially (default: 100) |
 
 ### Transform (Playground)
 

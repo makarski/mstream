@@ -1,14 +1,15 @@
 use std::{env, sync::Arc};
 
 use anyhow::Context;
-use log::{debug, warn};
 use tokio::{
     signal,
     sync::{Mutex, mpsc},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
-use crate::{api::AppState, job_manager::JobStateChange};
+use crate::{
+    api::AppState, config::system::LogsConfig, job_manager::JobStateChange, logs::LogBuffer,
+};
 
 mod encoding;
 mod http;
@@ -21,6 +22,7 @@ pub mod checkpoint;
 pub mod cmd;
 pub mod config;
 pub mod job_manager;
+pub mod logs;
 pub mod middleware;
 pub mod provision;
 pub mod pubsub;
@@ -30,8 +32,20 @@ pub mod ui;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path).with_context(|| "failed to load config")?;
-    debug!("config: {:?}", config);
+    let logs_config = config
+        .system
+        .as_ref()
+        .and_then(|s| s.logs.clone())
+        .unwrap_or_default();
+    let log_buffer = LogBuffer::new(logs_config.buffer_capacity);
+    run_app_with_log_buffer(config, log_buffer, logs_config).await
+}
 
+pub async fn run_app_with_log_buffer(
+    config: config::Config,
+    log_buffer: LogBuffer,
+    logs_config: LogsConfig,
+) -> anyhow::Result<()> {
     let api_port = env::var("MSTREAM_API_PORT")
         .ok()
         .and_then(|port_str| port_str.parse::<u16>().ok())
@@ -52,7 +66,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     };
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let api_app_state = AppState::new(shared_jm.clone());
+    let api_app_state = AppState::new(shared_jm.clone(), log_buffer, logs_config);
 
     tokio::spawn(async move {
         if let Err(err) = api::start_server(api_app_state, api_port).await {
@@ -70,7 +84,7 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
                 match res {
                     Some(state_change) => {
                         let job_name = state_change.job_name.clone();
-                        warn!("stream listener exited: {}", job_name);
+                        tracing::warn!(job_name = %job_name, "stream listener exited");
                         match shared_jm
                             .lock()
                             .await
@@ -78,10 +92,10 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
                             .await
                         {
                             Ok(_) => {
-                                info!("handled job exit for: {}", job_name);
+                                tracing::info!(job_name = %job_name, "handled job exit");
                             }
                             Err(err) => {
-                                error!("failed to handle job exit for {}: {}", job_name, err);
+                                tracing::error!(job_name = %job_name, "failed to handle job exit: {}", err);
                             }
                         }
                     }

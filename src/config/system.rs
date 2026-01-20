@@ -8,6 +8,36 @@ pub struct SystemConfig {
     pub job_lifecycle: Option<JobLifecycle>,
     pub service_lifecycle: Option<ServiceLifecycle>,
     pub checkpoints: Option<CheckpointSystemConfig>,
+    pub logs: Option<LogsConfig>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct LogsConfig {
+    /// Max entries in ring buffer (default: 10000)
+    #[serde(default = "LogsConfig::default_buffer_capacity")]
+    pub buffer_capacity: usize,
+    /// Entries sent on SSE connect (default: 100)
+    #[serde(default = "LogsConfig::default_stream_preload_count")]
+    pub stream_preload_count: usize,
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            buffer_capacity: Self::default_buffer_capacity(),
+            stream_preload_count: Self::default_stream_preload_count(),
+        }
+    }
+}
+
+impl LogsConfig {
+    fn default_buffer_capacity() -> usize {
+        10000
+    }
+
+    fn default_stream_preload_count() -> usize {
+        100
+    }
 }
 
 impl SystemConfig {

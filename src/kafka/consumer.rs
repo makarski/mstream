@@ -3,11 +3,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
-use log::{debug, error, info};
 use rdkafka::consumer::{Consumer, stream_consumer::StreamConsumer};
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::{ClientConfig, Message, Offset, TopicPartitionList};
 use tokio::sync::mpsc::Sender;
+
+use tracing::{debug, error, info};
 
 use crate::checkpoint::Checkpoint;
 use crate::config::Encoding;
@@ -38,7 +39,6 @@ impl KafkaConsumer {
         seek_back_secs: Option<u64>,
         checkpoint: Option<Checkpoint>,
     ) -> anyhow::Result<Self> {
-        debug!("kafka consumer configs: {:?}", configs);
         let mut cfg = ClientConfig::new();
 
         configs.iter().for_each(|(k, v)| {
@@ -87,8 +87,10 @@ impl KafkaConsumer {
         }
 
         info!(
-            "seeking to checkpoint: topic={}, partition={}, offset={}",
-            checkpoint.topic, checkpoint.partition, checkpoint.offset
+            topic = %checkpoint.topic,
+            partition = checkpoint.partition,
+            offset = checkpoint.offset,
+            "seeking to checkpoint"
         );
 
         let mut tpl = TopicPartitionList::new();
@@ -103,10 +105,10 @@ impl KafkaConsumer {
         self.consumer.assign(&tpl)?;
 
         info!(
-            "assigned to checkpoint offset: topic={}, partition={}, offset={}",
-            checkpoint.topic,
-            checkpoint.partition,
-            checkpoint.offset + 1
+            topic = %checkpoint.topic,
+            partition = checkpoint.partition,
+            offset = checkpoint.offset + 1,
+            "assigned to checkpoint offset"
         );
 
         Ok(true)
@@ -116,12 +118,12 @@ impl KafkaConsumer {
         let start_ts = match self.start_timestamp_ms {
             Some(ts) => ts,
             None => {
-                info!("no start timestamp provided.");
+                info!("no start timestamp provided");
                 return Ok(());
             }
         };
 
-        info!("seeking to timestamp: {}. {}", start_ts, self.topic);
+        info!(topic = %self.topic, timestamp = start_ts, "seeking to timestamp");
 
         let timeout = Duration::from_secs(10);
         let offsets_for_times = self.fetch_offsets_for_timestamp(start_ts, timeout)?;
@@ -231,10 +233,7 @@ impl EventSource for KafkaConsumer {
             // seek_to_timestamp uses assign() - don't call subscribe() as they are mutually exclusive
             self.seek_to_timestamp()
                 .context("failed to seek to timestamp")?;
-            info!(
-                "assigned to topic partitions via timestamp seek: {}",
-                self.topic
-            );
+            info!(topic = %self.topic, "assigned to topic partitions via timestamp seek");
         } else {
             let used_checkpoint = self
                 .seek_to_checkpoint()
@@ -242,17 +241,14 @@ impl EventSource for KafkaConsumer {
 
             if !used_checkpoint {
                 self.consumer.subscribe(&[&self.topic])?;
-                info!(
-                    "subscribed to topic: {} (no checkpoint, no timestamp)",
-                    self.topic
-                );
+                info!(topic = %self.topic, "subscribed to topic (no checkpoint, no timestamp)");
             }
         }
 
         loop {
             match self.consumer.recv().await {
                 Ok(msg) => {
-                    info!("received message from kafka topic: {}", msg.topic());
+                    debug!(topic = %msg.topic(), "received message from kafka");
                     let payload = msg.payload().context("failed to get payload")?;
 
                     let sender = events.clone();
@@ -290,7 +286,7 @@ impl EventSource for KafkaConsumer {
                     });
                 }
                 Err(err) => {
-                    error!("failed to receive message from kafka topic: {}", err);
+                    error!(topic = %self.topic, "failed to receive message from kafka: {}", err);
                 }
             }
         }

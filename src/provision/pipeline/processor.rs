@@ -2,9 +2,8 @@ use core::iter::Iterator;
 
 use anyhow::{anyhow, bail};
 use chrono::Utc;
-use log::{debug, error, info};
 use tokio::{sync::mpsc::Receiver, task::block_in_place};
-use tracing::warn;
+use tracing::{debug, error, info, warn};
 
 use crate::{
     checkpoint::Checkpoint,
@@ -31,14 +30,15 @@ impl EventHandler {
         if self.pipeline.is_batching_enabled {
             let batch_size = self.pipeline.batch_size;
             info!(
-                "starting batch EventHandler listener. connector: {}, batch size: {}",
-                self.pipeline.name, batch_size
+                job_name = %self.pipeline.name,
+                batch_size = batch_size,
+                "starting batch EventHandler listener"
             );
             self.run_batch_loop(events_rx, batch_size).await
         } else {
             info!(
-                "starting EventHandler listener. connector: {}",
-                self.pipeline.name
+                job_name = %self.pipeline.name,
+                "starting EventHandler listener"
             );
             self.run_event_loop(events_rx).await
         }
@@ -64,11 +64,11 @@ impl EventHandler {
                     })?;
 
                     if let Err(err) = self.process_event(event).await {
-                        error!("{}: failed to process event: {}", &self.pipeline.name, err)
+                        error!(job_name = %self.pipeline.name, "failed to process event: {}", err)
                     }
                 }
                 None => {
-                    info!("source listener exited. connector: {}", self.pipeline.name);
+                    info!(job_name = %self.pipeline.name, "source listener exited");
                     break;
                 }
             }
@@ -109,8 +109,8 @@ impl EventHandler {
 
             if let Err(err) = self.process_event_batch(&mut batch).await {
                 error!(
-                    "{}: failed to process batch event: {}",
-                    &self.pipeline.name, err
+                    job_name = %self.pipeline.name,
+                    "failed to process batch event: {}", err
                 )
             }
         }
@@ -148,7 +148,7 @@ impl EventHandler {
         );
 
         if let Err(err) = self.process_event(batch_event).await {
-            error!("{}: failed to process event: {}", &self.pipeline.name, err)
+            error!(job_name = %self.pipeline.name, "failed to process event: {}", err)
         }
 
         Ok(())
@@ -187,10 +187,10 @@ impl EventHandler {
                 }
                 Err(err) => {
                     error!(
-                        "sink: {}, resource: {}, schema: {:?}, {}",
-                        &sink_def.config.service_name,
-                        &sink_def.config.resource,
-                        &sink_def.config.schema_id,
+                        job_name = %self.pipeline.name,
+                        "failed to encode for sink {}/{}: {}",
+                        sink_def.config.service_name,
+                        sink_def.config.resource,
                         err
                     );
                     all_sinks_succeeded = false;
@@ -206,17 +206,20 @@ impl EventHandler {
             {
                 Ok(message) => {
                     info!(
-                        "published a message to: {}:{}. stream: {}. resource: {}",
+                        job_name = %self.pipeline.name,
+                        "published to {}/{}: {}",
                         sink_def.config.service_name,
-                        message,
-                        &self.pipeline.name,
                         sink_def.config.resource,
+                        message
                     );
                 }
                 Err(err) => {
                     error!(
-                        "failed to publish message to sink: {}:{}, {:#}",
-                        &sink_def.config.service_name, &sink_def.config.resource, err
+                        job_name = %self.pipeline.name,
+                        "failed to publish to {}/{}: {:#}",
+                        sink_def.config.service_name,
+                        sink_def.config.resource,
+                        err
                     );
                     all_sinks_succeeded = false;
                     continue;
@@ -245,8 +248,8 @@ impl EventHandler {
             }
             None => {
                 warn!(
-                    "checkpointing: missing cursor in source event for connector: {}",
-                    self.pipeline.name
+                    job_name = %self.pipeline.name,
+                    "checkpointing: missing cursor in source event"
                 );
                 Ok(())
             }
