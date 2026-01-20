@@ -1,12 +1,11 @@
 use std::{env, sync::Arc};
 
 use anyhow::Context;
-use log::warn;
 use tokio::{
     signal,
     sync::{Mutex, mpsc},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     api::AppState, config::system::LogsConfig, job_manager::JobStateChange, logs::LogBuffer,

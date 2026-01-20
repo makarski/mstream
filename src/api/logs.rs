@@ -111,27 +111,24 @@ pub async fn stream_logs(
         .initial
         .unwrap_or(state.logs_config.stream_preload_count);
 
-    // Get initial historical entries
-    let initial_logs = state.log_buffer.get_recent(initial_count, &filter);
-
     // Subscribe to live updates
     let receiver = state.log_buffer.subscribe();
 
-    // Clone filter for the stream closure
-    let stream_filter = query.to_filter();
+    // Get initial historical entries
+    let initial_logs = state.log_buffer.get_recent(initial_count, &filter);
 
     // Create stream that first yields initial logs, then live updates
-    let initial_stream = tokio_stream::iter(initial_logs.into_iter().map(|entry| {
-        let json = serde_json::to_string(&entry).unwrap_or_default();
-        Ok(Event::default().data(json))
+    let initial_stream = tokio_stream::iter(initial_logs.into_iter().filter_map(|entry| {
+        serde_json::to_string(&entry)
+            .ok()
+            .map(|json| Ok(Event::default().data(json)))
     }));
 
     let live_stream = BroadcastStream::new(receiver).filter_map(move |result| {
         match result {
-            Ok(entry) if stream_filter.matches(&entry) => {
-                let json = serde_json::to_string(&entry).unwrap_or_default();
-                Some(Ok(Event::default().data(json)))
-            }
+            Ok(entry) if filter.matches(&entry) => serde_json::to_string(&entry)
+                .ok()
+                .map(|json| Ok(Event::default().data(json))),
             Ok(_) => None,  // Filtered out
             Err(_) => None, // Lagged, skip
         }

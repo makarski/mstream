@@ -110,9 +110,7 @@ where
         if visitor.job_name.is_some() {
             let mut extensions = span.extensions_mut();
             if let Some(fields) = extensions.get_mut::<SpanFields>() {
-                if visitor.job_name.is_some() {
-                    fields.job_name = visitor.job_name;
-                }
+                fields.job_name = visitor.job_name;
             } else {
                 extensions.insert(SpanFields {
                     job_name: visitor.job_name,
