@@ -54,16 +54,16 @@ impl LogsQuery {
             filter = filter.with_job_name(job_name);
         }
 
-        if let Some(ref level_str) = self.level {
-            if let Some(level) = LogLevel::from_str(level_str) {
-                filter = filter.with_min_level(level);
-            }
+        if let Some(level) = self.level.as_ref().and_then(|s| LogLevel::from_str(s)) {
+            filter = filter.with_min_level(level);
         }
 
-        if let Some(ref since_str) = self.since {
-            if let Ok(since) = since_str.parse::<DateTime<Utc>>() {
-                filter = filter.with_since(since);
-            }
+        if let Some(since) = self
+            .since
+            .as_ref()
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        {
+            filter = filter.with_since(since);
         }
 
         filter

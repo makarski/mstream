@@ -187,29 +187,18 @@ impl LogFilter {
 
     /// Check if an entry matches this filter
     pub fn matches(&self, entry: &LogEntry) -> bool {
-        // Check job_name filter
-        if let Some(ref job_name) = self.job_name {
-            match &entry.job_name {
-                Some(entry_job) if entry_job == job_name => {}
-                _ => return false,
-            }
-        }
+        let job_matches = self
+            .job_name
+            .as_ref()
+            .map_or(true, |name| entry.job_name.as_ref() == Some(name));
 
-        // Check level filter
-        if let Some(min_level) = self.min_level {
-            if !entry.level.meets_minimum(min_level) {
-                return false;
-            }
-        }
+        let level_matches = self
+            .min_level
+            .map_or(true, |min| entry.level.meets_minimum(min));
 
-        // Check since filter
-        if let Some(since) = self.since {
-            if entry.timestamp < since {
-                return false;
-            }
-        }
+        let since_matches = self.since.map_or(true, |since| entry.timestamp >= since);
 
-        true
+        job_matches && level_matches && since_matches
     }
 }
 

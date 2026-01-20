@@ -65,17 +65,18 @@ mod profiler {
     }
 
     pub fn flush(guard: Option<ProfilerGuard<'static>>) {
-        if let Some(guard) = guard {
-            if let Ok(report) = guard.report().build() {
-                if let Ok(mut file) = File::create("profile.svg") {
-                    let _ = report.flamegraph(&mut file);
-                }
+        let Some(guard) = guard else { return };
+        let Ok(report) = guard.report().build() else {
+            return;
+        };
 
-                if let Ok(profile) = report.pprof() {
-                    if let Ok(mut file) = File::create("profile.pb") {
-                        let _ = profile.write_to_writer(&mut file);
-                    }
-                }
+        if let Ok(mut file) = File::create("profile.svg") {
+            let _ = report.flamegraph(&mut file);
+        }
+
+        if let Ok(profile) = report.pprof() {
+            if let Ok(mut file) = File::create("profile.pb") {
+                let _ = profile.write_to_writer(&mut file);
             }
         }
     }
