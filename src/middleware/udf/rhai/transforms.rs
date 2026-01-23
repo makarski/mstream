@@ -40,12 +40,17 @@ enum Numeric {
 }
 
 impl Numeric {
-    /// Try to extract a numeric value from a Dynamic
+    /// Try to extract a numeric value from a Dynamic.
+    /// Returns None for non-numeric values and NaN floats.
     fn from_dynamic(val: &Dynamic) -> Option<Self> {
-        val.as_float()
-            .ok()
-            .map(Numeric::Float)
-            .or_else(|| val.as_int().ok().map(Numeric::Int))
+        if let Ok(f) = val.as_float() {
+            // Filter out NaN to prevent propagation in comparisons
+            if f.is_nan() {
+                return None;
+            }
+            return Some(Numeric::Float(f));
+        }
+        val.as_int().ok().map(Numeric::Int)
     }
 
     /// Convert to f64 for comparisons
@@ -83,7 +88,17 @@ impl SumAccumulator {
 
     fn add(&mut self, num: Numeric) {
         match num {
-            Numeric::Int(i) => self.int_sum += i,
+            Numeric::Int(i) => {
+                match self.int_sum.checked_add(i) {
+                    Some(sum) => self.int_sum = sum,
+                    None => {
+                        // Overflow, switch to float
+                        self.has_float = true;
+                        self.float_sum += self.int_sum as f64 + i as f64;
+                        self.int_sum = 0; // reset int sum
+                    }
+                }
+            }
             Numeric::Float(f) => {
                 self.has_float = true;
                 self.float_sum += f;
@@ -258,18 +273,30 @@ fn group_items(
                     .entry(key_str.into())
                     .or_insert_with(|| Dynamic::from(Array::new()));
 
-                if let Some(mut arr) = group.write_lock::<Array>() {
-                    arr.push(item.clone());
-                }
+                let type_name = group.type_name().to_string();
+                let mut arr = group.write_lock::<Array>().ok_or_else(|| {
+                    Box::new(EvalAltResult::ErrorMismatchDataType(
+                        "Array".into(),
+                        type_name,
+                        rhai::Position::NONE,
+                    ))
+                })?;
+                arr.push(item.clone());
             }
             GroupMode::Count => {
                 let count = result
                     .entry(key_str.into())
                     .or_insert_with(|| Dynamic::from_int(0));
 
-                if let Ok(n) = count.as_int() {
-                    *count = Dynamic::from_int(n + 1);
-                }
+                let type_name = count.type_name().to_string();
+                let n = count.as_int().map_err(|_| {
+                    Box::new(EvalAltResult::ErrorMismatchDataType(
+                        "i64".into(),
+                        type_name,
+                        rhai::Position::NONE,
+                    ))
+                })?;
+                *count = Dynamic::from_int(n + 1);
             }
         }
     }
@@ -376,8 +403,8 @@ fn unique_by_key(
 
     for item in arr {
         let key: Dynamic = key_fn.call_within_context(ctx, (item.clone(),))?;
-        let dominated = !seen.insert(format!("{:?}", key));
-        if !dominated {
+        let is_duplicate = !seen.insert(key.to_string());
+        if !is_duplicate {
             result.push(item);
         }
     }
@@ -399,7 +426,7 @@ fn register_array_ops(engine: &mut Engine) {
     engine.register_fn("unique", |arr: Array| -> Array {
         let mut seen: HashSet<String> = HashSet::new();
         arr.into_iter()
-            .filter(|item| seen.insert(format!("{:?}", item)))
+            .filter(|item| seen.insert(item.to_string()))
             .collect()
     });
 

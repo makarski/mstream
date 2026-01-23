@@ -43,7 +43,9 @@ pub(super) fn mask_year_only(input: Dynamic) -> Dynamic {
 
 /// Mask a DateTime to January 1st of the same year
 fn mask_to_year_start(dt: DateTime<Utc>) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).unwrap()
+    Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0)
+        .earliest()
+        .unwrap_or(dt)
 }
 
 /// Try to parse and mask a string date (RFC3339 or YYYY-MM-DD)
