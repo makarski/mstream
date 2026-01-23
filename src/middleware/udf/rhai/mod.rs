@@ -99,6 +99,8 @@ use rhai::{AST, Dynamic};
 use tokio::task::block_in_place;
 
 pub mod convert;
+pub(crate) mod masks;
+pub(crate) mod transforms;
 
 /// The required name for the transformation function in Rhai scripts
 const UDF_NAME: &str = "transform";
@@ -402,10 +404,13 @@ impl RhaiMiddleware {
 
         // Register utilities
         engine.register_fn("timestamp_ms", Self::timestamp_ms);
-        engine.register_fn("hash_sha256", Self::hash_sha256);
-        engine.register_fn("mask_email", Self::mask_email);
-        engine.register_fn("mask_phone", Self::mask_phone);
-        engine.register_fn("mask_year_only", Self::mask_year_only);
+        engine.register_fn("hash_sha256", masks::hash_sha256);
+        engine.register_fn("mask_email", masks::mask_email);
+        engine.register_fn("mask_phone", masks::mask_phone);
+        engine.register_fn("mask_year_only", masks::mask_year_only);
+
+        // Register transformation functions (sum, avg, min, max, group_by, etc.)
+        transforms::register_transform_functions(engine);
     }
 
     fn timestamp_ms() -> i64 {
@@ -417,90 +422,6 @@ impl RhaiMiddleware {
                 0
             }
         }
-    }
-
-    fn hash_sha256(input: rhai::Dynamic) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(input.to_string());
-        format!("{:x}", hasher.finalize())
-    }
-
-    fn mask_email(email: &str) -> String {
-        let parts: Vec<&str> = email.split('@').collect();
-        if parts.len() != 2 {
-            return email.to_string();
-        }
-        let local = parts[0];
-        let domain = parts[1];
-        if local.len() <= 1 {
-            format!("*@{}", domain)
-        } else {
-            let first_char = local.chars().next().unwrap();
-            format!("{}***@{}", first_char, domain)
-        }
-    }
-
-    fn mask_phone(phone: &str) -> String {
-        let len = phone.len();
-        if len <= 4 {
-            return phone.to_string();
-        }
-        let visible = &phone[len - 4..];
-        let masked_len = len - 4;
-        let masked = "*".repeat(masked_len);
-        format!("{}{}", masked, visible)
-    }
-
-    fn mask_year_only(input: rhai::Dynamic) -> rhai::Dynamic {
-        use chrono::{DateTime, Datelike, TimeZone, Utc};
-        use rhai::Map;
-
-        // Helper to mask a DateTime to Jan 1st
-        let mask_date = |dt: DateTime<Utc>| -> DateTime<Utc> {
-            Utc.with_ymd_and_hms(dt.year(), 1, 1, 0, 0, 0).unwrap()
-        };
-
-        // Case 1: Input is a string
-        if let Ok(date_str) = input.clone().into_string() {
-            // Try parsing as RFC3339 / ISO8601
-            if let Ok(dt) = DateTime::parse_from_rfc3339(&date_str) {
-                let masked = mask_date(dt.with_timezone(&Utc));
-                // Return in same format (RFC3339)
-                return masked.to_rfc3339().into();
-            }
-            // Fallback for simple YYYY-MM-DD
-            if let Ok(dt) = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d") {
-                return format!("{}-01-01", dt.format("%Y")).into();
-            }
-            return input;
-        }
-
-        // Case 2: Input is a Map (MongoDB EJSON)
-        if let Some(map) = input.clone().try_cast::<Map>() {
-            if let Some(inner) = map.get("$date").and_then(|v| v.clone().try_cast::<Map>()) {
-                if let Some(millis_str) = inner
-                    .get("$numberLong")
-                    .and_then(|v| v.clone().into_string().ok())
-                {
-                    if let Ok(millis) = millis_str.parse::<i64>() {
-                        if let Some(dt) = Utc.timestamp_millis_opt(millis).single() {
-                            let masked = mask_date(dt);
-                            let new_millis = masked.timestamp_millis();
-
-                            // Reconstruct EJSON
-                            let mut new_inner = Map::new();
-                            new_inner.insert("$numberLong".into(), new_millis.to_string().into());
-                            let mut new_map = Map::new();
-                            new_map.insert("$date".into(), new_inner.into());
-                            return new_map.into();
-                        }
-                    }
-                }
-            }
-        }
-
-        input
     }
 
     /// Validates that the script defines exactly one transform function with correct signature
@@ -785,6 +706,30 @@ mod tests {
             assert_eq!(result.raw_bytes, binary_data);
         }
         */
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_parse_int_stdlib() {
+            let temp_dir = TempDir::new().unwrap();
+            let script_content = r#"
+                fn transform(input, attributes) {
+                    let num = parse_int("42");
+                    result(num)
+                }
+            "#;
+            let script_path = create_test_script(&temp_dir, "parse_int.rhai", script_content);
+
+            let mut middleware =
+                RhaiMiddleware::new(script_path, "parse_int.rhai".to_string()).unwrap();
+
+            let event = SourceEvent {
+                raw_bytes: b"\"test\"".to_vec(),
+                attributes: None,
+                ..Default::default()
+            };
+
+            let result = middleware.transform(event).await;
+            assert!(result.is_ok(), "parse_int should work: {:?}", result.err());
+        }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_result_with_only_data() {
