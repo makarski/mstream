@@ -387,7 +387,12 @@ impl RhaiMiddleware {
             .register_type_with_name::<LazyBsonDocument>("BsonDocument")
             .register_indexer_get(LazyBsonDocument::get)
             .register_indexer_set(LazyBsonDocument::set)
-            .register_fn("remove", LazyBsonDocument::remove);
+            .register_fn("remove", LazyBsonDocument::remove)
+            .register_fn("contains", LazyBsonDocument::contains)
+            .register_fn("keys", LazyBsonDocument::keys)
+            .register_fn("values", LazyBsonDocument::values)
+            .register_fn("len", LazyBsonDocument::len)
+            .register_fn("is_empty", LazyBsonDocument::is_empty);
 
         engine.register_type::<TransformResult>();
 

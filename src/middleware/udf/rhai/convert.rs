@@ -98,7 +98,7 @@ impl RhaiEncodingExt for Encoding {
                 if data.is::<LazyBsonDocument>() {
                     let lazy = data.cast::<LazyBsonDocument>();
                     match lazy.state {
-                        LazyBsonState::Raw(raw) => return Ok(raw.as_bytes().to_vec()),
+                        LazyBsonState::Raw { doc, .. } => return Ok(doc.as_bytes().to_vec()),
                         LazyBsonState::Materialized(map) => {
                             // if modified we serialize the map
                             // and reuse BsonConverter logic
@@ -198,7 +198,7 @@ impl Encoding {
                     if item.is::<LazyBsonDocument>() {
                         let lazy = item.cast::<LazyBsonDocument>();
                         match lazy.state {
-                            LazyBsonState::Raw(raw) => {
+                            LazyBsonState::Raw { doc: raw, .. } => {
                                 writer
                                     .add_item_with(|buf| {
                                         use std::io::Write;
@@ -331,7 +331,7 @@ impl TryFrom<Dynamic> for BsonConverter {
             Bson::String(s.to_string())
         } else if let Some(lazy) = dynamic.clone().try_cast::<LazyBsonDocument>() {
             match &lazy.state {
-                LazyBsonState::Raw(raw) => {
+                LazyBsonState::Raw { doc: raw, .. } => {
                     let doc =
                         bson::from_slice(raw.as_bytes()).map_err(ConvertError::BsonDecodeError)?;
                     Bson::Document(doc)
@@ -427,7 +427,10 @@ impl From<Option<&HashMap<String, String>>> for RhaiMap {
 
 #[derive(Clone, Debug)]
 pub enum LazyBsonState {
-    Raw(Arc<RawDocumentBuf>),
+    Raw {
+        doc: Arc<RawDocumentBuf>,
+        len: usize,
+    },
     Materialized(Map),
 }
 
@@ -445,26 +448,36 @@ impl std::fmt::Display for LazyBsonDocument {
 impl LazyBsonDocument {
     pub fn new(bytes: Vec<u8>) -> Result<Self, mongodb::bson::raw::Error> {
         let doc = RawDocumentBuf::from_bytes(bytes)?;
+        let len = doc.iter().count();
         Ok(Self {
-            state: LazyBsonState::Raw(Arc::new(doc)),
+            state: LazyBsonState::Raw {
+                doc: Arc::new(doc),
+                len,
+            },
         })
+    }
+
+    fn raw_get(doc: &RawDocumentBuf, key: &str) -> Result<Option<Dynamic>, Box<EvalAltResult>> {
+        match doc.get(key) {
+            Ok(Some(raw_val)) => convert_raw_to_dynamic(raw_val).map(Some),
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("BSON error: {}", e).into()),
+        }
     }
 
     pub fn get(&mut self, key: &str) -> Result<Dynamic, Box<EvalAltResult>> {
         match &self.state {
-            LazyBsonState::Raw(raw) => match raw.get(key) {
-                Ok(Some(raw_val)) => convert_raw_to_dynamic(raw_val),
-                Ok(None) => Ok(Dynamic::UNIT),
-                Err(e) => Err(format!("BSON error: {}", e).into()),
-            },
+            LazyBsonState::Raw { doc, .. } => {
+                Self::raw_get(doc, key).map(|opt| opt.unwrap_or(Dynamic::UNIT))
+            }
             LazyBsonState::Materialized(map) => Ok(map.get(key).cloned().unwrap_or(Dynamic::UNIT)),
         }
     }
 
     pub fn set(&mut self, key: &str, value: Dynamic) -> Result<(), Box<EvalAltResult>> {
         // If Raw, materialize first (Copy-on-Write)
-        if let LazyBsonState::Raw(raw) = &self.state {
-            let map = convert_raw_to_map(raw)?;
+        if let LazyBsonState::Raw { doc, .. } = &self.state {
+            let map = convert_raw_to_map(doc)?;
             self.state = LazyBsonState::Materialized(map);
         }
 
@@ -478,8 +491,8 @@ impl LazyBsonDocument {
     }
 
     pub fn remove(&mut self, key: &str) -> Result<Dynamic, Box<EvalAltResult>> {
-        if let LazyBsonState::Raw(raw) = &self.state {
-            let map = convert_raw_to_map(raw)?;
+        if let LazyBsonState::Raw { doc, .. } = &self.state {
+            let map = convert_raw_to_map(doc)?;
             self.state = LazyBsonState::Materialized(map);
         }
 
@@ -487,6 +500,71 @@ impl LazyBsonDocument {
             Ok(map.remove(key).unwrap_or(Dynamic::UNIT))
         } else {
             unreachable!()
+        }
+    }
+
+    pub fn contains(&self, key: &str) -> Result<bool, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw { doc, .. } => Self::raw_get(doc, key).map(|opt| opt.is_some()),
+            LazyBsonState::Materialized(map) => Ok(map.contains_key(key)),
+        }
+    }
+
+    fn collect_from_raw<F, T>(
+        &self,
+        raw: &RawDocumentBuf,
+        f: F,
+    ) -> Result<Vec<T>, Box<EvalAltResult>>
+    where
+        F: Fn(&str, RawBsonRef) -> Result<T, Box<EvalAltResult>>,
+    {
+        raw.iter()
+            .map(|elem| {
+                let (key, val) = elem.map_err(|e| format!("BSON error: {}", e))?;
+                f(key, val)
+            })
+            .collect()
+    }
+
+    pub fn keys(&self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw { doc, .. } => {
+                self.collect_from_raw(doc, |key, _| Ok(Dynamic::from(key.to_string())))
+            }
+            LazyBsonState::Materialized(map) => {
+                Ok(map.keys().map(|k| Dynamic::from(k.to_string())).collect())
+            }
+        }
+    }
+
+    pub fn values(&self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw { doc, .. } => {
+                self.collect_from_raw(doc, |_, val| convert_raw_to_dynamic(val))
+            }
+            LazyBsonState::Materialized(map) => Ok(map.values().cloned().collect()),
+        }
+    }
+
+    /// Returns the number of fields in the document.
+    ///
+    /// This is O(1) for both raw and materialized states. The element count is
+    /// cached during construction for raw BSON documents since the BSON format
+    /// only stores byte size, not element count.
+    pub fn len(&self) -> Result<i64, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw { len, .. } => Ok(*len as i64),
+            LazyBsonState::Materialized(map) => Ok(map.len() as i64),
+        }
+    }
+
+    /// Returns true if the document has no fields.
+    ///
+    /// This is O(1) since we use the cached element count.
+    pub fn is_empty(&self) -> Result<bool, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw { len, .. } => Ok(*len == 0),
+            LazyBsonState::Materialized(map) => Ok(map.is_empty()),
         }
     }
 }
@@ -514,8 +592,12 @@ fn convert_raw_to_dynamic(raw: RawBsonRef) -> Result<Dynamic, Box<EvalAltResult>
         }
         RawBsonRef::Document(v) => {
             let buf = v.to_raw_document_buf();
+            let len = buf.iter().count();
             Ok(Dynamic::from(LazyBsonDocument {
-                state: LazyBsonState::Raw(Arc::new(buf)),
+                state: LazyBsonState::Raw {
+                    doc: Arc::new(buf),
+                    len,
+                },
             }))
         }
         RawBsonRef::Boolean(v) => Ok(Dynamic::from(v)),
@@ -544,6 +626,7 @@ fn convert_raw_to_dynamic(raw: RawBsonRef) -> Result<Dynamic, Box<EvalAltResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mongodb::bson::doc;
 
     #[test]
     fn test_rhai_map_conversion() {
@@ -558,5 +641,141 @@ mod tests {
 
         let empty_map = RhaiMap::from(None);
         assert!(empty_map.0.is_empty());
+    }
+
+    fn create_test_bson_document() -> LazyBsonDocument {
+        let bson_doc = doc! {
+            "name": "Alice",
+            "age": 30,
+            "email": "alice@example.com"
+        };
+        let bytes = bson::to_vec(&bson_doc).unwrap();
+        LazyBsonDocument::new(bytes).unwrap()
+    }
+
+    fn create_empty_bson_document() -> LazyBsonDocument {
+        let bson_doc = doc! {};
+        let bytes = bson::to_vec(&bson_doc).unwrap();
+        LazyBsonDocument::new(bytes).unwrap()
+    }
+
+    #[test]
+    fn test_lazy_bson_document_contains_existing_field() {
+        let doc = create_test_bson_document();
+        assert!(doc.contains("name").unwrap());
+        assert!(doc.contains("age").unwrap());
+        assert!(doc.contains("email").unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_contains_missing_field() {
+        let doc = create_test_bson_document();
+        assert!(!doc.contains("nonexistent").unwrap());
+        assert!(!doc.contains("address").unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_keys() {
+        let doc = create_test_bson_document();
+        let keys = doc.keys().unwrap();
+        assert_eq!(keys.len(), 3);
+
+        let key_strings: Vec<String> = keys
+            .iter()
+            .map(|k| k.clone().into_string().unwrap())
+            .collect();
+        assert!(key_strings.contains(&"name".to_string()));
+        assert!(key_strings.contains(&"age".to_string()));
+        assert!(key_strings.contains(&"email".to_string()));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_keys_empty() {
+        let doc = create_empty_bson_document();
+        let keys = doc.keys().unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_values() {
+        let doc = create_test_bson_document();
+        let values = doc.values().unwrap();
+        assert_eq!(values.len(), 3);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_values_after_materialization() {
+        let mut doc = create_test_bson_document();
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+
+        let values = doc.values().unwrap();
+        assert_eq!(values.len(), 4);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_len() {
+        let doc = create_test_bson_document();
+        assert_eq!(doc.len().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_len_empty() {
+        let doc = create_empty_bson_document();
+        assert_eq!(doc.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_is_empty() {
+        let doc = create_test_bson_document();
+        assert!(!doc.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_is_empty_true() {
+        let doc = create_empty_bson_document();
+        assert!(doc.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_contains_after_materialization() {
+        let mut doc = create_test_bson_document();
+        // Trigger materialization by setting a value
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+
+        // contains should still work after materialization
+        assert!(doc.contains("name").unwrap());
+        assert!(doc.contains("new_field").unwrap());
+        assert!(!doc.contains("nonexistent").unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_keys_after_materialization() {
+        let mut doc = create_test_bson_document();
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+
+        let keys = doc.keys().unwrap();
+        assert_eq!(keys.len(), 4);
+
+        let key_strings: Vec<String> = keys
+            .iter()
+            .map(|k| k.clone().into_string().unwrap())
+            .collect();
+        assert!(key_strings.contains(&"new_field".to_string()));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_len_after_materialization() {
+        let mut doc = create_test_bson_document();
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+        assert_eq!(doc.len().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_is_empty_after_materialization() {
+        let mut doc = create_empty_bson_document();
+        assert!(doc.is_empty().unwrap());
+
+        doc.set("field", Dynamic::from("value")).unwrap();
+        assert!(!doc.is_empty().unwrap());
     }
 }
