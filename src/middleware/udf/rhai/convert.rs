@@ -489,6 +489,66 @@ impl LazyBsonDocument {
             unreachable!()
         }
     }
+
+    pub fn contains(&self, key: &str) -> bool {
+        match &self.state {
+            LazyBsonState::Raw(raw) => raw.get(key).ok().flatten().is_some(),
+            LazyBsonState::Materialized(map) => map.contains_key(key),
+        }
+    }
+
+    fn collect_from_raw<F, T>(
+        &self,
+        raw: &RawDocumentBuf,
+        f: F,
+    ) -> Result<Vec<T>, Box<EvalAltResult>>
+    where
+        F: Fn(&str, RawBsonRef) -> Result<T, Box<EvalAltResult>>,
+    {
+        raw.iter()
+            .map(|elem| {
+                let (key, val) = elem.map_err(|e| format!("BSON error: {}", e))?;
+                f(key, val)
+            })
+            .collect()
+    }
+
+    pub fn keys(&self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw(raw) => {
+                self.collect_from_raw(raw, |key, _| Ok(Dynamic::from(key.to_string())))
+            }
+            LazyBsonState::Materialized(map) => {
+                Ok(map.keys().map(|k| Dynamic::from(k.to_string())).collect())
+            }
+        }
+    }
+
+    pub fn values(&mut self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw(raw) => {
+                self.collect_from_raw(raw, |_, val| convert_raw_to_dynamic(val))
+            }
+            LazyBsonState::Materialized(map) => Ok(map.values().cloned().collect()),
+        }
+    }
+
+    pub fn len(&self) -> Result<i64, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw(raw) => {
+                let count = raw.iter().count();
+                Ok(count as i64)
+            }
+            LazyBsonState::Materialized(map) => Ok(map.len() as i64),
+        }
+    }
+
+    pub fn is_empty(&self) -> Result<bool, Box<EvalAltResult>> {
+        match &self.state {
+            LazyBsonState::Raw(raw) => Ok(raw.iter().next().is_none()),
+            LazyBsonState::Materialized(map) => Ok(map.is_empty()),
+        }
+    }
 }
 
 fn convert_raw_to_map(raw: &RawDocumentBuf) -> Result<Map, Box<EvalAltResult>> {
@@ -544,6 +604,7 @@ fn convert_raw_to_dynamic(raw: RawBsonRef) -> Result<Dynamic, Box<EvalAltResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mongodb::bson::doc;
 
     #[test]
     fn test_rhai_map_conversion() {
@@ -558,5 +619,132 @@ mod tests {
 
         let empty_map = RhaiMap::from(None);
         assert!(empty_map.0.is_empty());
+    }
+
+    fn create_test_bson_document() -> LazyBsonDocument {
+        let bson_doc = doc! {
+            "name": "Alice",
+            "age": 30,
+            "email": "alice@example.com"
+        };
+        let bytes = bson::to_vec(&bson_doc).unwrap();
+        LazyBsonDocument::new(bytes).unwrap()
+    }
+
+    fn create_empty_bson_document() -> LazyBsonDocument {
+        let bson_doc = doc! {};
+        let bytes = bson::to_vec(&bson_doc).unwrap();
+        LazyBsonDocument::new(bytes).unwrap()
+    }
+
+    #[test]
+    fn test_lazy_bson_document_contains_existing_field() {
+        let doc = create_test_bson_document();
+        assert!(doc.contains("name"));
+        assert!(doc.contains("age"));
+        assert!(doc.contains("email"));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_contains_missing_field() {
+        let doc = create_test_bson_document();
+        assert!(!doc.contains("nonexistent"));
+        assert!(!doc.contains("address"));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_keys() {
+        let doc = create_test_bson_document();
+        let keys = doc.keys().unwrap();
+        assert_eq!(keys.len(), 3);
+
+        let key_strings: Vec<String> = keys
+            .iter()
+            .map(|k| k.clone().into_string().unwrap())
+            .collect();
+        assert!(key_strings.contains(&"name".to_string()));
+        assert!(key_strings.contains(&"age".to_string()));
+        assert!(key_strings.contains(&"email".to_string()));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_keys_empty() {
+        let doc = create_empty_bson_document();
+        let keys = doc.keys().unwrap();
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_values() {
+        let mut doc = create_test_bson_document();
+        let values = doc.values().unwrap();
+        assert_eq!(values.len(), 3);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_len() {
+        let doc = create_test_bson_document();
+        assert_eq!(doc.len().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_len_empty() {
+        let doc = create_empty_bson_document();
+        assert_eq!(doc.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_is_empty() {
+        let doc = create_test_bson_document();
+        assert!(!doc.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_is_empty_true() {
+        let doc = create_empty_bson_document();
+        assert!(doc.is_empty().unwrap());
+    }
+
+    #[test]
+    fn test_lazy_bson_document_contains_after_materialization() {
+        let mut doc = create_test_bson_document();
+        // Trigger materialization by setting a value
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+
+        // contains should still work after materialization
+        assert!(doc.contains("name"));
+        assert!(doc.contains("new_field"));
+        assert!(!doc.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_keys_after_materialization() {
+        let mut doc = create_test_bson_document();
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+
+        let keys = doc.keys().unwrap();
+        assert_eq!(keys.len(), 4);
+
+        let key_strings: Vec<String> = keys
+            .iter()
+            .map(|k| k.clone().into_string().unwrap())
+            .collect();
+        assert!(key_strings.contains(&"new_field".to_string()));
+    }
+
+    #[test]
+    fn test_lazy_bson_document_len_after_materialization() {
+        let mut doc = create_test_bson_document();
+        doc.set("new_field", Dynamic::from("value")).unwrap();
+        assert_eq!(doc.len().unwrap(), 4);
+    }
+
+    #[test]
+    fn test_lazy_bson_document_is_empty_after_materialization() {
+        let mut doc = create_empty_bson_document();
+        assert!(doc.is_empty().unwrap());
+
+        doc.set("field", Dynamic::from("value")).unwrap();
+        assert!(!doc.is_empty().unwrap());
     }
 }
