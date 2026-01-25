@@ -503,7 +503,7 @@ impl LazyBsonDocument {
         }
     }
 
-    pub fn contains(&self, key: &str) -> Result<bool, Box<EvalAltResult>> {
+    pub fn contains(&mut self, key: &str) -> Result<bool, Box<EvalAltResult>> {
         match &self.state {
             LazyBsonState::Raw { doc, .. } => Self::raw_get(doc, key).map(|opt| opt.is_some()),
             LazyBsonState::Materialized(map) => Ok(map.contains_key(key)),
@@ -526,7 +526,7 @@ impl LazyBsonDocument {
             .collect()
     }
 
-    pub fn keys(&self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
+    pub fn keys(&mut self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
         match &self.state {
             LazyBsonState::Raw { doc, .. } => {
                 self.collect_from_raw(doc, |key, _| Ok(Dynamic::from(key.to_string())))
@@ -537,7 +537,7 @@ impl LazyBsonDocument {
         }
     }
 
-    pub fn values(&self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
+    pub fn values(&mut self) -> Result<Vec<Dynamic>, Box<EvalAltResult>> {
         match &self.state {
             LazyBsonState::Raw { doc, .. } => {
                 self.collect_from_raw(doc, |_, val| convert_raw_to_dynamic(val))
@@ -551,7 +551,7 @@ impl LazyBsonDocument {
     /// This is O(1) for both raw and materialized states. The element count is
     /// cached during construction for raw BSON documents since the BSON format
     /// only stores byte size, not element count.
-    pub fn len(&self) -> Result<i64, Box<EvalAltResult>> {
+    pub fn len(&mut self) -> Result<i64, Box<EvalAltResult>> {
         match &self.state {
             LazyBsonState::Raw { len, .. } => Ok(*len as i64),
             LazyBsonState::Materialized(map) => Ok(map.len() as i64),
@@ -561,7 +561,7 @@ impl LazyBsonDocument {
     /// Returns true if the document has no fields.
     ///
     /// This is O(1) since we use the cached element count.
-    pub fn is_empty(&self) -> Result<bool, Box<EvalAltResult>> {
+    pub fn is_empty(&mut self) -> Result<bool, Box<EvalAltResult>> {
         match &self.state {
             LazyBsonState::Raw { len, .. } => Ok(*len == 0),
             LazyBsonState::Materialized(map) => Ok(map.is_empty()),
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_lazy_bson_document_contains_existing_field() {
-        let doc = create_test_bson_document();
+        let mut doc = create_test_bson_document();
         assert!(doc.contains("name").unwrap());
         assert!(doc.contains("age").unwrap());
         assert!(doc.contains("email").unwrap());
@@ -669,14 +669,14 @@ mod tests {
 
     #[test]
     fn test_lazy_bson_document_contains_missing_field() {
-        let doc = create_test_bson_document();
+        let mut doc = create_test_bson_document();
         assert!(!doc.contains("nonexistent").unwrap());
         assert!(!doc.contains("address").unwrap());
     }
 
     #[test]
     fn test_lazy_bson_document_keys() {
-        let doc = create_test_bson_document();
+        let mut doc = create_test_bson_document();
         let keys = doc.keys().unwrap();
         assert_eq!(keys.len(), 3);
 
@@ -691,14 +691,14 @@ mod tests {
 
     #[test]
     fn test_lazy_bson_document_keys_empty() {
-        let doc = create_empty_bson_document();
+        let mut doc = create_empty_bson_document();
         let keys = doc.keys().unwrap();
         assert!(keys.is_empty());
     }
 
     #[test]
     fn test_lazy_bson_document_values() {
-        let doc = create_test_bson_document();
+        let mut doc = create_test_bson_document();
         let values = doc.values().unwrap();
         assert_eq!(values.len(), 3);
     }
@@ -714,25 +714,25 @@ mod tests {
 
     #[test]
     fn test_lazy_bson_document_len() {
-        let doc = create_test_bson_document();
+        let mut doc = create_test_bson_document();
         assert_eq!(doc.len().unwrap(), 3);
     }
 
     #[test]
     fn test_lazy_bson_document_len_empty() {
-        let doc = create_empty_bson_document();
+        let mut doc = create_empty_bson_document();
         assert_eq!(doc.len().unwrap(), 0);
     }
 
     #[test]
     fn test_lazy_bson_document_is_empty() {
-        let doc = create_test_bson_document();
+        let mut doc = create_test_bson_document();
         assert!(!doc.is_empty().unwrap());
     }
 
     #[test]
     fn test_lazy_bson_document_is_empty_true() {
-        let doc = create_empty_bson_document();
+        let mut doc = create_empty_bson_document();
         assert!(doc.is_empty().unwrap());
     }
 
