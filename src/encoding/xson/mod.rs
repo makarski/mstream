@@ -1034,4 +1034,190 @@ mod tests {
             prop_assert_eq!(result.0, bson_data);
         }
     }
+
+    // =========================================================================
+    // Group 7: JSON Schema integration tests
+    // =========================================================================
+
+    fn test_json_schema() -> JsonValue {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age": { "type": "integer" },
+                "active": { "type": "boolean" }
+            }
+        })
+    }
+
+    #[test]
+    fn json_bytes_with_json_schema_to_json_projects_fields() {
+        let json =
+            br#"{"name": "Alice", "age": 30, "active": true, "password": "secret"}"#.to_vec();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = JsonBytesWithSchema::new(json, &schema);
+
+        let result = JsonBytes::try_from(with_schema).unwrap();
+        let parsed: Document = serde_json::from_slice(&result.0).unwrap();
+
+        assert_eq!(parsed.get_str("name").unwrap(), "Alice");
+        assert_eq!(parsed.get_i32("age").unwrap(), 30);
+        assert_eq!(parsed.get_bool("active").unwrap(), true);
+        assert!(!parsed.contains_key("password"));
+    }
+
+    #[test]
+    fn json_bytes_with_json_schema_to_bson_projects_fields() {
+        let json = br#"{"name": "Bob", "age": 25, "active": false, "internal_id": 999}"#.to_vec();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = JsonBytesWithSchema::new(json, &schema);
+
+        let bson_bytes = BsonBytes::try_from(with_schema).unwrap();
+        let doc: Document = bson::from_slice(&bson_bytes.0).unwrap();
+
+        assert_eq!(doc.get_str("name").unwrap(), "Bob");
+        assert_eq!(doc.get_i32("age").unwrap(), 25);
+        assert_eq!(doc.get_bool("active").unwrap(), false);
+        assert!(!doc.contains_key("internal_id"));
+    }
+
+    #[test]
+    fn json_bytes_with_json_schema_validation_error() {
+        let json = br#"{"name": "Charlie", "age": "not a number", "active": true}"#.to_vec();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = JsonBytesWithSchema::new(json, &schema);
+
+        let result = JsonBytes::try_from(with_schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bson_bytes_with_json_schema_to_json_projects_fields() {
+        let doc = doc! {
+            "name": "Dave",
+            "age": 35,
+            "active": true,
+            "password": "secret123",
+            "metadata": { "created": "2024-01-01" }
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let json_bytes = JsonBytes::try_from(with_schema).unwrap();
+        let parsed: JsonValue = serde_json::from_slice(&json_bytes.0).unwrap();
+
+        assert_eq!(parsed["name"], "Dave");
+        assert_eq!(parsed["age"], 35);
+        assert_eq!(parsed["active"], true);
+        assert!(parsed.get("password").is_none());
+        assert!(parsed.get("metadata").is_none());
+    }
+
+    #[test]
+    fn bson_bytes_with_json_schema_to_bson_projects_fields() {
+        let doc = doc! {
+            "name": "Eve",
+            "age": 28,
+            "active": false,
+            "extra_field_1": "drop",
+            "extra_field_2": 999
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let result = BsonBytes::try_from(with_schema).unwrap();
+        let decoded: Document = bson::from_slice(&result.0).unwrap();
+
+        assert_eq!(decoded.get_str("name").unwrap(), "Eve");
+        assert_eq!(decoded.get_i32("age").unwrap(), 28);
+        assert_eq!(decoded.get_bool("active").unwrap(), false);
+        assert!(!decoded.contains_key("extra_field_1"));
+        assert!(!decoded.contains_key("extra_field_2"));
+    }
+
+    #[test]
+    fn json_schema_nested_projection() {
+        let nested_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "email": { "type": "string" }
+                    }
+                }
+            }
+        });
+
+        let doc = doc! {
+            "user": {
+                "name": "Frank",
+                "email": "frank@example.com",
+                "password": "secret",
+                "internal_id": 42
+            },
+            "metadata": "drop this"
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let schema = Schema::Json(nested_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let result = BsonBytes::try_from(with_schema).unwrap();
+        let decoded: Document = bson::from_slice(&result.0).unwrap();
+
+        let user = decoded.get_document("user").unwrap();
+        assert_eq!(user.get_str("name").unwrap(), "Frank");
+        assert_eq!(user.get_str("email").unwrap(), "frank@example.com");
+        assert!(!user.contains_key("password"));
+        assert!(!user.contains_key("internal_id"));
+        assert!(!decoded.contains_key("metadata"));
+    }
+
+    #[test]
+    fn json_schema_array_projection() {
+        let array_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer" },
+                            "name": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let doc = doc! {
+            "items": [
+                { "id": 1, "name": "Item1", "secret": "drop1" },
+                { "id": 2, "name": "Item2", "secret": "drop2" }
+            ]
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let schema = Schema::Json(array_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let result = BsonBytes::try_from(with_schema).unwrap();
+        let decoded: Document = bson::from_slice(&result.0).unwrap();
+
+        let items = decoded.get_array("items").unwrap();
+        assert_eq!(items.len(), 2);
+
+        let item0 = items[0].as_document().unwrap();
+        assert_eq!(item0.get_i32("id").unwrap(), 1);
+        assert_eq!(item0.get_str("name").unwrap(), "Item1");
+        assert!(!item0.contains_key("secret"));
+    }
 }
