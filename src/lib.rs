@@ -11,7 +11,6 @@ use crate::{
     api::AppState, config::system::LogsConfig, job_manager::JobStateChange, logs::LogBuffer,
 };
 
-mod encoding;
 mod http;
 mod kafka;
 mod mongodb;
@@ -21,6 +20,7 @@ pub mod api;
 pub mod checkpoint;
 pub mod cmd;
 pub mod config;
+pub mod encoding;
 pub mod job_manager;
 pub mod logs;
 pub mod middleware;

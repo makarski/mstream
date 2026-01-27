@@ -57,3 +57,8 @@ proptest = "1.4.0"
 apache-avro = { version = "0.14", features = ["derive"] }
 tokio = { version = "1.0", features = ["full", "test-util"] }
 tempfile = "3.23.0"
+criterion = "0.5"
+
+[[bench]]
+name = "json_schema_bench"
+harness = false
