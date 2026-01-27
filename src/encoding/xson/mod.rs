@@ -4,7 +4,7 @@ use apache_avro::Schema as AvroSchema;
 use mongodb::bson::{self, Bson, Document};
 use serde_json::Value as JsonValue;
 
-use crate::encoding::avro;
+use crate::encoding::{avro, json_schema};
 use crate::schema::Schema;
 
 /// Converts a BSON value to a flat JSON value, unwrapping Extended JSON wrappers.
@@ -213,6 +213,10 @@ impl TryFrom<JsonBytesWithSchema<'_>> for BsonBytes {
                 let bson_doc = JsonBytes(value.data).apply_avro_schema(avro_schema)?;
                 Ok(BsonBytes(bson::to_vec(&bson_doc)?))
             }
+            Schema::Json(j_schema) => {
+                let projected = json_schema::apply_to_vec(&value.data, j_schema)?;
+                BsonBytes::try_from(JsonBytes(projected))
+            }
             Schema::Undefined => BsonBytes::try_from(JsonBytes(value.data)),
         }
     }
@@ -226,6 +230,10 @@ impl TryFrom<JsonBytesWithSchema<'_>> for JsonBytes {
             Schema::Avro(avro_schema) => {
                 let bson_doc: Document = JsonBytes(value.data).apply_avro_schema(avro_schema)?;
                 Ok(JsonBytes(serde_json::to_vec(&bson_doc)?))
+            }
+            Schema::Json(j_schema) => {
+                let projected = json_schema::apply_to_vec(&value.data, j_schema)?;
+                Ok(JsonBytes(projected))
             }
             Schema::Undefined => Ok(JsonBytes(value.data)),
         }
@@ -255,6 +263,12 @@ impl TryFrom<BsonBytesWithSchema<'_>> for JsonBytes {
                 let flat_json = document_to_flat_json(bson_doc);
                 Ok(JsonBytes(serde_json::to_vec(&flat_json)?))
             }
+            Schema::Json(j_schema) => {
+                let doc: Document = BsonBytes(value.data).try_into()?;
+                let projected = json_schema::apply_to_doc(&doc, j_schema)?;
+                let normalized_json = document_to_flat_json(projected);
+                Ok(JsonBytes(serde_json::to_vec(&normalized_json)?))
+            }
             Schema::Undefined => BsonBytes(value.data).try_into(),
         }
     }
@@ -268,6 +282,11 @@ impl TryFrom<BsonBytesWithSchema<'_>> for BsonBytes {
             Schema::Avro(avro_schema) => {
                 let bson_doc = BsonBytes(value.data).apply_avro_schema(avro_schema)?;
                 Ok(BsonBytes(bson::to_vec(&bson_doc)?))
+            }
+            Schema::Json(j_schema) => {
+                let doc: Document = BsonBytes(value.data).try_into()?;
+                let projected = json_schema::apply_to_doc(&doc, j_schema)?;
+                Ok(BsonBytes(bson::to_vec(&projected)?))
             }
             Schema::Undefined => Ok(BsonBytes(value.data)),
         }

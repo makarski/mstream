@@ -1,6 +1,7 @@
 use apache_avro::Schema as AvroSchema;
 use async_trait::async_trait;
 use mongo::MongoDbSchemaProvider;
+use serde_json::Value as JsonValue;
 
 use crate::{
     config::Encoding,
@@ -29,14 +30,14 @@ pub enum Schema {
     #[default]
     Undefined,
     Avro(AvroSchema),
-    // Json(String),
+    Json(JsonValue),
 }
 
 impl Schema {
     pub fn parse(definition: &str, encoding: Encoding) -> anyhow::Result<Self> {
         let parsed = match encoding {
             Encoding::Avro => Self::Avro(AvroSchema::parse_str(definition)?),
-            // Encoding::Json => Self::Json(definition.to_string()),
+            Encoding::Json => Self::Json(serde_json::from_str(definition)?),
             _ => Self::Undefined,
         };
 
@@ -53,6 +54,13 @@ impl Schema {
     pub fn as_avro(&self) -> Option<&AvroSchema> {
         match self {
             Self::Avro(schema) => Some(schema),
+            _ => None,
+        }
+    }
+
+    pub fn as_json(&self) -> Option<&JsonValue> {
+        match self {
+            Self::Json(schema) => Some(schema),
             _ => None,
         }
     }
