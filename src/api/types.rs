@@ -135,3 +135,14 @@ pub(super) fn decode_cursor(cursor: &[u8]) -> CursorInfo {
         raw_bytes: cursor.len(),
     }
 }
+
+#[derive(Deserialize)]
+pub(crate) struct SchemaQuery {
+    pub(crate) resource: String,
+    #[serde(default = "default_sample_size")]
+    pub(crate) sample_size: usize,
+}
+
+fn default_sample_size() -> usize {
+    100
+}

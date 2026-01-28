@@ -2,7 +2,10 @@ use mongodb::bson::Document;
 use serde_json::Value as JsonValue;
 
 mod bson;
+mod builder;
 mod json;
+
+pub use builder::build_schema;
 
 /// Type alias for JSON Schema representation
 pub type JsonSchema = serde_json::Value;

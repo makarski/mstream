@@ -1,22 +1,26 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use futures::TryFutureExt;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::api::error::ApiError;
 use crate::api::types::{
-    CheckpointResponse, MaskedJson, Message, TransformTestRequest, TransformTestResponse,
+    CheckpointResponse, MaskedJson, Message, SchemaQuery, TransformTestRequest,
+    TransformTestResponse,
 };
 use crate::config::system::LogsConfig;
 use crate::config::{Connector, Encoding, Service};
 use crate::job_manager::{JobManager, JobMetadata, error::JobManagerError};
 use crate::logs::LogBuffer;
 use crate::middleware::udf::rhai::{RhaiMiddleware, RhaiMiddlewareError};
+use crate::schema::introspect::SchemaIntrospector;
 use crate::source::SourceEvent;
 
 pub(crate) mod error;
@@ -49,6 +53,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/jobs/{name}/restart", post(restart_job))
         .route("/services", get(list_services))
         .route("/services/{name}", get(get_one_service))
+        .route("/services/{name}/schema", get(get_resource_schema))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
         .route("/jobs/{name}/checkpoints", get(list_checkpoints))
@@ -66,7 +71,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
 }
 
 /// GET /jobs
-async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, JobManagerError> {
+async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
     let jobs = jm
         .list_jobs()
@@ -80,7 +85,7 @@ async fn list_jobs(State(state): State<AppState>) -> Result<impl IntoResponse, J
 async fn stop_job(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<(StatusCode, Json<Message<()>>), JobManagerError> {
+) -> Result<(StatusCode, Json<Message<()>>), ApiError> {
     info!(job_name = %name, "stopping job");
     let mut jm = state.job_manager.lock().await;
 
@@ -100,7 +105,7 @@ async fn stop_job(
 async fn restart_job(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<(StatusCode, Json<Message<JobMetadata>>), JobManagerError> {
+) -> Result<(StatusCode, Json<Message<JobMetadata>>), ApiError> {
     info!(job_name = %name, "restarting job");
     let mut jm = state.job_manager.lock().await;
 
@@ -120,7 +125,7 @@ async fn restart_job(
 async fn create_start_job(
     State(state): State<AppState>,
     Json(conn_cfg): Json<Connector>,
-) -> Result<(StatusCode, Json<Message<JobMetadata>>), JobManagerError> {
+) -> Result<(StatusCode, Json<Message<JobMetadata>>), ApiError> {
     info!(job_name = %conn_cfg.name, "creating new job");
 
     let mut jm = state.job_manager.lock().await;
@@ -138,9 +143,7 @@ async fn create_start_job(
 }
 
 /// GET /services
-async fn list_services(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, JobManagerError> {
+async fn list_services(State(state): State<AppState>) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
     let services = jm
         .list_services()
@@ -154,7 +157,7 @@ async fn list_services(
 async fn create_service(
     State(state): State<AppState>,
     Json(service_cfg): Json<Service>,
-) -> Result<impl IntoResponse, JobManagerError> {
+) -> Result<impl IntoResponse, ApiError> {
     info!("creating new service: {}", service_cfg.name());
 
     let jm = state.job_manager.lock().await;
@@ -176,7 +179,7 @@ async fn create_service(
 async fn remove_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, JobManagerError> {
+) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
     jm.remove_service(&name).await?;
     Ok((
@@ -188,9 +191,43 @@ async fn remove_service(
     ))
 }
 
+async fn get_resource_schema(
+    State(state): State<AppState>,
+    Path(service_name): Path<String>,
+    Query(query): Query<SchemaQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let jm = state.job_manager.lock().await;
+    let registry = jm.service_registry.read().await;
+    let client = registry
+        .mongodb_client(&service_name)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to get MongoDB client: {}", e)))?;
+
+    let service_definition = registry
+        .service_definition(&service_name)
+        .map_err(|err| ApiError::NotFound(err.to_string()))
+        .await?;
+
+    let mgo_cfg = match &service_definition {
+        Service::MongoDb(cfg) => cfg,
+        _ => {
+            return Err(ApiError::Internal(format!(
+                "service {} is not a mongo service",
+                service_name
+            )));
+        }
+    };
+
+    let db = client.database(&mgo_cfg.db_name);
+    let introspector = SchemaIntrospector::new(db, query.resource.clone());
+    let variants = introspector.introspect(query.sample_size).await?;
+
+    Ok((StatusCode::OK, Json(variants)))
+}
+
 async fn transform_run(
     Json(transform_req): Json<TransformTestRequest>,
-) -> Result<impl IntoResponse, RhaiMiddlewareError> {
+) -> Result<impl IntoResponse, ApiError> {
     let mut middleware = RhaiMiddleware::with_script(transform_req.script)?;
 
     let source_event = SourceEvent {
@@ -227,7 +264,7 @@ async fn transform_run(
 async fn get_one_service(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, JobManagerError> {
+) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
     let service = jm.get_service(&name).await?;
     Ok((StatusCode::OK, MaskedJson(service)))
@@ -237,7 +274,7 @@ async fn get_one_service(
 async fn list_checkpoints(
     State(state): State<AppState>,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, JobManagerError> {
+) -> Result<impl IntoResponse, ApiError> {
     let jm = state.job_manager.lock().await;
 
     // Verify job exists

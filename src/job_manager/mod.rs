@@ -29,7 +29,7 @@ use crate::{
 pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
 
 pub struct JobManager {
-    service_registry: Arc<RwLock<ServiceRegistry>>,
+    pub service_registry: Arc<RwLock<ServiceRegistry>>,
     cancel_all: CancellationToken,
     job_store: JobStorage,
     running_jobs: HashMap<String, JobContainer>,
