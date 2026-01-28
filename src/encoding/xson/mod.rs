@@ -4,7 +4,7 @@ use apache_avro::Schema as AvroSchema;
 use mongodb::bson::{self, Bson, Document};
 use serde_json::Value as JsonValue;
 
-use crate::encoding::avro;
+use crate::encoding::{avro, json_schema};
 use crate::schema::Schema;
 
 /// Converts a BSON value to a flat JSON value, unwrapping Extended JSON wrappers.
@@ -202,18 +202,30 @@ impl<'a> JsonBytesWithSchema<'a> {
     pub fn new(data: Vec<u8>, schema: &'a Schema) -> Self {
         JsonBytesWithSchema { data, schema }
     }
+
+    fn apply_schema(self) -> anyhow::Result<(Vec<u8>, SchemaKind)> {
+        match self.schema {
+            Schema::Avro(avro_schema) => {
+                let bson_doc = JsonBytes(self.data).apply_avro_schema(avro_schema)?;
+                Ok((bson::to_vec(&bson_doc)?, SchemaKind::Avro))
+            }
+            Schema::Json(j_schema) => {
+                let projected = json_schema::apply_to_vec(&self.data, j_schema)?;
+                Ok((projected, SchemaKind::Json))
+            }
+            Schema::Undefined => Ok((self.data, SchemaKind::Undefined)),
+        }
+    }
 }
 
 impl TryFrom<JsonBytesWithSchema<'_>> for BsonBytes {
     type Error = anyhow::Error;
 
     fn try_from(value: JsonBytesWithSchema) -> Result<Self, Self::Error> {
-        match value.schema {
-            Schema::Avro(avro_schema) => {
-                let bson_doc = JsonBytes(value.data).apply_avro_schema(avro_schema)?;
-                Ok(BsonBytes(bson::to_vec(&bson_doc)?))
-            }
-            Schema::Undefined => BsonBytes::try_from(JsonBytes(value.data)),
+        let (data, kind) = value.apply_schema()?;
+        match kind {
+            SchemaKind::Avro => Ok(BsonBytes(data)),
+            SchemaKind::Json | SchemaKind::Undefined => BsonBytes::try_from(JsonBytes(data)),
         }
     }
 }
@@ -222,12 +234,13 @@ impl TryFrom<JsonBytesWithSchema<'_>> for JsonBytes {
     type Error = anyhow::Error;
 
     fn try_from(value: JsonBytesWithSchema) -> Result<Self, Self::Error> {
-        match value.schema {
-            Schema::Avro(avro_schema) => {
-                let bson_doc: Document = JsonBytes(value.data).apply_avro_schema(avro_schema)?;
-                Ok(JsonBytes(serde_json::to_vec(&bson_doc)?))
+        let (data, kind) = value.apply_schema()?;
+        match kind {
+            SchemaKind::Avro => {
+                let doc: Document = bson::from_slice(&data)?;
+                Ok(JsonBytes(serde_json::to_vec(&doc)?))
             }
-            Schema::Undefined => Ok(JsonBytes(value.data)),
+            SchemaKind::Json | SchemaKind::Undefined => Ok(JsonBytes(data)),
         }
     }
 }
@@ -243,20 +256,33 @@ impl<'a> BsonBytesWithSchema<'a> {
     pub fn new(data: Vec<u8>, schema: &'a Schema) -> Self {
         BsonBytesWithSchema { data, schema }
     }
+
+    fn apply_schema(self) -> anyhow::Result<(Document, SchemaKind)> {
+        match self.schema {
+            Schema::Avro(avro_schema) => {
+                let bson_doc = BsonBytes(self.data).apply_avro_schema(avro_schema)?;
+                Ok((bson_doc, SchemaKind::Avro))
+            }
+            Schema::Json(j_schema) => {
+                let doc: Document = BsonBytes(self.data).try_into()?;
+                let projected = json_schema::apply_to_doc(&doc, j_schema)?;
+                Ok((projected, SchemaKind::Json))
+            }
+            Schema::Undefined => {
+                let doc: Document = BsonBytes(self.data).try_into()?;
+                Ok((doc, SchemaKind::Undefined))
+            }
+        }
+    }
 }
 
 impl TryFrom<BsonBytesWithSchema<'_>> for JsonBytes {
     type Error = anyhow::Error;
 
     fn try_from(value: BsonBytesWithSchema) -> Result<Self, Self::Error> {
-        match value.schema {
-            Schema::Avro(avro_schema) => {
-                let bson_doc: Document = BsonBytes(value.data).apply_avro_schema(avro_schema)?;
-                let flat_json = document_to_flat_json(bson_doc);
-                Ok(JsonBytes(serde_json::to_vec(&flat_json)?))
-            }
-            Schema::Undefined => BsonBytes(value.data).try_into(),
-        }
+        let (doc, _kind) = value.apply_schema()?;
+        let flat_json = document_to_flat_json(doc);
+        Ok(JsonBytes(serde_json::to_vec(&flat_json)?))
     }
 }
 
@@ -264,14 +290,17 @@ impl TryFrom<BsonBytesWithSchema<'_>> for BsonBytes {
     type Error = anyhow::Error;
 
     fn try_from(value: BsonBytesWithSchema) -> Result<Self, Self::Error> {
-        match value.schema {
-            Schema::Avro(avro_schema) => {
-                let bson_doc = BsonBytes(value.data).apply_avro_schema(avro_schema)?;
-                Ok(BsonBytes(bson::to_vec(&bson_doc)?))
-            }
-            Schema::Undefined => Ok(BsonBytes(value.data)),
-        }
+        let (doc, _kind) = value.apply_schema()?;
+        Ok(BsonBytes(bson::to_vec(&doc)?))
     }
+}
+
+/// Internal enum to track which schema type was applied
+#[derive(Clone, Copy)]
+enum SchemaKind {
+    Avro,
+    Json,
+    Undefined,
 }
 
 #[cfg(test)]
@@ -280,6 +309,67 @@ mod tests {
     use apache_avro::Schema as AvroSchema;
     use mongodb::bson::doc;
     use proptest::prelude::*;
+
+    // =========================================================================
+    // Test Helpers
+    // =========================================================================
+
+    /// Helper to assert a Document has expected string fields
+    fn assert_doc_str_fields(doc: &Document, expected: &[(&str, &str)]) {
+        for (key, value) in expected {
+            assert_eq!(
+                doc.get_str(*key).unwrap(),
+                *value,
+                "field '{}' mismatch",
+                key
+            );
+        }
+    }
+
+    /// Helper to assert a Document does not contain certain keys
+    fn assert_doc_missing_keys(doc: &Document, keys: &[&str]) {
+        for key in keys {
+            assert!(!doc.contains_key(*key), "field '{}' should not exist", key);
+        }
+    }
+
+    /// Macro for testing deserialization error cases
+    macro_rules! assert_deser_error {
+        ($result:expr, $expected_msg:expr) => {
+            assert!($result.is_err(), "expected error but got Ok");
+            let err_msg = $result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains($expected_msg),
+                "expected error containing '{}', got '{}'",
+                $expected_msg,
+                err_msg
+            );
+        };
+    }
+
+    /// Helper to verify schema conversion to BSON and check fields
+    fn verify_to_bson_doc<T>(with_schema: T, expected_name: &str, expected_age: i32)
+    where
+        T: TryInto<BsonBytes>,
+        T::Error: std::fmt::Debug,
+    {
+        let bson_bytes = with_schema.try_into().unwrap();
+        let doc: Document = bson::from_slice(&bson_bytes.0).unwrap();
+        assert_doc_str_fields(&doc, &[("name", expected_name)]);
+        assert_eq!(doc.get_i32("age").unwrap(), expected_age);
+    }
+
+    /// Helper to verify schema conversion to JSON and check fields
+    fn verify_to_json_doc<T>(with_schema: T, expected_name: &str, expected_age: i32)
+    where
+        T: TryInto<JsonBytes>,
+        T::Error: std::fmt::Debug,
+    {
+        let json_bytes: JsonBytes = with_schema.try_into().unwrap();
+        let doc: Document = serde_json::from_slice(&json_bytes.0).unwrap();
+        assert_doc_str_fields(&doc, &[("name", expected_name)]);
+        assert_eq!(doc.get_i32("age").unwrap(), expected_age);
+    }
 
     // =========================================================================
     // Group 1: JsonBytes conversions
@@ -318,28 +408,14 @@ mod tests {
     fn json_bytes_into_vec_document_error_invalid_json() {
         let invalid_json = b"not valid json".to_vec();
         let result: Result<Vec<Document>, _> = JsonBytes(invalid_json).try_into();
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("failed to deserialize JSON")
-        );
+        assert_deser_error!(result, "failed to deserialize JSON");
     }
 
     #[test]
     fn json_bytes_into_document_error_invalid_json() {
         let invalid_json = b"{broken".to_vec();
         let result: Result<Document, _> = JsonBytes(invalid_json).try_into();
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("failed to deserialize JSON")
-        );
+        assert_deser_error!(result, "failed to deserialize JSON");
     }
 
     #[test]
@@ -393,28 +469,14 @@ mod tests {
     fn bson_bytes_into_vec_document_error_invalid_bson() {
         let invalid_bson = b"not valid bson".to_vec();
         let result: Result<Vec<Document>, _> = BsonBytes(invalid_bson).try_into();
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("failed to deserialize BSON")
-        );
+        assert_deser_error!(result, "failed to deserialize BSON");
     }
 
     #[test]
     fn bson_bytes_into_document_error_invalid_bson() {
         let invalid_bson = vec![0x01, 0x02, 0x03];
         let result: Result<Document, _> = BsonBytes(invalid_bson).try_into();
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("failed to deserialize BSON")
-        );
+        assert_deser_error!(result, "failed to deserialize BSON");
     }
 
     #[test]
@@ -646,21 +708,27 @@ mod tests {
         };
         let bson_bytes = BsonBytes(bson::to_vec(&doc).unwrap());
         let json_bytes = JsonBytes::try_from(bson_bytes).unwrap();
-
         let json_str = String::from_utf8(json_bytes.0).unwrap();
 
         // Verify no Extended JSON wrappers
-        assert!(!json_str.contains("$oid"), "Should not contain $oid");
-        assert!(!json_str.contains("$date"), "Should not contain $date");
-        assert!(
-            !json_str.contains("$numberLong"),
-            "Should not contain $numberLong"
-        );
+        let disallowed = ["$oid", "$date", "$numberLong"];
+        for wrapper in disallowed {
+            assert!(
+                !json_str.contains(wrapper),
+                "Should not contain {}",
+                wrapper
+            );
+        }
 
         // Verify flat values are present
-        assert!(json_str.contains(r#""_id":"60002e5e19e23b5c08a6c03c""#));
-        assert!(json_str.contains("paul@mycustomerlens.com"));
-        assert!(json_str.contains("2026-01-09")); // ISO date
+        let expected_substrings = [
+            r#""_id":"60002e5e19e23b5c08a6c03c""#,
+            "paul@mycustomerlens.com",
+            "2026-01-09",
+        ];
+        for expected in expected_substrings {
+            assert!(json_str.contains(expected), "Should contain {}", expected);
+        }
     }
 
     #[test]
@@ -757,60 +825,38 @@ mod tests {
 
     #[test]
     fn json_bytes_with_avro_schema_to_bson() {
-        let json = br#"{"name": "alice", "age": 25}"#.to_vec();
-        let avro_schema = test_avro_schema();
-        let schema = Schema::Avro(avro_schema);
-        let with_schema = JsonBytesWithSchema::new(json, &schema);
-
-        let bson_bytes = BsonBytes::try_from(with_schema).unwrap();
-        let doc: Document = bson_bytes.try_into().unwrap();
-
-        assert_eq!(doc.get_str("name").unwrap(), "alice");
-        assert_eq!(doc.get_i32("age").unwrap(), 25);
+        let schema = Schema::Avro(test_avro_schema());
+        let with_schema =
+            JsonBytesWithSchema::new(br#"{"name": "alice", "age": 25}"#.to_vec(), &schema);
+        verify_to_bson_doc(with_schema, "alice", 25);
     }
 
     #[test]
     fn json_bytes_with_avro_schema_to_json() {
-        let json = br#"{"name": "bob", "age": 30}"#.to_vec();
-        let avro_schema = test_avro_schema();
-        let schema = Schema::Avro(avro_schema);
-        let with_schema = JsonBytesWithSchema::new(json, &schema);
-
-        let json_bytes = JsonBytes::try_from(with_schema).unwrap();
-        let doc: Document = JsonBytes(json_bytes.0).try_into().unwrap();
-
-        assert_eq!(doc.get_str("name").unwrap(), "bob");
-        assert_eq!(doc.get_i32("age").unwrap(), 30);
+        let schema = Schema::Avro(test_avro_schema());
+        let with_schema =
+            JsonBytesWithSchema::new(br#"{"name": "bob", "age": 30}"#.to_vec(), &schema);
+        verify_to_json_doc(with_schema, "bob", 30);
     }
 
     #[test]
     fn bson_bytes_with_avro_schema_to_json() {
-        let doc = doc! {"name": "charlie", "age": 35};
-        let bson_data = bson::to_vec(&doc).unwrap();
-        let avro_schema = test_avro_schema();
-        let schema = Schema::Avro(avro_schema);
-        let with_schema = BsonBytesWithSchema::new(bson_data, &schema);
-
-        let json_bytes = JsonBytes::try_from(with_schema).unwrap();
-        let decoded: Document = JsonBytes(json_bytes.0).try_into().unwrap();
-
-        assert_eq!(decoded.get_str("name").unwrap(), "charlie");
-        assert_eq!(decoded.get_i32("age").unwrap(), 35);
+        let schema = Schema::Avro(test_avro_schema());
+        let with_schema = BsonBytesWithSchema::new(
+            bson::to_vec(&doc! {"name": "charlie", "age": 35}).unwrap(),
+            &schema,
+        );
+        verify_to_json_doc(with_schema, "charlie", 35);
     }
 
     #[test]
     fn bson_bytes_with_avro_schema_to_bson() {
-        let doc = doc! {"name": "dave", "age": 40};
-        let bson_data = bson::to_vec(&doc).unwrap();
-        let avro_schema = test_avro_schema();
-        let schema = Schema::Avro(avro_schema);
-        let with_schema = BsonBytesWithSchema::new(bson_data, &schema);
-
-        let bson_bytes = BsonBytes::try_from(with_schema).unwrap();
-        let decoded: Document = bson_bytes.try_into().unwrap();
-
-        assert_eq!(decoded.get_str("name").unwrap(), "dave");
-        assert_eq!(decoded.get_i32("age").unwrap(), 40);
+        let schema = Schema::Avro(test_avro_schema());
+        let with_schema = BsonBytesWithSchema::new(
+            bson::to_vec(&doc! {"name": "dave", "age": 40}).unwrap(),
+            &schema,
+        );
+        verify_to_bson_doc(with_schema, "dave", 40);
     }
 
     #[test]
@@ -1014,5 +1060,193 @@ mod tests {
             // Undefined schema should pass through unchanged
             prop_assert_eq!(result.0, bson_data);
         }
+    }
+
+    // =========================================================================
+    // Group 7: JSON Schema integration tests
+    // =========================================================================
+
+    fn test_json_schema() -> JsonValue {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age": { "type": "integer" },
+                "active": { "type": "boolean" }
+            }
+        })
+    }
+
+    #[test]
+    fn json_bytes_with_json_schema_to_json_projects_fields() {
+        let schema = Schema::Json(test_json_schema());
+        let with_schema = JsonBytesWithSchema::new(
+            br#"{"name": "Alice", "age": 30, "active": true, "password": "secret"}"#.to_vec(),
+            &schema,
+        );
+        let result = JsonBytes::try_from(with_schema).unwrap();
+        let parsed: Document = serde_json::from_slice(&result.0).unwrap();
+
+        assert_doc_str_fields(&parsed, &[("name", "Alice")]);
+        assert_eq!(parsed.get_i32("age").unwrap(), 30);
+        assert!(parsed.get_bool("active").unwrap());
+        assert_doc_missing_keys(&parsed, &["password"]);
+    }
+
+    #[test]
+    fn json_bytes_with_json_schema_to_bson_projects_fields() {
+        let schema = Schema::Json(test_json_schema());
+        let with_schema = JsonBytesWithSchema::new(
+            br#"{"name": "Bob", "age": 25, "active": false, "internal_id": 999}"#.to_vec(),
+            &schema,
+        );
+        let bson_bytes = BsonBytes::try_from(with_schema).unwrap();
+        let doc: Document = bson::from_slice(&bson_bytes.0).unwrap();
+
+        assert_doc_str_fields(&doc, &[("name", "Bob")]);
+        assert_eq!(doc.get_i32("age").unwrap(), 25);
+        assert!(!doc.get_bool("active").unwrap());
+        assert_doc_missing_keys(&doc, &["internal_id"]);
+    }
+
+    #[test]
+    fn json_bytes_with_json_schema_validation_error() {
+        let json = br#"{"name": "Charlie", "age": "not a number", "active": true}"#.to_vec();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = JsonBytesWithSchema::new(json, &schema);
+
+        let result = JsonBytes::try_from(with_schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bson_bytes_with_json_schema_to_json_projects_fields() {
+        let doc = doc! {
+            "name": "Dave",
+            "age": 35,
+            "active": true,
+            "password": "secret123",
+            "metadata": { "created": "2024-01-01" }
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let json_bytes = JsonBytes::try_from(with_schema).unwrap();
+        let parsed: JsonValue = serde_json::from_slice(&json_bytes.0).unwrap();
+
+        assert_eq!(parsed["name"], "Dave");
+        assert_eq!(parsed["age"], 35);
+        assert_eq!(parsed["active"], true);
+        let missing_keys = ["password", "metadata"];
+        for key in missing_keys {
+            assert!(
+                parsed.get(key).is_none(),
+                "field '{}' should not exist",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn bson_bytes_with_json_schema_to_bson_projects_fields() {
+        let doc = doc! {
+            "name": "Eve",
+            "age": 28,
+            "active": false,
+            "extra_field_1": "drop",
+            "extra_field_2": 999
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let json_schema = test_json_schema();
+        let schema = Schema::Json(json_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let result = BsonBytes::try_from(with_schema).unwrap();
+        let decoded: Document = bson::from_slice(&result.0).unwrap();
+
+        assert_doc_str_fields(&decoded, &[("name", "Eve")]);
+        assert_eq!(decoded.get_i32("age").unwrap(), 28);
+        assert!(!decoded.get_bool("active").unwrap());
+        assert_doc_missing_keys(&decoded, &["extra_field_1", "extra_field_2"]);
+    }
+
+    #[test]
+    fn json_schema_nested_projection() {
+        let nested_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "user": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "email": { "type": "string" }
+                    }
+                }
+            }
+        });
+
+        let doc = doc! {
+            "user": {
+                "name": "Frank",
+                "email": "frank@example.com",
+                "password": "secret",
+                "internal_id": 42
+            },
+            "metadata": "drop this"
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let schema = Schema::Json(nested_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let result = BsonBytes::try_from(with_schema).unwrap();
+        let decoded: Document = bson::from_slice(&result.0).unwrap();
+        let user = decoded.get_document("user").unwrap();
+
+        assert_doc_str_fields(user, &[("name", "Frank"), ("email", "frank@example.com")]);
+        assert_doc_missing_keys(user, &["password", "internal_id"]);
+        assert_doc_missing_keys(&decoded, &["metadata"]);
+    }
+
+    #[test]
+    fn json_schema_array_projection() {
+        let array_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer" },
+                            "name": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let doc = doc! {
+            "items": [
+                { "id": 1, "name": "Item1", "secret": "drop1" },
+                { "id": 2, "name": "Item2", "secret": "drop2" }
+            ]
+        };
+        let bson_bytes = bson::to_vec(&doc).unwrap();
+        let schema = Schema::Json(array_schema);
+        let with_schema = BsonBytesWithSchema::new(bson_bytes, &schema);
+
+        let result = BsonBytes::try_from(with_schema).unwrap();
+        let decoded: Document = bson::from_slice(&result.0).unwrap();
+
+        let items = decoded.get_array("items").unwrap();
+        assert_eq!(items.len(), 2);
+
+        let item0 = items[0].as_document().unwrap();
+        assert_eq!(item0.get_i32("id").unwrap(), 1);
+        assert_eq!(item0.get_str("name").unwrap(), "Item1");
+        assert!(!item0.contains_key("secret"));
     }
 }

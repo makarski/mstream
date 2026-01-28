@@ -1,12 +1,16 @@
+use anyhow::bail;
 use apache_avro::Schema as AvroSchema;
 use async_trait::async_trait;
 use mongo::MongoDbSchemaProvider;
+use serde_json::Value as JsonValue;
 
 use crate::{
     config::Encoding,
     pubsub::{ServiceAccountAuth, srvc::SchemaService},
 };
+
 pub mod encoding;
+pub mod introspect;
 pub mod mongo;
 
 pub enum SchemaProvider {
@@ -29,31 +33,24 @@ pub enum Schema {
     #[default]
     Undefined,
     Avro(AvroSchema),
-    // Json(String),
+    Json(JsonValue),
 }
 
 impl Schema {
     pub fn parse(definition: &str, encoding: Encoding) -> anyhow::Result<Self> {
         let parsed = match encoding {
             Encoding::Avro => Self::Avro(AvroSchema::parse_str(definition)?),
-            // Encoding::Json => Self::Json(definition.to_string()),
+            Encoding::Json => Self::Json(serde_json::from_str(definition)?),
             _ => Self::Undefined,
         };
 
         Ok(parsed)
     }
 
-    pub fn try_as_avro(&self) -> Result<&AvroSchema, anyhow::Error> {
+    pub fn try_as_avro(&self) -> anyhow::Result<&AvroSchema> {
         match self {
             Self::Avro(schema) => Ok(schema),
-            _ => Err(anyhow::anyhow!("schema is not Avro")),
-        }
-    }
-
-    pub fn as_avro(&self) -> Option<&AvroSchema> {
-        match self {
-            Self::Avro(schema) => Some(schema),
-            _ => None,
+            _ => bail!("schema is not Avro"),
         }
     }
 }
