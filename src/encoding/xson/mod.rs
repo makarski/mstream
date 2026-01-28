@@ -1077,28 +1077,6 @@ mod tests {
         })
     }
 
-    /// Helper to verify JSON schema projection removes extra fields
-    fn verify_json_schema_projection<T, R>(
-        with_schema: T,
-        expected_name: &str,
-        expected_age: i32,
-        expected_active: bool,
-        dropped_keys: &[&str],
-    ) where
-        T: TryInto<R>,
-        T::Error: std::fmt::Debug,
-        R: AsRef<[u8]>,
-    {
-        let result: R = with_schema.try_into().unwrap();
-        let doc: Document = serde_json::from_slice(result.as_ref())
-            .or_else(|_| bson::from_slice(result.as_ref()))
-            .unwrap();
-        assert_doc_str_fields(&doc, &[("name", expected_name)]);
-        assert_eq!(doc.get_i32("age").unwrap(), expected_age);
-        assert_eq!(doc.get_bool("active").unwrap(), expected_active);
-        assert_doc_missing_keys(&doc, dropped_keys);
-    }
-
     #[test]
     fn json_bytes_with_json_schema_to_json_projects_fields() {
         let schema = Schema::Json(test_json_schema());
