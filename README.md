@@ -25,6 +25,7 @@ Access the dashboard at `http://localhost:8719/`.
 - **Zero-Code Transformations** — Convert between BSON, JSON, and Avro formats automatically
 - **Powerful Middleware** — Transform data in-flight using HTTP services or embedded Rhai scripts
 - **Schema Validation** — Enforce data quality with Avro schema validation
+- **Schema Introspection** — Discover collection schemas without exposing sensitive data
 - **Batch Processing** — Optimized high-throughput batch handling
 - **Checkpoint Persistence** — Resume streaming from the last processed position after restarts
 
@@ -147,6 +148,42 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `POST` | `/services` | Create a new service |
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
+| `GET` | `/services/{name}/schema` | Introspect schema for a resource |
+
+#### Schema Introspection
+
+Introspect the schema of a MongoDB collection by sampling documents:
+
+```
+GET /services/{name}/schema?resource=users&sample_size=100
+```
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `resource` | Collection name to introspect (required) | — |
+| `sample_size` | Number of documents to sample (max: 1000) | 100 |
+
+**Response:** Returns schema variants grouped by document shape. Documents with conflicting field types are grouped separately.
+
+```json
+[
+  {
+    "share_percent": 95.0,
+    "sample_count": 95,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "age": { "type": "integer" },
+        "email": { "type": "string" }
+      },
+      "required": ["name", "age"]
+    }
+  }
+]
+```
+
+> **Note:** Schema introspection samples documents without exposing actual values, making it safe for compliance-sensitive environments where you need to build transformation pipelines without viewing PII.
 
 ### Logs
 
