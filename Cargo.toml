@@ -51,13 +51,14 @@ tonic-build = "0.13"
 prost-derive = "0.13"
 
 [dev-dependencies]
+criterion-plot = "0.8"
 serial_test = "3.2.0"
 mockito = "1.7.0"
 proptest = "1.4.0"
 apache-avro = { version = "0.14", features = ["derive"] }
 tokio = { version = "1.0", features = ["full", "test-util"] }
 tempfile = "3.23.0"
-criterion = "0.5"
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "json_schema_bench"
