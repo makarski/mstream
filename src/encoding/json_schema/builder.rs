@@ -190,10 +190,14 @@ fn get_fields_at_level(stats: &FieldStats, prefix: &str) -> Vec<String> {
     let prefix_len = prefix_with_dot.len();
     let mut fields = HashSet::new();
 
+    let is_field_at_level = |field_path: &str| -> bool {
+        let is_nested_under_prefix = field_path.starts_with(&prefix_with_dot);
+        let is_top_level_field = prefix.is_empty() && !field_path.contains('.');
+        is_nested_under_prefix || is_top_level_field
+    };
+
     for field_path in stats.presence.keys() {
-        if field_path.starts_with(&prefix_with_dot)
-            || (prefix.is_empty() && !field_path.contains('.'))
-        {
+        if is_field_at_level(field_path) {
             let remainder = if prefix.is_empty() {
                 field_path.as_str()
             } else {

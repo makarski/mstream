@@ -91,6 +91,58 @@ mod tests {
     use mongodb::bson::doc;
     use serde_json::json;
 
+    // =========================================================================
+    // Test helpers
+    // =========================================================================
+
+    /// Helper to assert a BSON document has expected string fields
+    fn assert_doc_str_fields(doc: &mongodb::bson::Document, expected: &[(&str, &str)]) {
+        for (key, value) in expected {
+            assert_eq!(
+                doc.get_str(*key).unwrap(),
+                *value,
+                "field '{}' mismatch",
+                key
+            );
+        }
+    }
+
+    /// Helper to assert a BSON document does not contain certain keys
+    fn assert_doc_missing_keys(doc: &mongodb::bson::Document, keys: &[&str]) {
+        for key in keys {
+            assert!(!doc.contains_key(*key), "field '{}' should not exist", key);
+        }
+    }
+
+    /// Helper to assert JSON value has expected fields
+    fn assert_json_fields(json: &serde_json::Value, expected: &[(&str, serde_json::Value)]) {
+        for (key, value) in expected {
+            assert_eq!(json[*key], *value, "field '{}' mismatch", key);
+        }
+    }
+
+    /// Helper to assert JSON value is missing certain keys
+    fn assert_json_missing_keys(json: &serde_json::Value, keys: &[&str]) {
+        for key in keys {
+            assert!(json.get(*key).is_none(), "field '{}' should not exist", key);
+        }
+    }
+
+    /// Macro for testing schema error cases
+    macro_rules! assert_schema_error {
+        ($doc:expr, $schema:expr, $expected_msg:expr) => {
+            let result = apply_to_doc($doc, $schema);
+            assert!(result.is_err(), "expected error but got Ok");
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains($expected_msg),
+                "expected error containing '{}', got '{}'",
+                $expected_msg,
+                err_msg
+            );
+        };
+    }
+
     fn sample_schema() -> JsonValue {
         json!({
             "type": "object",
@@ -151,10 +203,12 @@ mod tests {
 
         let result = apply_to_doc(&doc, &schema).unwrap();
 
-        assert_eq!(result.get_str("name").unwrap(), "Alice");
+        assert_doc_str_fields(
+            &result,
+            &[("name", "Alice"), ("email", "alice@example.com")],
+        );
         assert_eq!(result.get_i32("age").unwrap(), 30);
-        assert_eq!(result.get_str("email").unwrap(), "alice@example.com");
-        assert!(!result.contains_key("extra_field"));
+        assert_doc_missing_keys(&result, &["extra_field"]);
     }
 
     #[test]
@@ -172,9 +226,7 @@ mod tests {
         let result = apply_to_doc(&doc, &schema).unwrap();
 
         assert_eq!(result.len(), 3);
-        assert!(!result.contains_key("password"));
-        assert!(!result.contains_key("internal_id"));
-        assert!(!result.contains_key("metadata"));
+        assert_doc_missing_keys(&result, &["password", "internal_id", "metadata"]);
     }
 
     #[test]
@@ -188,9 +240,8 @@ mod tests {
         let result = apply_to_doc(&doc, &schema).unwrap();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get_str("name").unwrap(), "Charlie");
-        assert_eq!(result.get_i32("age").unwrap(), 35);
-        assert!(!result.contains_key("email"));
+        assert_doc_str_fields(&result, &[("name", "Charlie")]);
+        assert_doc_missing_keys(&result, &["email"]);
     }
 
     #[test]
@@ -211,18 +262,14 @@ mod tests {
         let schema = nested_schema();
 
         let result = apply_to_doc(&doc, &schema).unwrap();
-
         let user = result.get_document("user").unwrap();
-        assert_eq!(user.get_str("name").unwrap(), "Dave");
-        assert!(!user.contains_key("age"));
-        assert!(!user.contains_key("extra"));
-
         let address = user.get_document("address").unwrap();
-        assert_eq!(address.get_str("city").unwrap(), "London");
-        assert!(!address.contains_key("zip"));
-        assert!(!address.contains_key("country"));
 
-        assert!(!result.contains_key("extra_top"));
+        assert_doc_str_fields(user, &[("name", "Dave")]);
+        assert_doc_missing_keys(user, &["age", "extra"]);
+        assert_doc_str_fields(address, &[("city", "London")]);
+        assert_doc_missing_keys(address, &["zip", "country"]);
+        assert_doc_missing_keys(&result, &["extra_top"]);
     }
 
     #[test]
@@ -257,16 +304,7 @@ mod tests {
     fn apply_to_doc_error_missing_properties_field() {
         let doc = doc! { "name": "Test" };
         let schema = json!({ "type": "object" });
-
-        let result = apply_to_doc(&doc, &schema);
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("missing 'properties'")
-        );
+        assert_schema_error!(&doc, &schema, "missing 'properties'");
     }
 
     #[test]
@@ -276,32 +314,14 @@ mod tests {
             "type": "object",
             "properties": "not an object"
         });
-
-        let result = apply_to_doc(&doc, &schema);
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("'properties' field is not an object")
-        );
+        assert_schema_error!(&doc, &schema, "'properties' field is not an object");
     }
 
     #[test]
     fn apply_to_doc_error_top_level_not_object() {
         let doc = doc! { "name": "Test" };
         let schema = json!({ "type": "array" });
-
-        let result = apply_to_doc(&doc, &schema);
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("top level bson schema must be an Object")
-        );
+        assert_schema_error!(&doc, &schema, "top level bson schema must be an Object");
     }
 
     // =========================================================================
@@ -322,10 +342,15 @@ mod tests {
         let result = apply_to_vec(&json_bytes, &schema).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
 
-        assert_eq!(parsed["name"], "Eve");
-        assert_eq!(parsed["age"], 28);
-        assert_eq!(parsed["email"], "eve@example.com");
-        assert!(parsed.get("extra").is_none());
+        assert_json_fields(
+            &parsed,
+            &[
+                ("name", json!("Eve")),
+                ("age", json!(28)),
+                ("email", json!("eve@example.com")),
+            ],
+        );
+        assert_json_missing_keys(&parsed, &["extra"]);
     }
 
     #[test]
@@ -544,9 +569,9 @@ mod tests {
 
         let result = apply_to_doc(&doc, &schema).unwrap();
 
-        assert_eq!(result.get_str("string_field").unwrap(), "text");
+        assert_doc_str_fields(&result, &[("string_field", "text")]);
         assert_eq!(result.get_i32("int_field").unwrap(), 42);
-        assert_eq!(result.get_bool("bool_field").unwrap(), true);
+        assert!(result.get_bool("bool_field").unwrap());
         assert!((result.get_f64("float_field").unwrap() - 3.14).abs() < 0.01);
         assert!(result.get("null_field").unwrap().as_null().is_some());
     }
@@ -571,9 +596,10 @@ mod tests {
         let result = apply_to_vec(&json_bytes, &schema).unwrap();
         let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
 
-        assert_eq!(parsed["keep1"], "value1");
-        assert_eq!(parsed["keep2"], 123);
-        assert!(parsed.get("drop1").is_none());
-        assert!(parsed.get("drop2").is_none());
+        assert_json_fields(
+            &parsed,
+            &[("keep1", json!("value1")), ("keep2", json!(123))],
+        );
+        assert_json_missing_keys(&parsed, &["drop1", "drop2"]);
     }
 }

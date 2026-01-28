@@ -156,6 +156,18 @@ mod tests {
         (status, message)
     }
 
+    /// Helper to assert an API error returns expected status and message substring
+    async fn assert_api_error(error: ApiError, expected_status: StatusCode, expected_msg: &str) {
+        let (status, message) = extract_response(error.into_response()).await;
+        assert_eq!(status, expected_status, "unexpected status code");
+        assert!(
+            message.contains(expected_msg),
+            "expected message containing '{}', got '{}'",
+            expected_msg,
+            message
+        );
+    }
+
     mod job_manager_error_tests {
         use super::*;
 
@@ -251,10 +263,7 @@ mod tests {
                 source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
             }
             .into();
-            let (status, message) = extract_response(error.into_response()).await;
-
-            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(message.contains("Failed to read"));
+            assert_api_error(error, StatusCode::INTERNAL_SERVER_ERROR, "Failed to read").await;
         }
 
         #[tokio::test]
@@ -287,10 +296,7 @@ mod tests {
                 "disk full",
             ))
             .into();
-            let (status, message) = extract_response(error.into_response()).await;
-
-            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-            assert!(message.contains("disk full"));
+            assert_api_error(error, StatusCode::INTERNAL_SERVER_ERROR, "disk full").await;
         }
     }
 
