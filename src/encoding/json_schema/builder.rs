@@ -22,14 +22,21 @@ fn collect_field_stats(docs: &[Document]) -> FieldStats {
     let mut stats = FieldStats::new();
 
     for doc in docs {
-        analyze_document(doc, "", &mut stats);
+        analyze_document(doc, "", &mut stats, 0);
     }
 
     stats
 }
 
+/// Maximum nesting depth to prevent stack overflow from malicious documents
+const MAX_DEPTH: usize = 100;
+
 /// Recursively analyzes a document and collects field info
-fn analyze_document(doc: &Document, prefix: &str, stats: &mut FieldStats) {
+fn analyze_document(doc: &Document, prefix: &str, stats: &mut FieldStats, depth: usize) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+
     for (key, value) in doc {
         let field_path = if prefix.is_empty() {
             key.clone()
@@ -44,10 +51,10 @@ fn analyze_document(doc: &Document, prefix: &str, stats: &mut FieldStats) {
 
         match value {
             Bson::Document(nested) => {
-                analyze_document(nested, &field_path, stats);
+                analyze_document(nested, &field_path, stats, depth + 1);
             }
             Bson::Array(arr) => {
-                analyze_array_items(arr, &field_path, stats);
+                analyze_array_items(arr, &field_path, stats, depth + 1);
             }
             _ => {}
         }
@@ -55,7 +62,11 @@ fn analyze_document(doc: &Document, prefix: &str, stats: &mut FieldStats) {
 }
 
 /// Analyzes array items to determine item schema
-fn analyze_array_items(arr: &[Bson], field_path: &str, stats: &mut FieldStats) {
+fn analyze_array_items(arr: &[Bson], field_path: &str, stats: &mut FieldStats, depth: usize) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+
     let item_path = format!("{}[]", field_path);
 
     for item in arr {
@@ -63,7 +74,7 @@ fn analyze_array_items(arr: &[Bson], field_path: &str, stats: &mut FieldStats) {
         stats.record_type(&item_path, type_name);
 
         if let Bson::Document(doc) = item {
-            analyze_document(doc, &item_path, stats);
+            analyze_document(doc, &item_path, stats, depth + 1);
         }
     }
 }

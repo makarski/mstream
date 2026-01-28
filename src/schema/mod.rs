@@ -1,3 +1,4 @@
+use anyhow::bail;
 use apache_avro::Schema as AvroSchema;
 use async_trait::async_trait;
 use mongo::MongoDbSchemaProvider;
@@ -46,24 +47,10 @@ impl Schema {
         Ok(parsed)
     }
 
-    pub fn try_as_avro(&self) -> Result<&AvroSchema, anyhow::Error> {
+    pub fn try_as_avro(&self) -> anyhow::Result<&AvroSchema> {
         match self {
             Self::Avro(schema) => Ok(schema),
-            _ => Err(anyhow::anyhow!("schema is not Avro")),
-        }
-    }
-
-    pub fn as_avro(&self) -> Option<&AvroSchema> {
-        match self {
-            Self::Avro(schema) => Some(schema),
-            _ => None,
-        }
-    }
-
-    pub fn as_json(&self) -> Option<&JsonValue> {
-        match self {
-            Self::Json(schema) => Some(schema),
-            _ => None,
+            _ => bail!("schema is not Avro"),
         }
     }
 }

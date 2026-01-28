@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use futures::TryFutureExt;
+
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -191,36 +191,43 @@ async fn remove_service(
     ))
 }
 
+/// GET /services/{name}/schema
 async fn get_resource_schema(
     State(state): State<AppState>,
     Path(service_name): Path<String>,
     Query(query): Query<SchemaQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let jm = state.job_manager.lock().await;
-    let registry = jm.service_registry.read().await;
-    let client = registry
-        .mongodb_client(&service_name)
-        .await
-        .map_err(|e| ApiError::Internal(format!("failed to get MongoDB client: {}", e)))?;
+    // Get client and db_name while holding locks, then release before slow query
+    let (client, db_name) = {
+        let jm = state.job_manager.lock().await;
+        let registry = jm.service_registry.read().await;
 
-    let service_definition = registry
-        .service_definition(&service_name)
-        .map_err(|err| ApiError::NotFound(err.to_string()))
-        .await?;
+        let client = registry
+            .mongodb_client(&service_name)
+            .await
+            .map_err(|e| ApiError::Internal(format!("failed to get MongoDB client: {}", e)))?;
 
-    let mgo_cfg = match &service_definition {
-        Service::MongoDb(cfg) => cfg,
-        _ => {
-            return Err(ApiError::Internal(format!(
-                "service {} is not a mongo service",
-                service_name
-            )));
-        }
-    };
+        let service_definition = registry
+            .service_definition(&service_name)
+            .await
+            .map_err(|err| ApiError::NotFound(err.to_string()))?;
 
-    let db = client.database(&mgo_cfg.db_name);
+        let db_name = match &service_definition {
+            Service::MongoDb(cfg) => cfg.db_name.clone(),
+            _ => {
+                return Err(ApiError::Internal(format!(
+                    "service {} is not a mongo service",
+                    service_name
+                )));
+            }
+        };
+
+        (client, db_name)
+    }; // locks released here
+
+    let db = client.database(&db_name);
     let introspector = SchemaIntrospector::new(db, query.resource.clone());
-    let variants = introspector.introspect(query.sample_size).await?;
+    let variants = introspector.introspect(query.sample_size()).await?;
 
     Ok((StatusCode::OK, Json(variants)))
 }

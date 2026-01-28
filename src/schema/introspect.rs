@@ -57,17 +57,24 @@ impl SchemaIntrospector {
         let mut variants: Vec<SchemaVariant> = groups
             .into_iter()
             .map(|(_fingerprint, group_docs)| {
-                let schema = json_schema::build_schema(&group_docs);
+                let sample_count = group_docs.len();
+                let share_percent = (sample_count as f64 / total as f64) * 100.0;
+                let docs: Vec<_> = group_docs.into_iter().cloned().collect();
+                let schema = json_schema::build_schema(&docs);
                 SchemaVariant {
-                    share_percent: (group_docs.len() as f64 / total as f64) * 100.0,
-                    sample_count: group_docs.len(),
+                    share_percent,
+                    sample_count,
                     schema,
                 }
             })
             .collect();
 
         // Sort by share_percent descending
-        variants.sort_by(|a, b| b.share_percent.partial_cmp(&a.share_percent).unwrap());
+        variants.sort_by(|a, b| {
+            b.share_percent
+                .partial_cmp(&a.share_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(variants)
     }
@@ -89,12 +96,15 @@ impl SchemaIntrospector {
     }
 }
 
+/// Maximum nesting depth to prevent stack overflow from malicious documents
+const MAX_DEPTH: usize = 100;
+
 /// Collects field -> type -> count statistics
 fn collect_field_stats(docs: &[Document]) -> HashMap<String, HashMap<String, usize>> {
     let mut stats: HashMap<String, HashMap<String, usize>> = HashMap::new();
 
     for doc in docs {
-        collect_doc_types(doc, "", &mut stats);
+        collect_doc_types(doc, "", &mut stats, 0);
     }
 
     stats
@@ -104,7 +114,12 @@ fn collect_doc_types(
     doc: &Document,
     prefix: &str,
     stats: &mut HashMap<String, HashMap<String, usize>>,
+    depth: usize,
 ) {
+    if depth >= MAX_DEPTH {
+        return;
+    }
+
     for (key, value) in doc {
         let field_path = if prefix.is_empty() {
             key.clone()
@@ -122,7 +137,7 @@ fn collect_doc_types(
 
         // Recurse into nested documents
         if let Bson::Document(nested) = value {
-            collect_doc_types(nested, &field_path, stats);
+            collect_doc_types(nested, &field_path, stats, depth + 1);
         }
     }
 }
@@ -144,12 +159,15 @@ fn find_conflicts(stats: &HashMap<String, HashMap<String, usize>>) -> Vec<String
 }
 
 /// Groups documents by their type signature on conflict fields
-fn group_by_conflicts(docs: &[Document], conflicts: &[String]) -> BTreeMap<String, Vec<Document>> {
-    let mut groups: BTreeMap<String, Vec<Document>> = BTreeMap::new();
+fn group_by_conflicts<'a>(
+    docs: &'a [Document],
+    conflicts: &[String],
+) -> BTreeMap<String, Vec<&'a Document>> {
+    let mut groups: BTreeMap<String, Vec<&'a Document>> = BTreeMap::new();
 
     for doc in docs {
         let fingerprint = compute_fingerprint(doc, conflicts);
-        groups.entry(fingerprint).or_default().push(doc.clone());
+        groups.entry(fingerprint).or_default().push(doc);
     }
 
     groups

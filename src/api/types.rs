@@ -136,11 +136,21 @@ pub(super) fn decode_cursor(cursor: &[u8]) -> CursorInfo {
     }
 }
 
+/// Maximum allowed sample size to prevent memory exhaustion
+const MAX_SAMPLE_SIZE: usize = 1000;
+
 #[derive(Deserialize)]
 pub(crate) struct SchemaQuery {
     pub(crate) resource: String,
     #[serde(default = "default_sample_size")]
-    pub(crate) sample_size: usize,
+    sample_size: usize,
+}
+
+impl SchemaQuery {
+    /// Returns sample_size clamped to MAX_SAMPLE_SIZE
+    pub(crate) fn sample_size(&self) -> usize {
+        self.sample_size.min(MAX_SAMPLE_SIZE)
+    }
 }
 
 fn default_sample_size() -> usize {
