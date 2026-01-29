@@ -377,15 +377,23 @@ fn detect_enum_values(values: &[Bson]) -> Option<Vec<String>> {
     }
 
     // Don't create enums for values that look like IDs or unique identifiers
-    if frequent_values.iter().any(|s| {
-        OBJECTID_REGEX.is_match(s) || s.len() > 50 || s.chars().all(|c| c.is_ascii_hexdigit())
-    }) {
+    if frequent_values
+        .iter()
+        .any(|s| OBJECTID_REGEX.is_match(s) || s.len() > 50 || is_likely_hex_id(s))
+    {
         return None;
     }
 
     let mut sorted = frequent_values;
     sorted.sort();
     Some(sorted)
+}
+
+/// Checks if a string looks like a hex-encoded ID (common lengths: 24, 32, 36, 40)
+fn is_likely_hex_id(s: &str) -> bool {
+    // Common ID lengths: MongoDB ObjectId (24), UUID hex (32), UUID with dashes (36), SHA1 (40)
+    let id_lengths = [24, 32, 36, 40];
+    id_lengths.contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// Checks if a field path indicates PII based on field name patterns

@@ -47,6 +47,7 @@ aes-gcm = "0.10.3"
 hex = "0.4.3"
 jsonschema = "0.40.0"
 regex = "1"
+uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 tonic-build = "0.13"

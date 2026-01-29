@@ -8,6 +8,7 @@ use fake::rand::SeedableRng;
 use fake::rand::rngs::StdRng;
 use rand::Rng;
 use serde_json::{Map, Value, json};
+use uuid::Uuid;
 
 use super::JsonSchema;
 
@@ -48,20 +49,16 @@ impl SchemaFiller {
             return Value::Null;
         }
 
-        // Handle oneOf (nullable types from schema builder)
         if let Some(one_of) = schema.get("oneOf").and_then(|v| v.as_array()) {
-            // Pick first non-null variant
             for variant in one_of {
                 if variant.get("type") != Some(&json!("null")) {
-                    return self.fill_value(variant, field_name, depth);
+                    return self.fill_value(variant, field_name, depth + 1);
                 }
             }
             return Value::Null;
         }
 
-        // Handle type as array (e.g., ["string", "null"])
         if let Some(types) = schema.get("type").and_then(|t| t.as_array()) {
-            // Pick first non-null type
             for t in types {
                 if let Some(type_str) = t.as_str() {
                     if type_str != "null" {
@@ -70,7 +67,7 @@ impl SchemaFiller {
                         if let Some(obj) = single_type_schema.as_object_mut() {
                             obj.insert("type".to_string(), json!(type_str));
                         }
-                        return self.fill_value(&single_type_schema, field_name, depth);
+                        return self.fill_value(&single_type_schema, field_name, depth + 1);
                     }
                 }
             }
@@ -238,7 +235,7 @@ impl SchemaFiller {
             LastName().fake_with_rng(&mut self.rng)
         } else if name_lower.contains("full_name") || name_lower.contains("fullname") {
             Name().fake_with_rng(&mut self.rng)
-        } else if name_lower.contains("name") {
+        } else if self.is_person_name_field(name_lower) {
             Name().fake_with_rng(&mut self.rng)
         } else if name_lower.contains("phone") || name_lower.contains("mobile") {
             PhoneNumber().fake_with_rng(&mut self.rng)
@@ -258,7 +255,7 @@ impl SchemaFiller {
         } else if name_lower.contains("address") {
             format!(
                 "{} {}",
-                self.rng.random_range(1..9999),
+                self.rng.random_range(1..=9999),
                 StreetName().fake_with_rng::<String, _>(&mut self.rng)
             )
         } else if self.is_date_field(name_lower) {
@@ -266,9 +263,9 @@ impl SchemaFiller {
         } else if name_lower.contains("ssn") || name_lower.contains("social") {
             format!(
                 "{:03}-{:02}-{:04}",
-                self.rng.random_range(100..999),
-                self.rng.random_range(10..99),
-                self.rng.random_range(1000..9999)
+                self.rng.random_range(100..=999),
+                self.rng.random_range(10..=99),
+                self.rng.random_range(1000..=9999)
             )
         } else if name_lower.contains("creditcard")
             || name_lower.contains("credit_card")
@@ -277,7 +274,7 @@ impl SchemaFiller {
         {
             String::from("4111111111111111")
         } else if name_lower.contains("cvv") || name_lower.contains("cvc") {
-            format!("{:03}", self.rng.random_range(100..999))
+            format!("{:03}", self.rng.random_range(100..=999))
         } else {
             Word().fake_with_rng(&mut self.rng)
         }
@@ -286,19 +283,22 @@ impl SchemaFiller {
     /// Generate an integer value based on field name heuristics
     fn generate_integer_by_field_name(&mut self, name_lower: &str) -> i64 {
         if name_lower.contains("credits") {
-            self.rng.random_range(0..180)
-        } else if name_lower.contains("year") && !name_lower.contains("birth") {
-            self.rng.random_range(1..8)
+            self.rng.random_range(0..=180)
+        } else if self.is_academic_year_field(name_lower) {
+            self.rng.random_range(1..=8)
+        } else if name_lower.contains("year") {
+            // Calendar year (e.g., graduation_year, birth_year, publication_year)
+            self.rng.random_range(2020..=2025)
         } else if name_lower.contains("salary") {
-            self.rng.random_range(30000..200000)
+            self.rng.random_range(30000..=200000)
         } else if name_lower.contains("age") {
-            self.rng.random_range(18..80)
+            self.rng.random_range(18..=80)
         } else if name_lower.contains("count") || name_lower.contains("total") {
-            self.rng.random_range(0..100)
+            self.rng.random_range(0..=100)
         } else if name_lower.contains("h_index") {
-            self.rng.random_range(0..100)
+            self.rng.random_range(0..=100)
         } else {
-            self.rng.random_range(1..1000)
+            self.rng.random_range(1..=1000)
         }
     }
 
@@ -306,10 +306,7 @@ impl SchemaFiller {
     fn generate_number_by_field_name(&mut self, name_lower: &str) -> f64 {
         if name_lower == "lat" || name_lower.contains("latitude") {
             self.rng.random_range(-90.0..90.0)
-        } else if name_lower == "lng"
-            || name_lower.contains("longitude")
-            || name_lower.contains("long")
-        {
+        } else if name_lower == "lng" || name_lower == "lon" || name_lower.contains("longitude") {
             self.rng.random_range(-180.0..180.0)
         } else if name_lower.contains("gpa") {
             let gpa: f64 = self.rng.random_range(0.0..4.0);
@@ -326,6 +323,80 @@ impl SchemaFiller {
         } else {
             self.rng.random_range(1.0..1000.0)
         }
+    }
+
+    /// Check if a field name indicates a person's name (not filename, hostname, etc.)
+    fn is_person_name_field(&self, name_lower: &str) -> bool {
+        // Exact matches that are clearly person names
+        if name_lower == "name"
+            || name_lower == "person_name"
+            || name_lower == "contact_name"
+            || name_lower == "author_name"
+            || name_lower == "customer_name"
+            || name_lower == "employee_name"
+            || name_lower == "student_name"
+            || name_lower == "user_name"
+            || name_lower == "display_name"
+            || name_lower == "legal_name"
+        {
+            return true;
+        }
+
+        // If it contains "name" but is NOT one of these non-person patterns, treat as person name
+        if name_lower.contains("name") {
+            let non_person_patterns = [
+                "filename",
+                "file_name",
+                "hostname",
+                "host_name",
+                "pathname",
+                "path_name",
+                "dirname",
+                "dir_name",
+                "typename",
+                "type_name",
+                "classname",
+                "class_name",
+                "tablename",
+                "table_name",
+                "colname",
+                "col_name",
+                "column_name",
+                "fieldname",
+                "field_name",
+                "varname",
+                "var_name",
+                "keyname",
+                "key_name",
+                "tagname",
+                "tag_name",
+                "nickname",
+                "codename",
+                "code_name",
+                "servicename",
+                "service_name",
+                "dbname",
+                "db_name",
+                "schemaname",
+                "schema_name",
+            ];
+
+            return !non_person_patterns
+                .iter()
+                .any(|pattern| name_lower.contains(pattern));
+        }
+
+        false
+    }
+
+    /// Check if a field name indicates an academic year level (1-8) vs calendar year
+    fn is_academic_year_field(&self, name_lower: &str) -> bool {
+        name_lower == "year_of_study"
+            || name_lower == "study_year"
+            || name_lower == "academic_year"
+            || name_lower == "year_level"
+            || name_lower == "school_year"
+            || name_lower.contains("year_of_study")
     }
 
     /// Check if a field name indicates a date/datetime field
@@ -386,7 +457,7 @@ impl SchemaFiller {
         let millis = self.rng.random_range(0..=999);
 
         format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}+0000",
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
             year, month, day, hour, minute, second, millis
         )
     }
@@ -416,25 +487,7 @@ impl SchemaFiller {
     /// Generate a UUID v4 string
     fn generate_uuid(&mut self) -> String {
         let bytes: [u8; 16] = self.rng.random();
-        format!(
-            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-            bytes[0],
-            bytes[1],
-            bytes[2],
-            bytes[3],
-            bytes[4],
-            bytes[5],
-            bytes[6],
-            bytes[7],
-            bytes[8],
-            bytes[9],
-            bytes[10],
-            bytes[11],
-            bytes[12],
-            bytes[13],
-            bytes[14],
-            bytes[15]
-        )
+        Uuid::from_bytes(bytes).to_string()
     }
 }
 
