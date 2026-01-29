@@ -307,41 +307,62 @@ fn detect_string_format(values: &[Bson], field_path: &str) -> Option<&'static st
         return None;
     }
 
-    // Check if field name suggests ObjectId
-    let field_name = field_path.split('.').last().unwrap_or(field_path);
-    if field_name == "_id" || field_name.ends_with("_id") {
-        // Check if values are ObjectIds or look like ObjectIds
-        let all_objectid = values.iter().all(|v| match v {
-            Bson::ObjectId(_) => true,
-            Bson::String(s) => OBJECTID_REGEX.is_match(s),
-            _ => false,
-        });
-        if all_objectid {
-            return Some("objectid");
-        }
+    if let Some(format) = try_detect_objectid_format(values, field_path) {
+        return Some(format);
     }
 
-    // Check for datetime format (BSON DateTime or ISO 8601 strings)
-    let all_datetime = values
-        .iter()
-        .filter(|v| !matches!(v, Bson::Null))
-        .all(|v| match v {
-            Bson::DateTime(_) => true,
-            Bson::String(s) => ISO_DATETIME_REGEX.is_match(s),
-            _ => false,
-        });
-    if all_datetime && values.iter().any(|v| !matches!(v, Bson::Null)) {
+    if is_all_datetime(values) {
         return Some("date-time");
     }
 
-    // Check for email format
-    let string_values: Vec<&str> = values.iter().filter_map(|v| v.as_str()).collect();
-
-    if !string_values.is_empty() && string_values.iter().all(|s| EMAIL_REGEX.is_match(s)) {
+    if is_all_email(values) {
         return Some("email");
     }
 
     None
+}
+
+fn try_detect_objectid_format(values: &[Bson], field_path: &str) -> Option<&'static str> {
+    let field_name = field_path.split('.').last().unwrap_or(field_path);
+    let is_id_field = field_name == "_id" || field_name.ends_with("_id");
+
+    if !is_id_field {
+        return None;
+    }
+
+    let all_objectid = values.iter().all(|v| is_objectid_value(v));
+    if all_objectid { Some("objectid") } else { None }
+}
+
+fn is_objectid_value(v: &Bson) -> bool {
+    match v {
+        Bson::ObjectId(_) => true,
+        Bson::String(s) => OBJECTID_REGEX.is_match(s),
+        _ => false,
+    }
+}
+
+fn is_all_datetime(values: &[Bson]) -> bool {
+    let non_null: Vec<_> = values.iter().filter(|v| !matches!(v, Bson::Null)).collect();
+
+    if non_null.is_empty() {
+        return false;
+    }
+
+    non_null.iter().all(|v| is_datetime_value(v))
+}
+
+fn is_datetime_value(v: &Bson) -> bool {
+    match v {
+        Bson::DateTime(_) => true,
+        Bson::String(s) => ISO_DATETIME_REGEX.is_match(s),
+        _ => false,
+    }
+}
+
+fn is_all_email(values: &[Bson]) -> bool {
+    let string_values: Vec<&str> = values.iter().filter_map(|v| v.as_str()).collect();
+    !string_values.is_empty() && string_values.iter().all(|s| EMAIL_REGEX.is_match(s))
 }
 
 /// Detects if a field should be an enum based on low cardinality
@@ -350,43 +371,55 @@ fn detect_enum_values(values: &[Bson]) -> Option<Vec<String>> {
         return None;
     }
 
-    // Count occurrences of each string value
-    let mut value_counts: HashMap<String, usize> = HashMap::new();
-    for v in values {
-        if let Some(s) = v.as_str() {
-            *value_counts.entry(s.to_string()).or_insert(0) += 1;
-        }
-    }
+    let value_counts = count_string_values(values);
 
-    // Only create enum if we have values and cardinality is low
-    if value_counts.is_empty() || value_counts.len() > MAX_ENUM_CARDINALITY {
+    if !is_valid_enum_cardinality(&value_counts) {
         return None;
     }
 
-    // Filter to values that appear at least MIN_ENUM_VALUE_OCCURRENCES times
-    // This prevents leaking unique/rare values that might be PII
-    let frequent_values: Vec<String> = value_counts
-        .into_iter()
-        .filter(|(_, count)| *count >= MIN_ENUM_VALUE_OCCURRENCES)
-        .map(|(value, _)| value)
-        .collect();
+    let frequent_values = filter_frequent_values(value_counts);
 
-    // Need at least 2 frequent values to make an enum worthwhile
     if frequent_values.len() < 2 {
         return None;
     }
 
-    // Don't create enums for values that look like IDs or unique identifiers
-    if frequent_values
-        .iter()
-        .any(|s| OBJECTID_REGEX.is_match(s) || s.len() > 50 || is_likely_hex_id(s))
-    {
+    if contains_id_like_values(&frequent_values) {
         return None;
     }
 
     let mut sorted = frequent_values;
     sorted.sort();
     Some(sorted)
+}
+
+fn count_string_values(values: &[Bson]) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for v in values {
+        if let Some(s) = v.as_str() {
+            *counts.entry(s.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn is_valid_enum_cardinality(counts: &HashMap<String, usize>) -> bool {
+    !counts.is_empty() && counts.len() <= MAX_ENUM_CARDINALITY
+}
+
+fn filter_frequent_values(counts: HashMap<String, usize>) -> Vec<String> {
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count >= MIN_ENUM_VALUE_OCCURRENCES)
+        .map(|(value, _)| value)
+        .collect()
+}
+
+fn contains_id_like_values(values: &[String]) -> bool {
+    values.iter().any(|s| is_id_like_string(s))
+}
+
+fn is_id_like_string(s: &str) -> bool {
+    OBJECTID_REGEX.is_match(s) || s.len() > 50 || is_likely_hex_id(s)
 }
 
 /// Checks if a string looks like a hex-encoded ID (common lengths: 24, 32, 36, 40)
@@ -741,6 +774,27 @@ mod tests {
         assert_eq!(schema["properties"]["_id"]["format"], "objectid");
     }
 
+    /// Helper to build schema and extract a field's schema
+    fn get_field_schema(docs: Vec<Document>, field: &str) -> serde_json::Value {
+        let schema = build_schema(&docs);
+        schema["properties"][field].clone()
+    }
+
+    /// Helper to assert a field has the expected type and min/max range
+    fn assert_field_range(field: &serde_json::Value, expected_type: &str, min: f64, max: f64) {
+        assert_eq!(field["type"], expected_type);
+        assert_eq!(field["minimum"], min);
+        assert_eq!(field["maximum"], max);
+    }
+
+    /// Helper to assert enum contains expected values
+    fn assert_enum_contains(field: &serde_json::Value, expected: &[serde_json::Value]) {
+        let enum_values = field["enum"].as_array().unwrap();
+        for val in expected {
+            assert!(enum_values.contains(val), "enum should contain {:?}", val);
+        }
+    }
+
     #[test]
     fn build_schema_detects_enum_low_cardinality() {
         // Each value must appear at least MIN_ENUM_VALUE_OCCURRENCES times
@@ -753,13 +807,13 @@ mod tests {
             doc! { "status": "inactive" },
         ];
 
-        let schema = build_schema(&docs);
+        let field = get_field_schema(docs, "status");
 
-        assert_eq!(schema["properties"]["status"]["type"], "string");
-        let enum_values = schema["properties"]["status"]["enum"].as_array().unwrap();
-        assert!(enum_values.contains(&json!("active")));
-        assert!(enum_values.contains(&json!("pending")));
-        assert!(enum_values.contains(&json!("inactive")));
+        assert_eq!(field["type"], "string");
+        assert_enum_contains(
+            &field,
+            &[json!("active"), json!("pending"), json!("inactive")],
+        );
     }
 
     #[test]
@@ -783,11 +837,9 @@ mod tests {
             doc! { "age": 65 },
         ];
 
-        let schema = build_schema(&docs);
+        let field = get_field_schema(docs, "age");
 
-        assert_eq!(schema["properties"]["age"]["type"], "integer");
-        assert_eq!(schema["properties"]["age"]["minimum"], 18.0);
-        assert_eq!(schema["properties"]["age"]["maximum"], 65.0);
+        assert_field_range(&field, "integer", 18.0, 65.0);
     }
 
     #[test]
@@ -798,11 +850,9 @@ mod tests {
             doc! { "gpa": 1.9 },
         ];
 
-        let schema = build_schema(&docs);
+        let field = get_field_schema(docs, "gpa");
 
-        assert_eq!(schema["properties"]["gpa"]["type"], "number");
-        assert_eq!(schema["properties"]["gpa"]["minimum"], 1.9);
-        assert_eq!(schema["properties"]["gpa"]["maximum"], 3.8);
+        assert_field_range(&field, "number", 1.9, 3.8);
     }
 
     #[test]
@@ -816,12 +866,9 @@ mod tests {
             doc! { "status": "inactive" },
         ];
 
-        let schema = build_schema(&docs);
+        let field = get_field_schema(docs, "status");
 
-        let enum_values = schema["properties"]["status"]["enum"].as_array().unwrap();
-        assert!(enum_values.contains(&json!("active")));
-        assert!(enum_values.contains(&json!("inactive")));
-        assert!(enum_values.contains(&json!(null)));
+        assert_enum_contains(&field, &[json!("active"), json!("inactive"), json!(null)]);
     }
 
     #[test]
