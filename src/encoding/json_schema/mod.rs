@@ -3,9 +3,14 @@ use serde_json::Value as JsonValue;
 
 mod bson;
 mod builder;
+mod fill;
 mod json;
 
 pub use builder::build_schema;
+pub use fill::SchemaFiller;
+
+/// JSON Schema draft version used by this module
+pub const JSON_SCHEMA_VERSION: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Type alias for JSON Schema representation
 pub type JsonSchema = serde_json::Value;

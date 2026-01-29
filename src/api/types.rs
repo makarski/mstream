@@ -6,7 +6,9 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{checkpoint::Checkpoint, config::Masked, kafka::KafkaOffset};
+use crate::{
+    checkpoint::Checkpoint, config::Masked, encoding::json_schema::JsonSchema, kafka::KafkaOffset,
+};
 
 #[derive(Serialize)]
 pub struct TransformTestResponse {
@@ -155,4 +157,9 @@ impl SchemaQuery {
 
 fn default_sample_size() -> usize {
     100
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SchemaFillRequest {
+    pub(crate) schema: JsonSchema,
 }

@@ -149,6 +149,7 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
 | `GET` | `/services/{name}/schema` | Introspect schema for a resource |
+| `POST` | `/schema/fill` | Generate synthetic data from a schema |
 
 #### Schema Introspection
 
@@ -184,6 +185,12 @@ GET /services/{name}/schema?resource=users&sample_size=100
 ```
 
 > **Note:** Schema introspection samples documents without exposing actual values, making it safe for compliance-sensitive environments where you need to build transformation pipelines without viewing PII.
+
+#### Schema Fill
+
+Generate synthetic data from a JSON Schema via `POST /schema/fill`. Pass `{"schema": <JsonSchema>}` and receive a document with realistic values based on schema hints (`enum`, `format`, `minimum`/`maximum`) and field name heuristics (e.g., `email` → email address, `_id` → ObjectId, `created_at` → datetime).
+
+Useful for testing transformation scripts in the Playground without exposing real data.
 
 ### Logs
 
