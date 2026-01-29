@@ -12,11 +12,12 @@ use tracing::info;
 
 use crate::api::error::ApiError;
 use crate::api::types::{
-    CheckpointResponse, MaskedJson, Message, SchemaQuery, TransformTestRequest,
+    CheckpointResponse, MaskedJson, Message, SchemaFillRequest, SchemaQuery, TransformTestRequest,
     TransformTestResponse,
 };
 use crate::config::system::LogsConfig;
 use crate::config::{Connector, Encoding, Service};
+use crate::encoding::json_schema::SchemaFiller;
 use crate::job_manager::{JobManager, JobMetadata, error::JobManagerError};
 use crate::logs::LogBuffer;
 use crate::middleware::udf::rhai::{RhaiMiddleware, RhaiMiddlewareError};
@@ -54,6 +55,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services", get(list_services))
         .route("/services/{name}", get(get_one_service))
         .route("/services/{name}/schema", get(get_resource_schema))
+        .route("/schema/fill", post(fill_schema))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
         .route("/jobs/{name}/checkpoints", get(list_checkpoints))
@@ -230,6 +232,13 @@ async fn get_resource_schema(
     let variants = introspector.introspect(query.sample_size()).await?;
 
     Ok((StatusCode::OK, Json(variants)))
+}
+
+/// POST /schema/fill
+async fn fill_schema(Json(req): Json<SchemaFillRequest>) -> Result<impl IntoResponse, ApiError> {
+    let mut filler = SchemaFiller::new();
+    let filled = filler.fill(&req.schema);
+    Ok((StatusCode::OK, Json(filled)))
 }
 
 async fn transform_run(

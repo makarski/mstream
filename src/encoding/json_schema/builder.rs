@@ -2,19 +2,27 @@ use mongodb::bson::{Bson, Document};
 use serde_json::{Map as JsonMap, json};
 use std::collections::{HashMap, HashSet};
 
-use super::JsonSchema;
+use super::{JSON_SCHEMA_VERSION, JsonSchema};
 
 /// Builds a JSON Schema from a collection of BSON documents
 pub fn build_schema(docs: &[Document]) -> JsonSchema {
     if docs.is_empty() {
         return json!({
+            "$schema": JSON_SCHEMA_VERSION,
             "type": "object",
             "properties": {}
         });
     }
 
     let stats = collect_field_stats(docs);
-    build_object_schema(&stats, "", docs.len())
+    let mut schema = build_object_schema(&stats, "", docs.len());
+
+    // Add $schema to top-level
+    if let Some(obj) = schema.as_object_mut() {
+        obj.insert("$schema".to_string(), json!(JSON_SCHEMA_VERSION));
+    }
+
+    schema
 }
 
 /// Collects statistics about field presence and types
