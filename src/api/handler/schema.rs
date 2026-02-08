@@ -5,12 +5,16 @@ use axum::response::IntoResponse;
 
 use crate::api::AppState;
 use crate::api::error::ApiError;
-use crate::api::types::{SchemaFillRequest, SchemaQuery};
-use crate::config::Service;
+use crate::api::types::{
+    SchemaConvertRequest, SchemaConvertResponse, SchemaFillRequest, SchemaQuery,
+};
+use crate::config::{Encoding, Service};
 use crate::encoding::json_schema::SchemaFiller;
+use crate::schema::Schema;
+use crate::schema::convert::{avro_to_json_schema, json_schema_to_avro};
 use crate::schema::introspect::SchemaIntrospector;
 
-/// GET /services/{name}/schema/instrospect
+/// GET /services/{name}/schema/introspect
 pub async fn get_resource_schema(
     State(state): State<AppState>,
     Path(service_name): Path<String>,
@@ -58,6 +62,55 @@ pub async fn fill_schema(
     let mut filler = SchemaFiller::new();
     let filled = filler.fill(&req.schema);
     Ok((StatusCode::OK, Json(filled)))
+}
+
+/// POST /schema/convert
+pub async fn schema_convert(
+    Json(req): Json<SchemaConvertRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let source_encoding = &req.source.schema_encoding;
+    let target_encoding = &req.target_encoding;
+
+    // Validate: source and target must be different
+    if source_encoding == target_encoding {
+        return Err(ApiError::BadRequest(
+            "source and target encoding must be different".to_string(),
+        ));
+    }
+
+    let converted = match (source_encoding, target_encoding) {
+        (Encoding::Json, Encoding::Avro) => {
+            let json_schema: serde_json::Value = serde_json::from_str(&req.source.body)
+                .map_err(|e| ApiError::BadRequest(format!("invalid JSON Schema: {}", e)))?;
+
+            json_schema_to_avro(&json_schema, &req.options)
+                .map_err(|e| ApiError::BadRequest(format!("conversion failed: {}", e)))?
+        }
+        (Encoding::Avro, Encoding::Json) => {
+            let avro_schema = Schema::parse(&req.source.body, Encoding::Avro)
+                .map_err(|e| ApiError::BadRequest(format!("invalid Avro schema: {}", e)))?;
+
+            let avro = avro_schema
+                .try_as_avro()
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+            avro_to_json_schema(avro)
+                .map_err(|e| ApiError::BadRequest(format!("conversion failed: {}", e)))?
+        }
+        _ => {
+            return Err(ApiError::BadRequest(format!(
+                "unsupported conversion: {:?} -> {:?}",
+                source_encoding, target_encoding
+            )));
+        }
+    };
+
+    let response = SchemaConvertResponse {
+        schema: converted,
+        encoding: req.target_encoding,
+    };
+
+    Ok((StatusCode::OK, Json(response)))
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ pub(crate) mod types;
 use handler::{
     create_service, create_start_job, fill_schema, get_one_service, get_resource_schema,
     list_checkpoints, list_jobs, list_service_resources, list_services, remove_service,
-    restart_job, stop_job, transform_run,
+    restart_job, schema_convert, stop_job, transform_run,
 };
 
 #[derive(Clone)]
@@ -50,10 +50,11 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}", get(get_one_service))
         .route("/services/{name}/resources", get(list_service_resources))
         .route(
-            "/services/{name}/schema/instrospect",
+            "/services/{name}/schema/introspect",
             get(get_resource_schema),
         )
         .route("/schema/fill", post(fill_schema))
+        .route("/schema/convert", post(schema_convert))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))
         .route("/jobs/{name}/checkpoints", get(list_checkpoints))

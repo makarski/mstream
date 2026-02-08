@@ -7,12 +7,16 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    checkpoint::Checkpoint, config::Masked, encoding::json_schema::JsonSchema, kafka::KafkaOffset,
+    checkpoint::Checkpoint,
+    config::{Encoding, Masked},
+    encoding::json_schema::JsonSchema,
+    kafka::KafkaOffset,
 };
 
 #[derive(Serialize)]
 pub struct TransformTestResponse {
     pub document: serde_json::Value,
+    pub encoding: String,
     pub attributes: Option<HashMap<String, String>>,
 }
 
@@ -20,7 +24,27 @@ pub struct TransformTestResponse {
 pub struct TransformTestRequest {
     pub payload: String,
     pub script: String,
+    pub schema: Option<TransformTestSchema>,
     pub attributes: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+pub struct TransformTestSchema {
+    pub schema_encoding: Encoding,
+    pub body: String,
+}
+
+#[derive(Deserialize)]
+pub struct SchemaConvertRequest {
+    pub source: TransformTestSchema,
+    pub target_encoding: Encoding,
+    pub options: Option<HashMap<String, String>>,
+}
+
+#[derive(Serialize)]
+pub struct SchemaConvertResponse {
+    pub schema: String,
+    pub encoding: Encoding,
 }
 
 #[derive(Serialize, Clone)]
@@ -456,6 +480,7 @@ mod tests {
         fn serialize_response_with_document() {
             let response = TransformTestResponse {
                 document: serde_json::json!({"masked": true, "email": "j***@example.com"}),
+                encoding: "json".to_string(),
                 attributes: None,
             };
 
@@ -473,6 +498,7 @@ mod tests {
 
             let response = TransformTestResponse {
                 document: serde_json::json!({"data": "test"}),
+                encoding: "json".to_string(),
                 attributes: Some(attrs),
             };
 
@@ -489,6 +515,7 @@ mod tests {
                     {"id": 1, "masked": true},
                     {"id": 2, "masked": true}
                 ]),
+                encoding: "json".to_string(),
                 attributes: None,
             };
 
