@@ -13,6 +13,10 @@ docker-up: ## Starts the full stack (db + mstream)
 docker-db-up: ## Starts the mongo cluster only
 	@docker-compose up -d mongo1
 
+.PHONY: docker-kafka-up
+docker-kafka-up: ## Starts kafka and kafka-ui
+	@docker-compose up -d kafka-mstream kafka-ui
+
 .PHONY: db-init-rpl-set
 db-init-rpl-set: ## Initializes the replica set
 	@docker exec mongo1 /bin/bash /opt/scripts/init_replica_set.sh

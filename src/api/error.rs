@@ -24,6 +24,9 @@ pub enum ApiError {
     #[error("Not found: {0}")]
     NotFound(String),
 
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -36,6 +39,7 @@ impl IntoResponse for ApiError {
             ApiError::RhaiMiddleware(err) => err.response_data(),
 
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
 
