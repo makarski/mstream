@@ -148,8 +148,30 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `POST` | `/services` | Create a new service |
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
+| `GET` | `/services/{name}/resources` | List resources for a service |
 | `GET` | `/services/{name}/schema` | Introspect schema for a resource |
 | `POST` | `/schema/fill` | Generate synthetic data from a schema |
+
+#### List Service Resources
+
+List available resources (collections, topics) for a service:
+
+```
+GET /services/{name}/resources
+```
+
+**Response:**
+```json
+{
+  "service_name": "mongo-local",
+  "resources": [
+    { "name": "users", "resource_type": "collection" },
+    { "name": "orders", "resource_type": "collection" }
+  ]
+}
+```
+
+> **Note:** Currently supports MongoDB services only. System collections (prefixed with `system.`) are excluded.
 
 #### Schema Introspection
 

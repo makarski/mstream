@@ -55,7 +55,7 @@ services:
       - mongoCluster
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui:v0.7.2
     container_name: kafka-ui
     ports:
       - "8081:8080"
