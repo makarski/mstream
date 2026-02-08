@@ -49,7 +49,10 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services", get(list_services))
         .route("/services/{name}", get(get_one_service))
         .route("/services/{name}/resources", get(list_service_resources))
-        .route("/services/{name}/schema", get(get_resource_schema))
+        .route(
+            "/services/{name}/schema/instrospect",
+            get(get_resource_schema),
+        )
         .route("/schema/fill", post(fill_schema))
         .route("/services", post(create_service))
         .route("/services/{name}", delete(remove_service))

@@ -10,7 +10,7 @@ use crate::config::Service;
 use crate::encoding::json_schema::SchemaFiller;
 use crate::schema::introspect::SchemaIntrospector;
 
-/// GET /services/{name}/schema
+/// GET /services/{name}/schema/instrospect
 pub async fn get_resource_schema(
     State(state): State<AppState>,
     Path(service_name): Path<String>,

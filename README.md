@@ -149,7 +149,7 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
 | `GET` | `/services/{name}/resources` | List resources for a service |
-| `GET` | `/services/{name}/schema` | Introspect schema for a resource |
+| `GET` | `/services/{name}/schema/instrospect` | Introspect schema for a resource |
 | `POST` | `/schema/fill` | Generate synthetic data from a schema |
 
 #### List Service Resources
