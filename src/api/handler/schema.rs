@@ -412,4 +412,111 @@ mod tests {
         let tags = result.get("tags").unwrap().as_array().unwrap();
         assert!(!tags.is_empty());
     }
+
+    // ==========================================================================
+    // schema_convert tests
+    // ==========================================================================
+
+    use super::*;
+    use crate::api::types::TransformTestSchema;
+    use std::collections::HashMap;
+
+    fn make_convert_request(
+        source_encoding: Encoding,
+        body: &str,
+        target_encoding: Encoding,
+        options: Option<HashMap<String, String>>,
+    ) -> SchemaConvertRequest {
+        SchemaConvertRequest {
+            source: TransformTestSchema {
+                schema_encoding: source_encoding,
+                body: body.to_string(),
+            },
+            target_encoding,
+            options,
+        }
+    }
+
+    #[tokio::test]
+    async fn convert_json_schema_to_avro_success() {
+        let json_schema = r#"{
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "age": {"type": "integer"}
+            },
+            "required": ["name"]
+        }"#;
+
+        let options = Some(HashMap::from([
+            ("name".to_string(), "TestRecord".to_string()),
+            ("namespace".to_string(), "com.example".to_string()),
+        ]));
+
+        let req = make_convert_request(Encoding::Json, json_schema, Encoding::Avro, options);
+        let result = schema_convert(Json(req)).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn convert_avro_schema_to_json_success() {
+        let avro_schema = r#"{
+            "type": "record",
+            "name": "TestRecord",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "age", "type": "int"}
+            ]
+        }"#;
+
+        let req = make_convert_request(Encoding::Avro, avro_schema, Encoding::Json, None);
+        let result = schema_convert(Json(req)).await;
+
+        assert!(result.is_ok());
+        let response = result.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn convert_same_encoding_returns_error() {
+        let schema = r#"{"type": "object", "properties": {}}"#;
+
+        let req = make_convert_request(Encoding::Json, schema, Encoding::Json, None);
+        let result = schema_convert(Json(req)).await;
+
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn convert_unsupported_encoding_returns_error() {
+        let schema = r#"{"type": "object", "properties": {}}"#;
+
+        let req = make_convert_request(Encoding::Bson, schema, Encoding::Avro, None);
+        let result = schema_convert(Json(req)).await;
+
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn convert_invalid_json_schema_returns_error() {
+        let invalid_json = r#"{ not valid json }"#;
+
+        let req = make_convert_request(Encoding::Json, invalid_json, Encoding::Avro, None);
+        let result = schema_convert(Json(req)).await;
+
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn convert_invalid_avro_schema_returns_error() {
+        let invalid_avro = r#"{"type": "invalid_type"}"#;
+
+        let req = make_convert_request(Encoding::Avro, invalid_avro, Encoding::Json, None);
+        let result = schema_convert(Json(req)).await;
+
+        assert!(matches!(result, Err(ApiError::BadRequest(_))));
+    }
 }

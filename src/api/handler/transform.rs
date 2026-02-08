@@ -29,6 +29,14 @@ pub async fn transform_run(
     let applied_schema = match transform_req.schema {
         None => Schema::Undefined,
         Some(schema_req) => {
+            // Only Avro and Json schema encodings are supported
+            if !matches!(schema_req.schema_encoding, Encoding::Avro | Encoding::Json) {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported schema encoding: {:?}. Only 'avro' and 'json' are supported",
+                    schema_req.schema_encoding
+                )));
+            }
+
             let schema = Schema::parse(&schema_req.body, schema_req.schema_encoding.clone())
                 .map_err(|e| RhaiMiddlewareError::ExecutionError {
                     message: format!("Invalid schema: {}", e),
@@ -89,12 +97,7 @@ pub async fn transform_run(
 
     let response = TransformTestResponse {
         document,
-        encoding: match transformed.encoding {
-            Encoding::Avro => "avro",
-            Encoding::Json => "json",
-            Encoding::Bson => "bson",
-        }
-        .to_string(),
+        encoding: transformed.encoding,
         attributes: transformed.attributes,
     };
 
@@ -387,5 +390,19 @@ mod tests {
             r#"fn process(data, attributes) { result(data, attributes) }"#,
             |e| matches!(e, RhaiMiddlewareError::MissingTransformFunction),
         );
+    }
+
+    // ==========================================================================
+    // Schema encoding validation tests
+    // ==========================================================================
+
+    #[test]
+    fn only_avro_and_json_schema_encodings_are_supported() {
+        // Avro and Json should be accepted
+        assert!(matches!(Encoding::Avro, Encoding::Avro | Encoding::Json));
+        assert!(matches!(Encoding::Json, Encoding::Avro | Encoding::Json));
+
+        // Bson should be rejected
+        assert!(!matches!(Encoding::Bson, Encoding::Avro | Encoding::Json));
     }
 }

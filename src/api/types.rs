@@ -16,7 +16,7 @@ use crate::{
 #[derive(Serialize)]
 pub struct TransformTestResponse {
     pub document: serde_json::Value,
-    pub encoding: String,
+    pub encoding: Encoding,
     pub attributes: Option<HashMap<String, String>>,
 }
 
@@ -480,7 +480,7 @@ mod tests {
         fn serialize_response_with_document() {
             let response = TransformTestResponse {
                 document: serde_json::json!({"masked": true, "email": "j***@example.com"}),
-                encoding: "json".to_string(),
+                encoding: Encoding::Json,
                 attributes: None,
             };
 
@@ -498,7 +498,7 @@ mod tests {
 
             let response = TransformTestResponse {
                 document: serde_json::json!({"data": "test"}),
-                encoding: "json".to_string(),
+                encoding: Encoding::Json,
                 attributes: Some(attrs),
             };
 
@@ -515,7 +515,7 @@ mod tests {
                     {"id": 1, "masked": true},
                     {"id": 2, "masked": true}
                 ]),
-                encoding: "json".to_string(),
+                encoding: Encoding::Json,
                 attributes: None,
             };
 

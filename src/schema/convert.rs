@@ -164,7 +164,7 @@ fn build_avro_fields(
     let mut fields = Vec::new();
 
     for (field_name, field_schema) in properties {
-        let nested_name = capitalize(field_name);
+        let nested_name = sanitize_avro_name(&capitalize(field_name));
         let field_avro = convert_json_schema_to_avro(field_schema, &nested_name, ctx)?;
         let is_required = required.contains(field_name);
 
@@ -231,7 +231,7 @@ fn try_build_enum(
     let symbols: Vec<String> = enum_values
         .iter()
         .filter_map(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(|s| sanitize_avro_name(s))
         .collect();
 
     if symbols.is_empty() {
@@ -403,6 +403,56 @@ fn capitalize(s: &str) -> String {
     }
 }
 
+/// Sanitize a string to be a valid Avro name.
+/// Avro names must match: [A-Za-z_][A-Za-z0-9_]*
+fn sanitize_avro_name(s: &str) -> String {
+    if s.is_empty() {
+        return "Field".to_string();
+    }
+
+    let mut result = String::with_capacity(s.len());
+    let mut last_was_underscore = false;
+
+    for (i, c) in s.chars().enumerate() {
+        if i == 0 {
+            // First char must be letter or underscore
+            if c.is_ascii_alphabetic() || c == '_' {
+                result.push(c);
+                last_was_underscore = c == '_';
+            } else if c.is_ascii_digit() {
+                // Prefix with underscore if starts with digit
+                result.push('_');
+                result.push(c);
+                last_was_underscore = false;
+            } else {
+                // Replace invalid char with underscore
+                result.push('_');
+                last_was_underscore = true;
+            }
+        } else if c.is_ascii_alphanumeric() {
+            result.push(c);
+            last_was_underscore = false;
+        } else if c == '_' || !c.is_ascii_alphanumeric() {
+            // Collapse consecutive underscores
+            if !last_was_underscore {
+                result.push('_');
+                last_was_underscore = true;
+            }
+        }
+    }
+
+    // Trim trailing underscore
+    while result.ends_with('_') && result.len() > 1 {
+        result.pop();
+    }
+
+    if result.is_empty() || result == "_" {
+        "Field".to_string()
+    } else {
+        result
+    }
+}
+
 // =============================================================================
 // Avro -> JSON Schema conversion
 // =============================================================================
@@ -456,7 +506,11 @@ fn convert_avro_logical_type(schema: &AvroSchema) -> Result<JsonValue> {
             "x-avro-decimal": {"precision": precision, "scale": scale}
         })),
         AvroSchema::Duration => Ok(json!({"type": "string", "format": "duration"})),
-        AvroSchema::Ref { name } => Ok(json!({"$ref": format!("#/$defs/{}", name.fullname(None))})),
+        // Ref types cannot be resolved without the full schema context
+        AvroSchema::Ref { name } => bail!(
+            "cannot convert Avro Ref type '{}' to JSON Schema: named references require full schema context",
+            name.fullname(None)
+        ),
         // Fallback for any types not explicitly handled
         _ => Ok(json!({"type": "string"})),
     }
@@ -525,13 +579,11 @@ fn convert_avro_record(fields: &[apache_avro::schema::RecordField]) -> Result<Js
     Ok(JsonValue::Object(schema))
 }
 
+/// A field is required in JSON Schema if it has no default value in Avro.
+/// Nullability (union with null) is separate from requiredness — a field
+/// can be required AND nullable (must be present, but can be null).
 fn is_required_avro_field(field: &apache_avro::schema::RecordField) -> bool {
-    if field.default.is_some() {
-        return false;
-    }
-
-    !matches!(&field.schema, AvroSchema::Union(u)
-        if u.variants().iter().any(|v| matches!(v, AvroSchema::Null)))
+    field.default.is_none()
 }
 
 #[cfg(test)]
@@ -924,6 +976,115 @@ mod tests {
         let required = json["required"].as_array().unwrap();
         assert!(required.contains(&json!("required_field")));
         assert!(!required.contains(&json!("optional_field")));
+    }
+
+    #[test]
+    fn avro_to_json_nullable_without_default_is_required() {
+        // A nullable field (union with null) without a default is still required
+        // Required = must be present; nullable = can be null
+        let json = parse_avro_and_convert(
+            r#"{
+            "type": "record",
+            "name": "Test",
+            "fields": [
+                {"name": "nullable_required", "type": ["null", "string"]}
+            ]
+        }"#,
+        );
+
+        let required = json["required"].as_array().unwrap();
+        assert!(
+            required.contains(&json!("nullable_required")),
+            "nullable field without default should be required"
+        );
+
+        // The field should also be nullable in its type
+        let field_type = &json["properties"]["nullable_required"]["type"];
+        assert!(field_type.is_array(), "should be nullable type array");
+        let types = field_type.as_array().unwrap();
+        assert!(types.contains(&json!("null")));
+    }
+
+    // =========================================================================
+    // Name sanitization tests
+    // =========================================================================
+
+    #[test]
+    fn sanitize_avro_name_handles_invalid_chars() {
+        assert_eq!(sanitize_avro_name("valid_name"), "valid_name");
+        assert_eq!(sanitize_avro_name("with-dash"), "with_dash");
+        assert_eq!(sanitize_avro_name("with.dot"), "with_dot");
+        assert_eq!(sanitize_avro_name("with space"), "with_space");
+        assert_eq!(
+            sanitize_avro_name("123starts_with_digit"),
+            "_123starts_with_digit"
+        );
+        assert_eq!(sanitize_avro_name(""), "Field");
+        assert_eq!(sanitize_avro_name("---"), "Field");
+        assert_eq!(sanitize_avro_name("_already_valid"), "_already_valid");
+        assert_eq!(sanitize_avro_name("__double"), "_double"); // consecutive _ collapsed
+        assert_eq!(sanitize_avro_name("Valid"), "Valid");
+        assert_eq!(sanitize_avro_name("trailing_"), "trailing");
+    }
+
+    #[test]
+    fn json_to_avro_sanitizes_field_names_for_nested_records() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "user-info": {
+                    "type": "object",
+                    "properties": {
+                        "full.name": {"type": "string"}
+                    }
+                }
+            }
+        });
+
+        // Should not error - names should be sanitized
+        let result = json_schema_to_avro(&schema, &None);
+        assert!(result.is_ok(), "should sanitize invalid field names");
+    }
+
+    #[test]
+    fn json_to_avro_sanitizes_enum_symbols() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["in-progress", "on.hold", "123done"]
+                }
+            }
+        });
+
+        let result = json_schema_to_avro(&schema, &None);
+        assert!(result.is_ok(), "should sanitize invalid enum symbols");
+
+        let avro: JsonValue = serde_json::from_str(&result.unwrap()).unwrap();
+        let fields = avro["fields"].as_array().unwrap();
+        let status_field = fields.iter().find(|f| f["name"] == "status").unwrap();
+
+        // Find the enum in the union
+        let enum_type = status_field["type"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t.is_object() && t["type"] == "enum")
+            .unwrap();
+
+        let symbols = enum_type["symbols"].as_array().unwrap();
+        // Symbols should be sanitized versions
+        assert!(
+            symbols.iter().all(|s| {
+                let sym = s.as_str().unwrap();
+                sym.chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphabetic() || c == '_')
+                    .unwrap_or(false)
+            }),
+            "all symbols should start with letter or underscore"
+        );
     }
 
     // =========================================================================
