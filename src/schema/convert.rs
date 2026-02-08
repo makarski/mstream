@@ -410,38 +410,54 @@ fn sanitize_avro_name(s: &str) -> String {
         return "Field".to_string();
     }
 
-    let mut result = String::with_capacity(s.len());
-    let mut last_was_underscore = false;
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
 
-    for (i, c) in s.chars().enumerate() {
-        if i == 0 {
-            // First char must be letter or underscore
-            if c.is_ascii_alphabetic() || c == '_' {
-                result.push(c);
-                last_was_underscore = c == '_';
-            } else if c.is_ascii_digit() {
-                // Prefix with underscore if starts with digit
-                result.push('_');
-                result.push(c);
-                last_was_underscore = false;
-            } else {
-                // Replace invalid char with underscore
-                result.push('_');
-                last_was_underscore = true;
-            }
-        } else if c.is_ascii_alphanumeric() {
-            result.push(c);
-            last_was_underscore = false;
-        } else if c == '_' || !c.is_ascii_alphanumeric() {
-            // Collapse consecutive underscores
-            if !last_was_underscore {
-                result.push('_');
-                last_was_underscore = true;
-            }
-        }
+    let mut result = String::with_capacity(s.len());
+    let mut last_was_underscore = sanitize_first_char(first, &mut result);
+
+    for c in chars {
+        last_was_underscore = sanitize_subsequent_char(c, &mut result, last_was_underscore);
     }
 
-    // Trim trailing underscore
+    finalize_avro_name(result)
+}
+
+/// Handle the first character of an Avro name.
+/// Returns whether the last character pushed was an underscore.
+fn sanitize_first_char(c: char, result: &mut String) -> bool {
+    if c.is_ascii_alphabetic() || c == '_' {
+        result.push(c);
+        c == '_'
+    } else if c.is_ascii_digit() {
+        // Prefix with underscore if starts with digit
+        result.push('_');
+        result.push(c);
+        false
+    } else {
+        // Replace invalid char with underscore
+        result.push('_');
+        true
+    }
+}
+
+/// Handle subsequent characters of an Avro name.
+/// Returns whether the last character pushed was an underscore.
+fn sanitize_subsequent_char(c: char, result: &mut String, last_was_underscore: bool) -> bool {
+    if c.is_ascii_alphanumeric() {
+        result.push(c);
+        false
+    } else if !last_was_underscore {
+        // Collapse consecutive underscores/invalid chars into single underscore
+        result.push('_');
+        true
+    } else {
+        last_was_underscore
+    }
+}
+
+/// Trim trailing underscores and return fallback if result is empty.
+fn finalize_avro_name(mut result: String) -> String {
     while result.ends_with('_') && result.len() > 1 {
         result.pop();
     }
