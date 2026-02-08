@@ -55,6 +55,16 @@ impl Service {
             Service::Udf(c) => &c.name,
         }
     }
+
+    pub fn provider(&self) -> &'static str {
+        match self {
+            Service::PubSub(_) => "pubsub",
+            Service::Kafka(_) => "kafka",
+            Service::MongoDb(_) => "mongodb",
+            Service::Http(_) => "http",
+            Service::Udf(_) => "udf",
+        }
+    }
 }
 
 impl Masked for Service {
@@ -183,5 +193,71 @@ mod tests {
         let deserialized: CheckpointConnectorConfig =
             serde_json::from_str(&serialized).expect("deserialize");
         assert!(deserialized.enabled);
+    }
+
+    mod service_provider_tests {
+        use super::*;
+        use crate::config::service_config::{
+            GcpAuthConfig, HttpConfig, KafkaConfig, MongoDbConfig, PubSubConfig, UdfConfig,
+            UdfEngine,
+        };
+        use std::collections::HashMap;
+
+        #[test]
+        fn mongodb_provider() {
+            let service = Service::MongoDb(MongoDbConfig {
+                name: "test".to_string(),
+                connection_string: "mongodb://localhost".to_string(),
+                db_name: "test_db".to_string(),
+                write_mode: Default::default(),
+            });
+            assert_eq!(service.provider(), "mongodb");
+        }
+
+        #[test]
+        fn kafka_provider() {
+            let service = Service::Kafka(KafkaConfig {
+                name: "test".to_string(),
+                offset_seek_back_seconds: None,
+                config: HashMap::new(),
+            });
+            assert_eq!(service.provider(), "kafka");
+        }
+
+        #[test]
+        fn pubsub_provider() {
+            let service = Service::PubSub(PubSubConfig {
+                name: "test".to_string(),
+                auth: GcpAuthConfig::StaticToken {
+                    env_token_name: "TOKEN".to_string(),
+                },
+            });
+            assert_eq!(service.provider(), "pubsub");
+        }
+
+        #[test]
+        fn http_provider() {
+            let service = Service::Http(HttpConfig {
+                name: "test".to_string(),
+                host: "http://localhost".to_string(),
+                max_retries: None,
+                base_backoff_ms: None,
+                connection_timeout_sec: None,
+                timeout_sec: None,
+                tcp_keepalive_sec: None,
+            });
+            assert_eq!(service.provider(), "http");
+        }
+
+        #[test]
+        fn udf_provider() {
+            let service = Service::Udf(UdfConfig {
+                name: "test".to_string(),
+                script_path: "/path/to/script.rhai".to_string(),
+                engine: UdfEngine::Rhai,
+                sources: None,
+            });
+            assert_eq!(service.provider(), "udf");
+        }
     }
 }
