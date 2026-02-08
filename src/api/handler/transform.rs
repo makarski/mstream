@@ -1,11 +1,14 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use mongodb::bson::{self, Document};
 
 use crate::api::error::ApiError;
 use crate::api::types::{Message, TransformTestRequest, TransformTestResponse};
 use crate::config::Encoding;
+use crate::encoding::avro;
 use crate::middleware::udf::rhai::{RhaiMiddleware, RhaiMiddlewareError};
+use crate::schema::Schema;
 use crate::source::SourceEvent;
 
 /// POST /transform/run
@@ -22,17 +25,79 @@ pub async fn transform_run(
         raw_bytes: transform_req.payload.as_bytes().to_vec(),
     };
 
-    let transformed = middleware.transform(source_event).await?;
-    let json_value: serde_json::Value =
-        serde_json::from_slice(&transformed.raw_bytes).map_err(|e| {
+    let mut transformed = middleware.transform(source_event).await?;
+    let applied_schema = match transform_req.schema {
+        None => Schema::Undefined,
+        Some(schema_req) => {
+            // Only Avro and Json schema encodings are supported
+            if !matches!(schema_req.schema_encoding, Encoding::Avro | Encoding::Json) {
+                return Err(ApiError::BadRequest(format!(
+                    "unsupported schema encoding: {:?}. Only 'avro' and 'json' are supported",
+                    schema_req.schema_encoding
+                )));
+            }
+
+            let schema = Schema::parse(&schema_req.body, schema_req.schema_encoding.clone())
+                .map_err(|e| RhaiMiddlewareError::ExecutionError {
+                    message: format!("Invalid schema: {}", e),
+                    path: "<inline>".to_string(),
+                })?;
+
+            transformed = transformed
+                .apply_schema(Some(&schema_req.schema_encoding), &schema)
+                .map_err(|e| RhaiMiddlewareError::ExecutionError {
+                    message: format!("Schema validation failed: {}", e),
+                    path: "<inline>".to_string(),
+                })?;
+
+            schema
+        }
+    };
+
+    // Convert output to JSON for display
+    let document: serde_json::Value = match transformed.encoding {
+        Encoding::Json => serde_json::from_slice(&transformed.raw_bytes).map_err(|e| {
             RhaiMiddlewareError::ExecutionError {
                 message: format!("Output is not valid JSON: {}", e),
                 path: "<inline>".to_string(),
             }
-        })?;
+        })?,
+        Encoding::Avro => {
+            let avro_schema =
+                applied_schema
+                    .try_as_avro()
+                    .map_err(|e| RhaiMiddlewareError::ExecutionError {
+                        message: format!("Avro schema required to decode output: {}", e),
+                        path: "<inline>".to_string(),
+                    })?;
+            let bson_doc = avro::decode(&transformed.raw_bytes, avro_schema).map_err(|e| {
+                RhaiMiddlewareError::ExecutionError {
+                    message: format!("Failed to decode Avro: {}", e),
+                    path: "<inline>".to_string(),
+                }
+            })?;
+            serde_json::to_value(&bson_doc).map_err(|e| RhaiMiddlewareError::ExecutionError {
+                message: format!("Failed to convert to JSON: {}", e),
+                path: "<inline>".to_string(),
+            })?
+        }
+        Encoding::Bson => {
+            let bson_doc: Document = bson::from_slice(&transformed.raw_bytes).map_err(|e| {
+                RhaiMiddlewareError::ExecutionError {
+                    message: format!("Output is not valid BSON: {}", e),
+                    path: "<inline>".to_string(),
+                }
+            })?;
+            serde_json::to_value(&bson_doc).map_err(|e| RhaiMiddlewareError::ExecutionError {
+                message: format!("Failed to convert to JSON: {}", e),
+                path: "<inline>".to_string(),
+            })?
+        }
+    };
 
     let response = TransformTestResponse {
-        document: json_value,
+        document,
+        encoding: transformed.encoding,
         attributes: transformed.attributes,
     };
 
@@ -50,8 +115,146 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::config::Encoding;
+    use crate::encoding::avro;
     use crate::middleware::udf::rhai::{RhaiMiddleware, RhaiMiddlewareError};
+    use crate::schema::Schema;
     use crate::source::SourceEvent;
+    use mongodb::bson::Document;
+
+    // ==========================================================================
+    // Test helpers
+    // ==========================================================================
+
+    async fn run_transform(script: &str, payload: &str) -> SourceEvent {
+        let mut middleware = RhaiMiddleware::with_script(script.to_string()).unwrap();
+        let source_event = SourceEvent {
+            cursor: None,
+            attributes: None,
+            encoding: Encoding::Json,
+            is_framed_batch: false,
+            raw_bytes: payload.as_bytes().to_vec(),
+        };
+        middleware.transform(source_event).await.unwrap()
+    }
+
+    async fn transform_and_apply_avro(
+        script: &str,
+        payload: &str,
+        avro_schema_str: &str,
+    ) -> Document {
+        let transformed = run_transform(script, payload).await;
+        let schema = Schema::parse(avro_schema_str, Encoding::Avro).unwrap();
+        let with_schema = transformed
+            .apply_schema(Some(&Encoding::Avro), &schema)
+            .unwrap();
+        assert_eq!(with_schema.encoding, Encoding::Avro);
+        avro::decode(&with_schema.raw_bytes, schema.try_as_avro().unwrap()).unwrap()
+    }
+
+    fn assert_middleware_error<T: std::fmt::Debug>(
+        script: &str,
+        expected: fn(&RhaiMiddlewareError) -> bool,
+    ) {
+        let result = RhaiMiddleware::with_script(script.to_string());
+        assert!(result.is_err());
+        assert!(expected(&result.unwrap_err()));
+    }
+
+    // ==========================================================================
+    // Transform + Schema integration tests
+    // ==========================================================================
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transform_with_avro_schema_encodes_and_decodes() {
+        let decoded = transform_and_apply_avro(
+            r#"fn transform(data, attributes) { data.active = true; result(data, attributes) }"#,
+            r#"{"name": "test", "value": 42, "active": false}"#,
+            r#"{"type": "record", "name": "TestRecord", "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "value", "type": "int"},
+                {"name": "active", "type": "boolean"}
+            ]}"#,
+        )
+        .await;
+
+        assert_eq!(decoded.get_str("name").unwrap(), "test");
+        assert_eq!(decoded.get_i32("value").unwrap(), 42);
+        assert_eq!(decoded.get_bool("active").unwrap(), true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transform_with_avro_schema_validation_error() {
+        let script = r#"
+            fn transform(data, attributes) {
+                data.value = "not_an_int";
+                result(data, attributes)
+            }
+        "#;
+        let payload = r#"{"name": "test", "value": 123}"#;
+        let avro_schema_str = r#"{
+            "type": "record",
+            "name": "TestRecord",
+            "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "value", "type": "int"}
+            ]
+        }"#;
+
+        let transformed = run_transform(script, payload).await;
+        let schema = Schema::parse(avro_schema_str, Encoding::Avro).unwrap();
+        let result = transformed.apply_schema(Some(&Encoding::Avro), &schema);
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transform_with_avro_nullable_fields() {
+        let decoded = transform_and_apply_avro(
+            r#"fn transform(data, attributes) { result(data, attributes) }"#,
+            r#"{"required": "value", "optional": null}"#,
+            r#"{"type": "record", "name": "TestRecord", "fields": [
+                {"name": "required", "type": "string"},
+                {"name": "optional", "type": ["null", "string"], "default": null}
+            ]}"#,
+        )
+        .await;
+
+        assert_eq!(decoded.get_str("required").unwrap(), "value");
+        assert!(decoded.get("optional").unwrap().as_null().is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transform_with_avro_nested_record() {
+        let decoded = transform_and_apply_avro(
+            r#"fn transform(data, attributes) { data.address.city = "New York"; result(data, attributes) }"#,
+            r#"{"name": "John", "address": {"city": "Boston", "zip": "02101"}}"#,
+            r#"{"type": "record", "name": "User", "fields": [
+                {"name": "name", "type": "string"},
+                {"name": "address", "type": {
+                    "type": "record", "name": "Address", "fields": [
+                        {"name": "city", "type": "string"},
+                        {"name": "zip", "type": "string"}
+                    ]
+                }}
+            ]}"#,
+        )
+        .await;
+
+        assert_eq!(decoded.get_str("name").unwrap(), "John");
+        let address = decoded.get_document("address").unwrap();
+        assert_eq!(address.get_str("city").unwrap(), "New York");
+        assert_eq!(address.get_str("zip").unwrap(), "02101");
+    }
+
+    #[test]
+    fn invalid_avro_schema_returns_error() {
+        let result = Schema::parse(r#"{"type": "invalid"}"#, Encoding::Avro);
+        assert!(result.is_err());
+    }
+
+    // ==========================================================================
+    // Middleware unit tests
+    // ==========================================================================
 
     #[tokio::test(flavor = "multi_thread")]
     async fn transform_single_document() {
@@ -175,31 +378,31 @@ mod tests {
 
     #[test]
     fn invalid_script_returns_compile_error() {
-        let script = r#"
-            fn transform(data, attributes {
-                result(data, attributes)
-            }
-        "#;
-
-        let result = RhaiMiddleware::with_script(script.to_string());
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, RhaiMiddlewareError::CompileError { .. }));
+        assert_middleware_error::<()>(
+            r#"fn transform(data, attributes { result(data, attributes) }"#,
+            |e| matches!(e, RhaiMiddlewareError::CompileError { .. }),
+        );
     }
 
     #[test]
     fn missing_transform_function_returns_error() {
-        let script = r#"
-            fn process(data, attributes) {
-                result(data, attributes)
-            }
-        "#;
+        assert_middleware_error::<()>(
+            r#"fn process(data, attributes) { result(data, attributes) }"#,
+            |e| matches!(e, RhaiMiddlewareError::MissingTransformFunction),
+        );
+    }
 
-        let result = RhaiMiddleware::with_script(script.to_string());
+    // ==========================================================================
+    // Schema encoding validation tests
+    // ==========================================================================
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, RhaiMiddlewareError::MissingTransformFunction));
+    #[test]
+    fn only_avro_and_json_schema_encodings_are_supported() {
+        // Avro and Json should be accepted
+        assert!(matches!(Encoding::Avro, Encoding::Avro | Encoding::Json));
+        assert!(matches!(Encoding::Json, Encoding::Avro | Encoding::Json));
+
+        // Bson should be rejected
+        assert!(!matches!(Encoding::Bson, Encoding::Avro | Encoding::Json));
     }
 }

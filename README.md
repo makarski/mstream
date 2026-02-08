@@ -149,8 +149,9 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
 | `GET` | `/services/{name}/resources` | List resources for a service |
-| `GET` | `/services/{name}/schema` | Introspect schema for a resource |
+| `GET` | `/services/{name}/schema/introspect` | Introspect schema for a resource |
 | `POST` | `/schema/fill` | Generate synthetic data from a schema |
+| `POST` | `/schema/convert` | Convert schema between JSON Schema and Avro |
 
 #### List Service Resources
 
@@ -213,6 +214,12 @@ GET /services/{name}/schema?resource=users&sample_size=100
 Generate synthetic data from a JSON Schema via `POST /schema/fill`. Pass `{"schema": <JsonSchema>}` and receive a document with realistic values based on schema hints (`enum`, `format`, `minimum`/`maximum`) and field name heuristics (e.g., `email` → email address, `_id` → ObjectId, `created_at` → datetime).
 
 Useful for testing transformation scripts in the Playground without exposing real data.
+
+#### Schema Convert
+
+Convert schemas bidirectionally between JSON Schema and Avro via `POST /schema/convert`. For JSON→Avro, provide optional `name` and `namespace` in the options.
+
+See [design/playground-schema-integration.md](design/playground-schema-integration.md) for detailed type mappings.
 
 ### Logs
 

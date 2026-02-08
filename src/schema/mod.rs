@@ -9,6 +9,7 @@ use crate::{
     pubsub::{ServiceAccountAuth, srvc::SchemaService},
 };
 
+pub mod convert;
 pub mod encoding;
 pub mod introspect;
 pub mod mongo;
