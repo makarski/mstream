@@ -250,6 +250,8 @@ See [design/playground-schema-integration.md](design/playground-schema-integrati
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/transform/run` | Test a Rhai script on a sample document |
+| `POST` | `/transform/test/generate` | Generate test cases from a sample input |
+| `POST` | `/transform/test/run` | Run test cases against a script |
 
 #### Request Body
 
@@ -278,6 +280,102 @@ See [design/playground-schema-integration.md](design/playground-schema-integrati
   }
 }
 ```
+
+#### Test Generation
+
+Generate test cases by introspecting a sample input and creating edge-case variants (nulls, empty values, missing fields).
+
+**Request:**
+```json
+{
+  "script": "fn transform(data, attributes) { result(data, attributes) }",
+  "sample_input": {"email": "john@example.com", "name": "John", "age": 30}
+}
+```
+
+**Response:**
+```json
+{
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "email": {"type": "string"},
+      "name": {"type": "string"},
+      "age": {"type": "integer"}
+    }
+  },
+  "cases": [
+    {
+      "name": "email is null",
+      "input": {"email": null, "name": "John", "age": 30},
+      "expected": {"email": null, "name": "John", "age": 30},
+      "assertions": [
+        {"path": "email", "assert_type": "equals", "expected_value": null}
+      ],
+      "duration_ms": 5
+    }
+  ],
+  "errors": []
+}
+```
+
+#### Test Execution
+
+Run test cases against a script and return pass/fail results with assertion failures.
+
+**Request:**
+```json
+{
+  "script": "fn transform(data, attributes) { result(data, attributes) }",
+  "cases": [
+    {
+      "name": "basic test",
+      "input": {"email": "john@example.com"},
+      "expected": {"email": "j***@example.com"},
+      "assertions": [
+        {"path": "email", "assert_type": "equals", "expected_value": "j***@example.com"}
+      ]
+    }
+  ],
+  "strict_output": false
+}
+```
+
+- `strict_output` — When `true`, fails if output contains fields not covered by assertions
+
+**Response:**
+```json
+{
+  "summary": {"passed": 1, "failed": 1, "total": 2},
+  "results": [
+    {"name": "basic test", "passed": true, "duration_ms": 12},
+    {
+      "name": "null email",
+      "passed": false,
+      "duration_ms": 8,
+      "actual": {"email": "***"},
+      "failures": [
+        {
+          "path": "email",
+          "assert_type": "equals",
+          "expected": null,
+          "actual": "***",
+          "message": "Field 'email': expected null, got \"***\""
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Assertion Types:**
+
+| Type | Description |
+|------|-------------|
+| `equals` | Strict equality |
+| `contains` | Substring match (strings) or element exists (arrays) |
+| `type_matches` | Only checks type, not value |
+| `gt`, `gte`, `lt`, `lte` | Numeric comparisons |
 
 ## Checkpoints
 

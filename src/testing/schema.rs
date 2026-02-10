@@ -15,13 +15,41 @@ use crate::encoding::json_schema::build_schema;
 
 /// Derive a JSON schema from a sample value.
 pub fn derive_schema_from_value(value: &JsonValue) -> JsonValue {
-    // Convert to BSON Document for schema builder compatibility
-    if let Ok(doc) = serde_json::from_value::<Document>(value.clone()) {
-        build_schema(&[doc])
-    } else {
-        // Fallback for non-object values
-        infer_type_schema(value)
+    match value {
+        // Top-level object: convert to BSON Document and use build_schema
+        JsonValue::Object(_) => {
+            if let Ok(doc) = serde_json::from_value::<Document>(value.clone()) {
+                build_schema(&[doc])
+            } else {
+                infer_type_schema(value)
+            }
+        }
+        // Top-level array: try to collect object elements for richer schema
+        JsonValue::Array(arr) => derive_array_schema(arr),
+        // Primitives: use simple type inference
+        _ => infer_type_schema(value),
     }
+}
+
+fn derive_array_schema(arr: &[JsonValue]) -> JsonValue {
+    // Collect object elements as BSON Documents for richer schema inference
+    let docs: Vec<Document> = arr
+        .iter()
+        .filter_map(|item| serde_json::from_value::<Document>(item.clone()).ok())
+        .collect();
+
+    let items_schema = if !docs.is_empty() {
+        // Use build_schema for object arrays to get property-level schema
+        build_schema(&docs)
+    } else if let Some(first) = arr.first() {
+        // Fallback: infer from first element for non-object arrays
+        infer_type_schema(first)
+    } else {
+        // Empty array
+        json!({})
+    };
+
+    json!({"type": "array", "items": items_schema})
 }
 
 /// Infer a simple type schema from a JSON value.
@@ -37,14 +65,7 @@ pub fn infer_type_schema(value: &JsonValue) -> JsonValue {
             }
         }
         JsonValue::String(_) => json!({"type": "string"}),
-        JsonValue::Array(arr) => {
-            let items_schema = if let Some(first) = arr.first() {
-                infer_type_schema(first)
-            } else {
-                json!({})
-            };
-            json!({"type": "array", "items": items_schema})
-        }
+        JsonValue::Array(arr) => derive_array_schema(arr),
         JsonValue::Object(_) => json!({"type": "object"}),
     }
 }
@@ -103,13 +124,11 @@ fn collect_array_assertions(
 }
 
 fn add_leaf_assertion(path: &str, value: &JsonValue, assertions: &mut Vec<TestAssertion>) {
-    if !path.is_empty() {
-        assertions.push(TestAssertion {
-            path: path.to_string(),
-            assert_type: AssertType::Equals,
-            expected_value: value.clone(),
-        });
-    }
+    assertions.push(TestAssertion {
+        path: path.to_string(),
+        assert_type: AssertType::Equals,
+        expected_value: value.clone(),
+    });
 }
 
 fn build_field_path(prefix: &str, key: &str) -> String {
@@ -185,6 +204,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_derive_assertions_root_primitives() {
+        // Top-level primitives should produce an assertion with empty path
+        let cases = [
+            json!(42),
+            json!("hello"),
+            json!(true),
+            json!(null),
+            json!(3.14),
+        ];
+        for value in cases {
+            let assertions = derive_assertions(&value);
+            assert_eq!(assertions.len(), 1, "expected 1 assertion for {:?}", value);
+            assert_eq!(
+                assertions[0].path, "",
+                "expected empty path for root primitive"
+            );
+            assert_eq!(assertions[0].expected_value, value);
+        }
+    }
+
     // =========================================================================
     // derive_schema_from_value tests
     // =========================================================================
@@ -217,6 +257,31 @@ mod tests {
         let schema = derive_schema_from_value(&json!([1, 2, 3]));
         assert_eq!(schema["type"], "array");
         assert!(schema.get("items").is_some());
+    }
+
+    #[test]
+    fn test_derive_schema_from_array_of_objects() {
+        // Array of objects should derive full object schema with properties
+        let schema = derive_schema_from_value(&json!([
+            {"name": "Alice", "age": 30},
+            {"name": "Bob", "age": 25}
+        ]));
+
+        assert_eq!(schema["type"], "array");
+
+        let items = &schema["items"];
+        assert_eq!(items["type"], "object");
+
+        // Should have properties from build_schema, not just {"type": "object"}
+        let props = items["properties"].as_object().unwrap();
+        assert!(
+            props.contains_key("name"),
+            "items schema should have 'name' property"
+        );
+        assert!(
+            props.contains_key("age"),
+            "items schema should have 'age' property"
+        );
     }
 
     // =========================================================================
