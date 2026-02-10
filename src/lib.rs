@@ -28,6 +28,7 @@ pub mod provision;
 pub mod pubsub;
 pub mod schema;
 pub mod source;
+pub mod testing;
 pub mod ui;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {

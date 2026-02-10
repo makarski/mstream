@@ -13,6 +13,103 @@ use crate::{
     kafka::KafkaOffset,
 };
 
+// =============================================================================
+// Test Generation Types
+// =============================================================================
+
+#[derive(Debug, Deserialize)]
+pub struct TestGenerateRequest {
+    pub script: String,
+    pub sample_input: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestGenerateResponse {
+    pub input_schema: JsonSchema,
+    pub cases: Vec<GeneratedTestCase>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GeneratedTestCase {
+    pub name: String,
+    pub input: serde_json::Value,
+    pub expected: serde_json::Value,
+    pub assertions: Vec<TestAssertion>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TestAssertion {
+    pub path: String,
+    pub assert_type: AssertType,
+    pub expected_value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertType {
+    Equals,
+    Contains,
+    TypeMatches,
+    Gt,  // Greater than (numbers only)
+    Gte, // Greater than or equal (numbers only)
+    Lt,  // Less than (numbers only)
+    Lte, // Less than or equal (numbers only)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TestRunRequest {
+    pub script: String,
+    pub cases: Vec<TestCase>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestCase {
+    pub name: String,
+    pub input: serde_json::Value,
+    #[serde(default)]
+    pub expected: Option<serde_json::Value>,
+    #[serde(default)]
+    pub assertions: Vec<TestAssertion>,
+    #[serde(default)]
+    pub strict_mode: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestRunResponse {
+    pub results: Vec<TestCaseResult>,
+    pub summary: TestRunSummary,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestCaseResult {
+    pub name: String,
+    pub passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<AssertionFailure>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AssertionFailure {
+    pub path: String,
+    pub assert_type: AssertType,
+    pub expected: serde_json::Value,
+    pub actual: serde_json::Value,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TestRunSummary {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+}
+
 #[derive(Serialize)]
 pub struct TransformTestResponse {
     pub document: serde_json::Value,
