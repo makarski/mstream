@@ -31,14 +31,13 @@ impl ComponentBuilder for SchemaBuilder {
 
         let mut result = Vec::with_capacity(self.configs.len());
         for schema_cfg in self.configs.iter() {
-            let mut schema_service = self.schema(&schema_cfg).await?;
+            let schema_provider = self.schema(&schema_cfg).await?;
 
             // wait for the schema to be ready
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-            let schema = schema_service
-                .get_schema(schema_cfg.resource.clone())
-                .await?;
+            let entry = schema_provider.get(&schema_cfg.id).await?;
+            let schema = entry.to_schema()?;
 
             result.push(SchemaDefinition {
                 schema_id: schema_cfg.id.clone(),

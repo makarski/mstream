@@ -17,8 +17,10 @@ use crate::{
     },
     http,
     middleware::udf::rhai::RhaiMiddleware,
-    mongodb::{checkpoint::MongoDbCheckpointer, db_client},
+    mongodb::{checkpoint::MongoDbCheckpointer, db_client, test_suite::MongoDbTestSuiteStore},
     pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
+    schema::{DynSchemaRegistry, NoopSchemaRegistry, mongo::MongoDbSchemaProvider},
+    testing::{DynTestSuiteStore, NoopTestSuiteStore},
 };
 
 pub mod in_memory;
@@ -35,6 +37,8 @@ pub struct ServiceRegistry {
     http_services: HashMap<String, http::HttpService>,
     udf_middlewares: HashMap<String, RhaiMiddlewareBuilder>,
     checkpointer: DynCheckpointer,
+    schema_registry: DynSchemaRegistry,
+    test_suite_store: DynTestSuiteStore,
 }
 
 impl ServiceRegistry {
@@ -50,6 +54,8 @@ impl ServiceRegistry {
             http_services: HashMap::new(),
             udf_middlewares: HashMap::new(),
             checkpointer: Arc::new(NoopCheckpointer::new()),
+            schema_registry: Arc::new(NoopSchemaRegistry),
+            test_suite_store: Arc::new(NoopTestSuiteStore),
         }
     }
 
@@ -61,7 +67,7 @@ impl ServiceRegistry {
             self.register_service(service).await?;
         }
 
-        self.init_checkpointer().await?;
+        self.init_mongo_stores().await?;
         Ok(())
     }
 
@@ -112,36 +118,55 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    async fn init_checkpointer(&mut self) -> anyhow::Result<()> {
-        let checkpoint_cfg = match self
-            .system_cfg
-            .as_ref()
-            .and_then(|s| s.checkpoints.as_ref())
-        {
-            Some(cfg) => cfg,
-            None => return Ok(()),
-        };
-
-        let service_def = self
-            .storage
-            .get_by_name(&checkpoint_cfg.service_name)
-            .await?;
+    async fn mongo_database_for(
+        &self,
+        service_name: &str,
+        component: &str,
+    ) -> anyhow::Result<mongodb::Database> {
+        let service_def = self.storage.get_by_name(service_name).await?;
 
         let db_name = match &service_def {
             Service::MongoDb(cfg) => &cfg.db_name,
             _ => {
                 return Err(anyhow!(
-                    "checkpoints service '{}' must be a MongoDB service",
-                    checkpoint_cfg.service_name
+                    "{} service '{}' must be a MongoDB service",
+                    component,
+                    service_name
                 ));
             }
         };
 
-        let db_client = self.mongodb_client(&checkpoint_cfg.service_name).await?;
-        let db = db_client.database(db_name);
-        let cp = MongoDbCheckpointer::new(db, checkpoint_cfg.resource.clone());
+        let client = self.mongodb_client(service_name).await?;
+        Ok(client.database(db_name))
+    }
 
-        self.checkpointer = Arc::new(cp);
+    async fn init_mongo_stores(&mut self) -> anyhow::Result<()> {
+        let sys_cfg = match &self.system_cfg {
+            Some(cfg) => cfg,
+            None => return Ok(()),
+        };
+
+        if let Some(cfg) = &sys_cfg.checkpoints {
+            let db = self
+                .mongo_database_for(&cfg.service_name, "checkpoints")
+                .await?;
+            self.checkpointer = Arc::new(MongoDbCheckpointer::new(db, cfg.resource.clone()));
+        }
+
+        if let Some(cfg) = &sys_cfg.schemas {
+            let db = self
+                .mongo_database_for(&cfg.service_name, "schemas")
+                .await?;
+            self.schema_registry = Arc::new(MongoDbSchemaProvider::new(db, cfg.resource.clone()));
+        }
+
+        if let Some(cfg) = &sys_cfg.test_suites {
+            let db = self
+                .mongo_database_for(&cfg.service_name, "test_suites")
+                .await?;
+            self.test_suite_store = Arc::new(MongoDbTestSuiteStore::new(db, cfg.resource.clone()));
+        }
+
         Ok(())
     }
 
@@ -225,6 +250,14 @@ impl ServiceRegistry {
 
     pub fn checkpointer(&self) -> DynCheckpointer {
         self.checkpointer.clone()
+    }
+
+    pub fn schema_registry(&self) -> DynSchemaRegistry {
+        self.schema_registry.clone()
+    }
+
+    pub fn test_suite_store(&self) -> DynTestSuiteStore {
+        self.test_suite_store.clone()
     }
 
     async fn create_gcp_token_provider(auth: &GcpAuthConfig) -> anyhow::Result<ServiceAccountAuth> {

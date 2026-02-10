@@ -20,6 +20,7 @@ use crate::{checkpoint::Checkpoint, config::Encoding};
 
 pub mod checkpoint;
 pub mod persister;
+pub mod test_suite;
 
 pub async fn db_client(name: String, conn_str: &str) -> anyhow::Result<Client> {
     let mut opts = ClientOptions::parse(conn_str).await?;

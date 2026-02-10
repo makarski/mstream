@@ -14,8 +14,12 @@
 pub mod assertions;
 pub mod runner;
 pub mod schema;
+pub mod store;
 
-// Re-export commonly used items
 pub use assertions::{check_assertions, check_extra_fields, get_value_at_path};
 pub use runner::{run_test_case, run_test_cases};
 pub use schema::{derive_assertions, derive_schema_from_value, infer_type_schema};
+pub use store::{
+    DynTestSuiteStore, NoopTestSuiteStore, SourceContext, TestCase, TestSuite, TestSuiteStore,
+    TestSuiteStoreError, TestSuiteSummary,
+};

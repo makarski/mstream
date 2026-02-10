@@ -3,11 +3,11 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug, Clone, Default)]
 pub struct SystemConfig {
     pub encryption_key_path: Option<String>,
-    // todo: implement
-    // pub generate_encryption_key: bool,
     pub job_lifecycle: Option<JobLifecycle>,
     pub service_lifecycle: Option<ServiceLifecycle>,
     pub checkpoints: Option<CheckpointSystemConfig>,
+    pub schemas: Option<StorageConfig>,
+    pub test_suites: Option<StorageConfig>,
     pub logs: Option<LogsConfig>,
 }
 
@@ -55,6 +55,14 @@ impl SystemConfig {
             components.push("checkpoints");
         }
 
+        if self.has_schemas(service_name) {
+            components.push("schemas");
+        }
+
+        if self.has_test_suites(service_name) {
+            components.push("test_suites");
+        }
+
         if components.is_empty() {
             None
         } else {
@@ -80,6 +88,20 @@ impl SystemConfig {
         self.checkpoints
             .as_ref()
             .filter(|cp| -> bool { cp.service_name == service_name })
+            .is_some()
+    }
+
+    fn has_schemas(&self, service_name: &str) -> bool {
+        self.schemas
+            .as_ref()
+            .filter(|s| -> bool { s.service_name == service_name })
+            .is_some()
+    }
+
+    fn has_test_suites(&self, service_name: &str) -> bool {
+        self.test_suites
+            .as_ref()
+            .filter(|t| -> bool { t.service_name == service_name })
             .is_some()
     }
 }
@@ -113,6 +135,12 @@ pub struct CheckpointSystemConfig {
     pub resource: String,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct StorageConfig {
+    pub service_name: String,
+    pub resource: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +164,20 @@ mod tests {
         CheckpointSystemConfig {
             service_name: service_name.to_string(),
             resource: "checkpoints".to_string(),
+        }
+    }
+
+    fn schemas(service_name: &str) -> StorageConfig {
+        StorageConfig {
+            service_name: service_name.to_string(),
+            resource: "schemas".to_string(),
+        }
+    }
+
+    fn test_suites(service_name: &str) -> StorageConfig {
+        StorageConfig {
+            service_name: service_name.to_string(),
+            resource: "test-suites".to_string(),
         }
     }
 
@@ -191,14 +233,40 @@ mod tests {
                 job_lifecycle: Some(job_lifecycle("system-db")),
                 service_lifecycle: Some(service_lifecycle("system-db")),
                 checkpoints: Some(checkpoints("system-db")),
+                schemas: Some(schemas("system-db")),
+                test_suites: Some(test_suites("system-db")),
                 ..Default::default()
             };
 
             let components = config.has_system_components("system-db").unwrap();
-            assert_eq!(components.len(), 3);
+            assert_eq!(components.len(), 5);
             assert!(components.contains(&"job_lifecycle"));
             assert!(components.contains(&"service_lifecycle"));
             assert!(components.contains(&"checkpoints"));
+            assert!(components.contains(&"schemas"));
+            assert!(components.contains(&"test_suites"));
+        }
+
+        #[test]
+        fn returns_schemas_when_matched() {
+            let config = SystemConfig {
+                schemas: Some(schemas("schema-db")),
+                ..Default::default()
+            };
+
+            let components = config.has_system_components("schema-db");
+            assert_eq!(components.unwrap(), vec!["schemas"]);
+        }
+
+        #[test]
+        fn returns_test_suites_when_matched() {
+            let config = SystemConfig {
+                test_suites: Some(test_suites("test-db")),
+                ..Default::default()
+            };
+
+            let components = config.has_system_components("test-db");
+            assert_eq!(components.unwrap(), vec!["test_suites"]);
         }
 
         #[test]
