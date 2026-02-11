@@ -67,7 +67,18 @@ pub async fn run_app_with_log_buffer(
     };
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let api_app_state = AppState::new(shared_jm.clone(), log_buffer, logs_config);
+    let (test_suite_store, schema_registry) = {
+        let jm_lock = shared_jm.lock().await;
+        let registry = jm_lock.service_registry.read().await;
+        (registry.test_suite_store(), registry.schema_registry())
+    };
+    let api_app_state = AppState::new(
+        shared_jm.clone(),
+        log_buffer,
+        logs_config,
+        test_suite_store,
+        schema_registry,
+    );
 
     tokio::spawn(async move {
         if let Err(err) = api::start_server(api_app_state, api_port).await {

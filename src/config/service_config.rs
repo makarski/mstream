@@ -80,6 +80,7 @@ pub struct HttpConfig {
 #[derive(Deserialize, Debug, Clone, Serialize)]
 pub struct PubSubConfig {
     pub name: String,
+    pub project_id: String,
     pub auth: GcpAuthConfig,
 }
 
@@ -401,6 +402,7 @@ mod tests {
         fn pubsub_static_token_masks_env_name() {
             let cfg = PubSubConfig {
                 name: "pubsub".to_string(),
+                project_id: "test-project".to_string(),
                 auth: GcpAuthConfig::StaticToken {
                     env_token_name: "MY_SECRET_TOKEN".to_string(),
                 },
@@ -420,6 +422,7 @@ mod tests {
         fn pubsub_service_account_unchanged() {
             let cfg = PubSubConfig {
                 name: "pubsub".to_string(),
+                project_id: "test-project".to_string(),
                 auth: GcpAuthConfig::ServiceAccount {
                     account_key_path: "/path/to/key.json".to_string(),
                 },

@@ -5,14 +5,17 @@ use tokio::sync::mpsc::Sender;
 use tonic::service::Interceptor;
 
 use super::api::StreamingPullRequest;
-use super::api::schema::Type as PubSubSchemaType;
 use super::api::subscriber_client::SubscriberClient;
 use super::{Channel, InterceptedService, tls_transport};
 use crate::config::Encoding;
 use crate::encoding::framed;
 use crate::pubsub::api::publisher_client::PublisherClient;
+use crate::pubsub::api::schema::Type as PubSubSchemaType;
 use crate::pubsub::api::schema_service_client::SchemaServiceClient;
-use crate::pubsub::api::{GetSchemaRequest, ListSchemasRequest, ListSchemasResponse};
+use crate::pubsub::api::{
+    CreateSchemaRequest, DeleteSchemaRequest, GetSchemaRequest, ListSchemasRequest,
+    ListSchemasResponse, SchemaView,
+};
 use crate::pubsub::api::{PublishRequest, PubsubMessage};
 use crate::schema::Schema;
 use crate::source::SourceEvent;
@@ -99,8 +102,8 @@ impl<I: Interceptor> PubSubPublisher<I> {
 }
 
 pub struct SchemaService<I> {
-    client: SchemaServiceClient<InterceptedService<Channel, I>>,
-    cache: HashMap<String, Schema>,
+    client: tokio::sync::Mutex<SchemaServiceClient<InterceptedService<Channel, I>>>,
+    cache: tokio::sync::Mutex<HashMap<String, Schema>>,
 }
 
 impl<I: Interceptor> SchemaService<I> {
@@ -112,16 +115,17 @@ impl<I: Interceptor> SchemaService<I> {
         let client = SchemaServiceClient::with_interceptor(channel, interceptor);
 
         Ok(Self {
-            client,
-            cache: HashMap::new(),
+            client: tokio::sync::Mutex::new(client),
+            cache: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
-    pub async fn list_schemas(&mut self, parent: String) -> anyhow::Result<ListSchemasResponse> {
-        let schema_list_response = self
-            .client
+    pub async fn list_schemas(&self, parent: String) -> anyhow::Result<ListSchemasResponse> {
+        let mut client = self.client.lock().await;
+        let schema_list_response = client
             .list_schemas(ListSchemasRequest {
                 parent,
+                view: SchemaView::Full.into(),
                 ..Default::default()
             })
             .await?;
@@ -129,37 +133,78 @@ impl<I: Interceptor> SchemaService<I> {
         Ok(schema_list_response.into_inner())
     }
 
-    pub async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
-        if !self.cache.contains_key(&id) {
-            let schema_response = self.client.get_schema(GetSchemaRequest {
-                name: id.clone(),
-                ..Default::default()
-            });
+    pub async fn create_schema(
+        &self,
+        parent: String,
+        schema_id: String,
+        schema_type: PubSubSchemaType,
+        definition: String,
+    ) -> anyhow::Result<super::api::Schema> {
+        let mut client = self.client.lock().await;
+        let response = client
+            .create_schema(CreateSchemaRequest {
+                parent,
+                schema_id,
+                schema: Some(super::api::Schema {
+                    name: String::new(),
+                    r#type: schema_type.into(),
+                    definition,
+                }),
+            })
+            .await?;
 
-            let pubsub_schema = schema_response.await?.into_inner();
-            let internal_schema_encoding = match PubSubSchemaType::try_from(pubsub_schema.r#type)? {
-                PubSubSchemaType::Avro => Encoding::Avro,
-                PubSubSchemaType::ProtocolBuffer => {
-                    bail!("unsupported pubsub schema type: protobuf")
-                }
-                PubSubSchemaType::Unspecified => {
-                    bail!("unsupported pubsub schema type: unspecified")
-                }
-            };
+        Ok(response.into_inner())
+    }
 
-            let schema = Schema::parse(&pubsub_schema.definition, internal_schema_encoding)?;
-            self.cache.insert(id.clone(), schema.clone());
-            log::info!("schema {} added to cache", id);
+    pub async fn delete_schema(&self, name: String) -> anyhow::Result<()> {
+        let mut client = self.client.lock().await;
+        client.delete_schema(DeleteSchemaRequest { name }).await?;
 
-            return Ok(schema);
-        } else {
-            log::info!("schema {} found in cache", id);
+        Ok(())
+    }
+
+    pub async fn get_schema(&self, id: &str) -> anyhow::Result<Schema> {
+        // Check cache first
+        {
+            let cache = self.cache.lock().await;
+            if let Some(schema) = cache.get(id) {
+                log::info!("schema {} found in cache", id);
+                return Ok(schema.clone());
+            }
         }
 
-        self.cache
-            .get(&id)
-            .cloned()
-            .ok_or_else(|| anyhow!("schema not found"))
+        // Fetch from PubSub
+        let pubsub_schema = {
+            let mut client = self.client.lock().await;
+            client
+                .get_schema(GetSchemaRequest {
+                    name: id.to_string(),
+                    ..Default::default()
+                })
+                .await?
+                .into_inner()
+        };
+
+        let internal_schema_encoding = match PubSubSchemaType::try_from(pubsub_schema.r#type)? {
+            PubSubSchemaType::Avro => Encoding::Avro,
+            PubSubSchemaType::ProtocolBuffer => {
+                bail!("unsupported pubsub schema type: protobuf")
+            }
+            PubSubSchemaType::Unspecified => {
+                bail!("unsupported pubsub schema type: unspecified")
+            }
+        };
+
+        let schema = Schema::parse(&pubsub_schema.definition, internal_schema_encoding)?;
+
+        // Cache the result
+        {
+            let mut cache = self.cache.lock().await;
+            cache.insert(id.to_string(), schema.clone());
+        }
+        log::info!("schema {} added to cache", id);
+
+        Ok(schema)
     }
 }
 

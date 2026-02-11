@@ -9,12 +9,14 @@ use crate::api::types::TestAssertion;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestSuite {
+    #[serde(default)]
     pub id: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    pub context: TestContext,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_context: Option<SourceContext>,
+    pub source_ref: Option<SourceRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<JsonValue>,
     pub cases: Vec<TestCase>,
@@ -25,7 +27,14 @@ pub struct TestSuite {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceContext {
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TestContext {
+    Rhai { script: String },
+    Http { endpoint: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceRef {
     pub service_name: String,
     pub resource: String,
 }
@@ -92,13 +101,14 @@ impl TestSuiteStore for NoopTestSuiteStore {
 }
 
 impl TestSuite {
-    pub fn new(id: String, name: String) -> Self {
+    pub fn new(id: String, name: String, context: TestContext) -> Self {
         let now = Utc::now();
         Self {
             id,
             name,
             description: None,
-            source_context: None,
+            context,
+            source_ref: None,
             input_schema: None,
             cases: vec![],
             created_at: now,
@@ -130,9 +140,12 @@ mod tests {
             id: "test-suite-1".to_string(),
             name: "My Test Suite".to_string(),
             description: Some("A test suite".to_string()),
-            source_context: Some(SourceContext {
-                service_name: "mongo-prod".to_string(),
-                resource: "users".to_string(),
+            context: TestContext::Rhai {
+                script: "fn transform(data, attrs) { result(data, attrs) }".to_string(),
+            },
+            source_ref: Some(SourceRef {
+                service_name: "udf-anonymizer".to_string(),
+                resource: "mask_pii.rhai".to_string(),
             }),
             input_schema: Some(json!({"type": "object"})),
             cases: vec![TestCase {
@@ -157,6 +170,12 @@ mod tests {
         assert_eq!(deserialized.name, "My Test Suite");
         assert_eq!(deserialized.cases.len(), 1);
         assert_eq!(deserialized.cases[0].assertions.len(), 1);
+        match &deserialized.context {
+            TestContext::Rhai { script } => {
+                assert!(script.contains("transform"));
+            }
+            _ => panic!("expected Rhai context"),
+        }
     }
 
     #[test]
@@ -165,7 +184,10 @@ mod tests {
             id: "suite-1".to_string(),
             name: "Suite One".to_string(),
             description: Some("Description".to_string()),
-            source_context: None,
+            context: TestContext::Rhai {
+                script: "fn transform(data, attrs) { result(data, attrs) }".to_string(),
+            },
+            source_ref: None,
             input_schema: None,
             cases: vec![
                 TestCase {
@@ -218,7 +240,10 @@ mod tests {
     #[tokio::test]
     async fn noop_store_save_returns_ok() {
         let store = NoopTestSuiteStore;
-        let suite = TestSuite::new("id".to_string(), "name".to_string());
+        let context = TestContext::Rhai {
+            script: "fn transform(data, attrs) { result(data, attrs) }".to_string(),
+        };
+        let suite = TestSuite::new("id".to_string(), "name".to_string(), context);
         let result = store.save(&suite).await;
 
         assert!(result.is_ok());

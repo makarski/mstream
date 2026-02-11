@@ -20,6 +20,7 @@ pub mod mongo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaEntry {
+    #[serde(default)]
     pub id: String,
     pub name: Option<String>,
     pub encoding: Encoding,
@@ -58,44 +59,152 @@ pub enum SchemaRegistryError {
 pub type DynSchemaRegistry = Arc<dyn SchemaRegistry + Send + Sync>;
 
 pub enum SchemaProvider {
-    PubSub(SchemaService<ServiceAccountAuth>),
+    PubSub {
+        service: SchemaService<ServiceAccountAuth>,
+        project_id: String,
+    },
     MongoDb(MongoDbSchemaProvider),
+}
+
+impl SchemaProvider {
+    fn pubsub_parent(project_id: &str) -> String {
+        format!("projects/{project_id}")
+    }
+
+    fn pubsub_schema_name(project_id: &str, schema_id: &str) -> String {
+        format!("projects/{project_id}/schemas/{schema_id}")
+    }
+
+    fn encoding_to_pubsub_type(encoding: &Encoding) -> crate::pubsub::api::schema::Type {
+        match encoding {
+            Encoding::Avro => crate::pubsub::api::schema::Type::Avro,
+            _ => crate::pubsub::api::schema::Type::Unspecified,
+        }
+    }
+
+    fn pubsub_type_to_encoding(
+        t: crate::pubsub::api::schema::Type,
+    ) -> Result<Encoding, SchemaRegistryError> {
+        match t {
+            crate::pubsub::api::schema::Type::Avro => Ok(Encoding::Avro),
+            other => Err(SchemaRegistryError::Other(format!(
+                "unsupported pubsub schema type: {other:?}"
+            ))),
+        }
+    }
 }
 
 #[async_trait]
 impl SchemaRegistry for SchemaProvider {
     async fn get(&self, id: &str) -> Result<SchemaEntry, SchemaRegistryError> {
         match self {
-            SchemaProvider::PubSub(_sp) => Err(SchemaRegistryError::Other(
-                "PubSub get not yet implemented".into(),
-            )),
+            SchemaProvider::PubSub {
+                service,
+                project_id,
+            } => {
+                let full_name = Self::pubsub_schema_name(project_id, id);
+                let schema = service
+                    .get_schema(&full_name)
+                    .await
+                    .map_err(|e| SchemaRegistryError::Other(e.to_string()))?;
+
+                let (encoding, definition) = match &schema {
+                    Schema::Avro(avro) => (Encoding::Avro, avro.canonical_form()),
+                    Schema::Json(json) => (Encoding::Json, json.to_string()),
+                    Schema::Undefined => {
+                        return Err(SchemaRegistryError::Other(
+                            "schema has undefined encoding".into(),
+                        ));
+                    }
+                };
+
+                Ok(SchemaEntry {
+                    id: id.to_string(),
+                    name: Some(id.to_string()),
+                    encoding,
+                    definition,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                })
+            }
             SchemaProvider::MongoDb(sp) => sp.get(id).await,
         }
     }
 
     async fn list(&self) -> Result<Vec<SchemaEntrySummary>, SchemaRegistryError> {
         match self {
-            SchemaProvider::PubSub(_sp) => Err(SchemaRegistryError::Other(
-                "PubSub list not yet implemented".into(),
-            )),
+            SchemaProvider::PubSub {
+                service,
+                project_id,
+            } => {
+                let parent = Self::pubsub_parent(project_id);
+                let response = service
+                    .list_schemas(parent)
+                    .await
+                    .map_err(|e| SchemaRegistryError::Other(e.to_string()))?;
+
+                let summaries = response
+                    .schemas
+                    .into_iter()
+                    .filter_map(|s| {
+                        let schema_type =
+                            crate::pubsub::api::schema::Type::try_from(s.r#type).ok()?;
+                        let encoding = Self::pubsub_type_to_encoding(schema_type).ok()?;
+                        let schema_id = s.name.rsplit('/').next().unwrap_or(&s.name).to_string();
+                        Some(SchemaEntrySummary {
+                            id: schema_id,
+                            name: Some(s.name),
+                            encoding,
+                        })
+                    })
+                    .collect();
+
+                Ok(summaries)
+            }
             SchemaProvider::MongoDb(sp) => sp.list().await,
         }
     }
 
     async fn save(&self, entry: &SchemaEntry) -> Result<(), SchemaRegistryError> {
         match self {
-            SchemaProvider::PubSub(_sp) => Err(SchemaRegistryError::Other(
-                "PubSub save not yet implemented".into(),
-            )),
+            SchemaProvider::PubSub {
+                service,
+                project_id,
+            } => {
+                let parent = Self::pubsub_parent(project_id);
+                let schema_id = entry.name.as_deref().unwrap_or(&entry.id);
+                let pubsub_type = Self::encoding_to_pubsub_type(&entry.encoding);
+
+                service
+                    .create_schema(
+                        parent,
+                        schema_id.to_string(),
+                        pubsub_type,
+                        entry.definition.clone(),
+                    )
+                    .await
+                    .map_err(|e| SchemaRegistryError::Other(e.to_string()))?;
+
+                Ok(())
+            }
             SchemaProvider::MongoDb(sp) => sp.save(entry).await,
         }
     }
 
     async fn delete(&self, id: &str) -> Result<(), SchemaRegistryError> {
         match self {
-            SchemaProvider::PubSub(_sp) => Err(SchemaRegistryError::Other(
-                "PubSub delete not yet implemented".into(),
-            )),
+            SchemaProvider::PubSub {
+                service,
+                project_id,
+            } => {
+                let full_name = Self::pubsub_schema_name(project_id, id);
+                service
+                    .delete_schema(full_name)
+                    .await
+                    .map_err(|e| SchemaRegistryError::Other(e.to_string()))?;
+
+                Ok(())
+            }
             SchemaProvider::MongoDb(sp) => sp.delete(id).await,
         }
     }
