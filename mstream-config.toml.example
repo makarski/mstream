@@ -1,11 +1,13 @@
 [[services]]
 provider = "pubsub"
 name = "pubsub-example"
+project_id = "your-gcp-project-id"
 auth = { kind = "service_account", account_key_path = "/path/to/service-account.json" }
 
 [[services]]
 provider = "pubsub"
 name = "pubsub-static-token"
+project_id = "your-gcp-project-id"
 auth = { kind = "static_token", env_token_name = "PUBSUB_TOKEN" }
 
 [[services]]
