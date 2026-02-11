@@ -18,8 +18,9 @@ use crate::{
     http,
     middleware::udf::rhai::RhaiMiddleware,
     mongodb::{checkpoint::MongoDbCheckpointer, db_client, test_suite::MongoDbTestSuiteStore},
+    pubsub::srvc::SchemaService,
     pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
-    schema::{DynSchemaRegistry, NoopSchemaRegistry, mongo::MongoDbSchemaProvider},
+    schema::{DynSchemaRegistry, NoopSchemaRegistry, SchemaProvider, mongo::MongoDbSchemaProvider},
     testing::{DynTestSuiteStore, NoopTestSuiteStore},
 };
 
@@ -254,6 +255,35 @@ impl ServiceRegistry {
 
     pub fn schema_registry(&self) -> DynSchemaRegistry {
         self.schema_registry.clone()
+    }
+
+    pub async fn schema_registry_for(
+        &self,
+        service_name: &str,
+    ) -> anyhow::Result<DynSchemaRegistry> {
+        let service = self.storage.get_by_name(service_name).await?;
+        match service {
+            Service::PubSub(cfg) => {
+                let tp = self.gcp_auth(&cfg.name).await?;
+                let svc = SchemaService::with_interceptor(tp.clone()).await?;
+                Ok(Arc::new(SchemaProvider::PubSub {
+                    service: svc,
+                    project_id: cfg.project_id.clone(),
+                }))
+            }
+            Service::MongoDb(cfg) => {
+                let client = self.mongodb_client(&cfg.name).await?;
+                let db = client.database(&cfg.db_name);
+                Ok(Arc::new(MongoDbSchemaProvider::new(
+                    db,
+                    "schemas".to_string(),
+                )))
+            }
+            _ => Err(anyhow!(
+                "service '{}' does not support schema operations",
+                service_name
+            )),
+        }
     }
 
     pub fn test_suite_store(&self) -> DynTestSuiteStore {

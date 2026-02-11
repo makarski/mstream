@@ -10,7 +10,6 @@ use tracing::info;
 use crate::config::system::LogsConfig;
 use crate::job_manager::JobManager;
 use crate::logs::LogBuffer;
-use crate::schema::DynSchemaRegistry;
 use crate::testing::DynTestSuiteStore;
 
 pub(crate) mod error;
@@ -32,7 +31,6 @@ pub struct AppState {
     pub(crate) log_buffer: LogBuffer,
     pub(crate) logs_config: LogsConfig,
     pub(crate) test_suite_store: DynTestSuiteStore,
-    pub(crate) schema_registry: DynSchemaRegistry,
 }
 
 impl AppState {
@@ -41,14 +39,12 @@ impl AppState {
         log_buffer: LogBuffer,
         logs_config: LogsConfig,
         test_suite_store: DynTestSuiteStore,
-        schema_registry: DynSchemaRegistry,
     ) -> Self {
         Self {
             job_manager: jb,
             log_buffer,
             logs_config,
             test_suite_store,
-            schema_registry,
         }
     }
 }
@@ -79,10 +75,10 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/test-suites", post(save_test_suite))
         .route("/test-suites/{id}", get(get_test_suite))
         .route("/test-suites/{id}", delete(delete_test_suite))
-        .route("/schemas", get(list_schemas))
-        .route("/schemas", post(save_schema))
-        .route("/schemas/{id}", get(get_schema))
-        .route("/schemas/{id}", delete(delete_schema))
+        .route("/services/{name}/schemas", get(list_schemas))
+        .route("/services/{name}/schemas", post(save_schema))
+        .route("/services/{name}/schemas/{id}", get(get_schema))
+        .route("/services/{name}/schemas/{id}", delete(delete_schema))
         .route("/logs", get(logs::get_logs))
         .route("/logs/stream", get(logs::stream_logs))
         .with_state(state);
