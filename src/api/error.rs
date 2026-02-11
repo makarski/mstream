@@ -8,6 +8,7 @@ use tracing::{error, warn};
 use crate::{
     api::types::Message, job_manager::error::JobManagerError,
     middleware::udf::rhai::RhaiMiddlewareError, schema::introspect::SchemaIntrospectError,
+    testing::store::TestSuiteStoreError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +30,9 @@ pub enum ApiError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error(transparent)]
+    TestSuiteStore(#[from] TestSuiteStoreError),
 }
 
 impl IntoResponse for ApiError {
@@ -41,6 +45,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            ApiError::TestSuiteStore(err) => err.response_data(),
         };
 
         if status.is_server_error() {
@@ -106,6 +111,22 @@ impl ApiErrorDetails for SchemaIntrospectError {
                 StatusCode::NOT_FOUND,
                 "No documents found in collection".to_string(),
             ),
+        }
+    }
+}
+
+impl ApiErrorDetails for TestSuiteStoreError {
+    fn response_data(&self) -> (StatusCode, String) {
+        match self {
+            TestSuiteStoreError::NotFound(id) => (
+                StatusCode::NOT_FOUND,
+                format!("Test suite '{}' not found", id),
+            ),
+            TestSuiteStoreError::MongoDb(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            ),
+            TestSuiteStoreError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         }
     }
 }
@@ -301,6 +322,29 @@ mod tests {
             ))
             .into();
             assert_api_error(error, StatusCode::INTERNAL_SERVER_ERROR, "disk full").await;
+        }
+    }
+
+    mod test_suite_store_error_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn not_found_returns_404() {
+            let error: ApiError = TestSuiteStoreError::NotFound("suite-123".to_string()).into();
+            let (status, message) = extract_response(error.into_response()).await;
+
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert!(message.contains("suite-123"));
+        }
+
+        #[tokio::test]
+        async fn other_error_returns_500() {
+            let error: ApiError =
+                TestSuiteStoreError::Other("unexpected failure".to_string()).into();
+            let (status, message) = extract_response(error.into_response()).await;
+
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(message.contains("unexpected failure"));
         }
     }
 

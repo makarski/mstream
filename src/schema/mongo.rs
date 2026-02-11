@@ -1,17 +1,8 @@
-use anyhow::anyhow;
+use async_trait::async_trait;
 use mongodb::bson::doc;
-use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
 
-use crate::config::Encoding;
-
-use super::Schema;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SchemaEntry {
-    schema_id: String,
-    schema_encoding: Encoding,
-    schema_definition: String,
-}
+use super::{SchemaEntry, SchemaEntrySummary, SchemaRegistry, SchemaRegistryError};
 
 pub struct MongoDbSchemaProvider {
     db: mongodb::Database,
@@ -25,19 +16,68 @@ impl MongoDbSchemaProvider {
             collection_name,
         }
     }
+
+    fn collection(&self) -> mongodb::Collection<SchemaEntry> {
+        self.db.collection(&self.collection_name)
+    }
 }
 
 impl MongoDbSchemaProvider {
-    pub async fn get_schema(&mut self, id: String) -> anyhow::Result<Schema> {
-        let collection = self
-            .db
-            .collection::<SchemaEntry>(self.collection_name.as_str());
-
-        let schema = collection
-            .find_one(doc! {"schema_id": &id})
+    pub async fn get(&self, id: &str) -> Result<SchemaEntry, SchemaRegistryError> {
+        self.collection()
+            .find_one(doc! { "id": id })
             .await?
-            .ok_or_else(|| anyhow!("schema not found: {}", id))?;
+            .ok_or_else(|| SchemaRegistryError::NotFound(id.to_string()))
+    }
 
-        Schema::parse(&schema.schema_definition, schema.schema_encoding)
+    pub async fn list(&self) -> Result<Vec<SchemaEntrySummary>, SchemaRegistryError> {
+        let mut cursor = self.collection().find(doc! {}).await?;
+        let mut entries = Vec::new();
+
+        while let Some(entry) = cursor.try_next().await? {
+            entries.push(SchemaEntrySummary {
+                id: entry.id,
+                name: entry.name,
+                encoding: entry.encoding,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    pub async fn save(&self, entry: &SchemaEntry) -> Result<(), SchemaRegistryError> {
+        let filter = doc! { "id": &entry.id };
+        let update = doc! { "$set": mongodb::bson::to_bson(entry).map_err(|e| SchemaRegistryError::Other(e.to_string()))? };
+
+        self.collection()
+            .update_one(filter, update)
+            .upsert(true)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<(), SchemaRegistryError> {
+        self.collection().delete_one(doc! { "id": id }).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SchemaRegistry for MongoDbSchemaProvider {
+    async fn get(&self, id: &str) -> Result<SchemaEntry, SchemaRegistryError> {
+        MongoDbSchemaProvider::get(self, id).await
+    }
+
+    async fn list(&self) -> Result<Vec<SchemaEntrySummary>, SchemaRegistryError> {
+        MongoDbSchemaProvider::list(self).await
+    }
+
+    async fn save(&self, entry: &SchemaEntry) -> Result<(), SchemaRegistryError> {
+        MongoDbSchemaProvider::save(self, entry).await
+    }
+
+    async fn delete(&self, id: &str) -> Result<(), SchemaRegistryError> {
+        MongoDbSchemaProvider::delete(self, id).await
     }
 }

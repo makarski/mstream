@@ -10,6 +10,7 @@ use tracing::info;
 use crate::config::system::LogsConfig;
 use crate::job_manager::JobManager;
 use crate::logs::LogBuffer;
+use crate::testing::DynTestSuiteStore;
 
 pub(crate) mod error;
 pub(crate) mod handler;
@@ -17,10 +18,11 @@ pub(crate) mod logs;
 pub(crate) mod types;
 
 use handler::{
-    create_service, create_start_job, fill_schema, get_one_service, get_resource_schema,
-    list_checkpoints, list_jobs, list_service_resources, list_services, remove_service,
-    restart_job, schema_convert, stop_job, transform_run, transform_test_generate,
-    transform_test_run,
+    create_service, create_start_job, delete_schema, delete_test_suite, fill_schema,
+    get_one_service, get_resource_schema, get_schema, get_test_suite, list_checkpoints, list_jobs,
+    list_schemas, list_service_resources, list_services, list_test_suites, remove_service,
+    restart_job, save_schema, save_test_suite, schema_convert, stop_job, transform_run,
+    transform_test_generate, transform_test_run,
 };
 
 #[derive(Clone)]
@@ -28,14 +30,21 @@ pub struct AppState {
     pub(crate) job_manager: Arc<Mutex<JobManager>>,
     pub(crate) log_buffer: LogBuffer,
     pub(crate) logs_config: LogsConfig,
+    pub(crate) test_suite_store: DynTestSuiteStore,
 }
 
 impl AppState {
-    pub fn new(jb: Arc<Mutex<JobManager>>, log_buffer: LogBuffer, logs_config: LogsConfig) -> Self {
+    pub fn new(
+        jb: Arc<Mutex<JobManager>>,
+        log_buffer: LogBuffer,
+        logs_config: LogsConfig,
+        test_suite_store: DynTestSuiteStore,
+    ) -> Self {
         Self {
             job_manager: jb,
             log_buffer,
             logs_config,
+            test_suite_store,
         }
     }
 }
@@ -62,6 +71,14 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/transform/run", post(transform_run))
         .route("/transform/test/generate", post(transform_test_generate))
         .route("/transform/test/run", post(transform_test_run))
+        .route("/test-suites", get(list_test_suites))
+        .route("/test-suites", post(save_test_suite))
+        .route("/test-suites/{id}", get(get_test_suite))
+        .route("/test-suites/{id}", delete(delete_test_suite))
+        .route("/services/{name}/schemas", get(list_schemas))
+        .route("/services/{name}/schemas", post(save_schema))
+        .route("/services/{name}/schemas/{id}", get(get_schema))
+        .route("/services/{name}/schemas/{id}", delete(delete_schema))
         .route("/logs", get(logs::get_logs))
         .route("/logs/stream", get(logs::stream_logs))
         .with_state(state);

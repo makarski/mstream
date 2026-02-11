@@ -43,6 +43,7 @@ pub async fn start_app_listener(done_ch: mpsc::UnboundedSender<JobStateChange>) 
             services: vec![
                 Service::PubSub(PubSubConfig {
                     name: "pubsub".to_owned(),
+                    project_id: "test-project".to_owned(),
                     auth: GcpAuthConfig::StaticToken {
                         env_token_name: "MSTREAM_TEST_AUTH_TOKEN".to_owned(),
                     },

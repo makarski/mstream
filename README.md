@@ -150,6 +150,10 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
 | `GET` | `/services/{name}/resources` | List resources for a service |
 | `GET` | `/services/{name}/schema/introspect` | Introspect schema for a resource |
+| `GET` | `/services/{name}/schemas` | List schemas stored on this service |
+| `GET` | `/services/{name}/schemas/{id}` | Get a schema by ID |
+| `POST` | `/services/{name}/schemas` | Save a schema to this service |
+| `DELETE` | `/services/{name}/schemas/{id}` | Delete a schema |
 | `POST` | `/schema/fill` | Generate synthetic data from a schema |
 | `POST` | `/schema/convert` | Convert schema between JSON Schema and Avro |
 
@@ -376,6 +380,46 @@ Run test cases against a script and return pass/fail results with assertion fail
 | `contains` | Substring match (strings) or element exists (arrays) |
 | `type_matches` | Only checks type, not value |
 | `gt`, `gte`, `lt`, `lte` | Numeric comparisons |
+
+### Schemas
+
+Schemas are accessed through the service that stores them. MongoDB services persist schemas in a collection; PubSub services interact with the GCP Schema Registry.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/services/{name}/schemas` | List all schemas on a service |
+| `GET` | `/services/{name}/schemas/{id}` | Get a single schema |
+| `POST` | `/services/{name}/schemas` | Create or update a schema |
+| `DELETE` | `/services/{name}/schemas/{id}` | Delete a schema |
+
+#### Save Schema
+
+```
+POST /services/system-db/schemas
+```
+
+```json
+{
+  "name": "user-schema",
+  "encoding": "avro",
+  "definition": "{\"type\":\"record\",\"name\":\"User\",\"fields\":[{\"name\":\"email\",\"type\":\"string\"}]}"
+}
+```
+
+For MongoDB services, the `id` field is auto-assigned if omitted. For PubSub services, the `name` field is used as the schema ID in GCP.
+
+> **Note:** Saving to a remote service (e.g. PubSub) that already has a schema with the same name will fail with a conflict. A future update will add a confirmation guardrail for remote overwrites.
+
+### Test Suites
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/test-suites` | List saved test suites |
+| `GET` | `/test-suites/{id}` | Get a test suite by ID |
+| `POST` | `/test-suites` | Save a test suite |
+| `DELETE` | `/test-suites/{id}` | Delete a test suite |
+
+Test suites persist test cases, assertions, and optionally a reference to the transform script they were authored against. Used by the Transform Studio to save and reload testing sessions.
 
 ## Checkpoints
 

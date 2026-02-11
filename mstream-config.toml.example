@@ -1,11 +1,13 @@
 [[services]]
 provider = "pubsub"
 name = "pubsub-example"
+project_id = "your-gcp-project-id"
 auth = { kind = "service_account", account_key_path = "/path/to/service-account.json" }
 
 [[services]]
 provider = "pubsub"
 name = "pubsub-static-token"
+project_id = "your-gcp-project-id"
 auth = { kind = "static_token", env_token_name = "PUBSUB_TOKEN" }
 
 [[services]]
@@ -86,8 +88,8 @@ checkpoint = { enabled = true }
 source = { service_name = "mongodb-source", resource = "example_collection", output_encoding = "bson", schema_id = "basic_schema" }
 # Define available schemas
 schemas = [
-    { id = "basic_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/example-schema" },
-    { id = "extended_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/extended-schema" }
+    { id = "basic_schema", service_name = "pubsub-example", resource = "example-schema" },
+    { id = "extended_schema", service_name = "pubsub-example", resource = "extended-schema" }
 ]
 sinks = [
     { service_name = "kafka-local", resource = "local_topic", output_encoding = "json", schema_id = "basic_schema" },
@@ -116,7 +118,7 @@ checkpoint = { enabled = true }
 source = { service_name = "kafka-cloud", resource = "source_topic", input_encoding = "avro", output_encoding = "json", schema_id = "kafka_schema" }
 # Schema is optional for filtering fields
 schemas = [
-    { id = "kafka_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/kafka-source-schema" }
+    { id = "kafka_schema", service_name = "pubsub-example", resource = "kafka-source-schema" }
 ]
 sinks = [
     { service_name = "kafka-local", resource = "processed_topic", output_encoding = "json" },
@@ -143,8 +145,8 @@ name = "middleware-example-connector"
 source = { service_name = "mongodb-source", resource = "users", output_encoding = "bson", schema_id = "user_schema" }
 # Define available schemas
 schemas = [
-    { id = "user_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/user-schema" },
-    { id = "enriched_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/enriched-user" }
+    { id = "user_schema", service_name = "pubsub-example", resource = "user-schema" },
+    { id = "enriched_schema", service_name = "pubsub-example", resource = "enriched-user" }
 ]
 # Define middleware chain for transformations
 middlewares = [
@@ -166,8 +168,8 @@ name = "avro-middleware-connector"
 source = { service_name = "kafka-cloud", resource = "source_events", input_encoding = "avro", output_encoding = "avro", schema_id = "events_schema" }
 # Define schemas
 schemas = [
-    { id = "events_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/events-schema" },
-    { id = "processed_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/processed-events" }
+    { id = "events_schema", service_name = "pubsub-example", resource = "events-schema" },
+    { id = "processed_schema", service_name = "pubsub-example", resource = "processed-events" }
 ]
 # Middleware with different encoding transformations
 middlewares = [
@@ -204,7 +206,7 @@ name = "batch-with-schema-connector"
 batch = { kind = "count", size = 500 }
 source = { service_name = "mongodb-source", resource = "metrics_collection", output_encoding = "bson", schema_id = "metrics_schema" }
 schemas = [
-    { id = "metrics_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/metrics-schema" }
+    { id = "metrics_schema", service_name = "pubsub-example", resource = "metrics-schema" }
 ]
 sinks = [
     { service_name = "kafka-cloud", resource = "metrics_topic", output_encoding = "avro", schema_id = "metrics_schema" }
@@ -217,7 +219,7 @@ name = "batch-middleware-connector"
 batch = { kind = "count", size = 200 }
 source = { service_name = "kafka-cloud", resource = "batch_events", input_encoding = "avro", output_encoding = "json", schema_id = "batch_schema" }
 schemas = [
-    { id = "batch_schema", service_name = "pubsub-example", resource = "projects/your-project/schemas/batch-events-schema" }
+    { id = "batch_schema", service_name = "pubsub-example", resource = "batch-events-schema" }
 ]
 middlewares = [
     # Process batches of events at once for better performance

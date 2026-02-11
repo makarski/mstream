@@ -165,6 +165,7 @@ mod tests {
 
         let pubsub_service = Service::PubSub(PubSubConfig {
             name: "pubsub-service".to_string(),
+            project_id: "test-project".to_string(),
             auth: GcpAuthConfig::StaticToken {
                 env_token_name: "TEST_TOKEN".to_string(),
             },
