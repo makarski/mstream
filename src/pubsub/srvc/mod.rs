@@ -20,6 +20,13 @@ use crate::pubsub::api::{PublishRequest, PubsubMessage};
 use crate::schema::Schema;
 use crate::source::SourceEvent;
 
+pub struct CreateSchemaParams {
+    pub parent: String,
+    pub schema_id: String,
+    pub schema_type: PubSubSchemaType,
+    pub definition: String,
+}
+
 pub struct PubSubPublisher<I> {
     client: PublisherClient<InterceptedService<Channel, I>>,
 }
@@ -135,20 +142,17 @@ impl<I: Interceptor> SchemaService<I> {
 
     pub async fn create_schema(
         &self,
-        parent: String,
-        schema_id: String,
-        schema_type: PubSubSchemaType,
-        definition: String,
+        params: CreateSchemaParams,
     ) -> anyhow::Result<super::api::Schema> {
         let mut client = self.client.lock().await;
         let response = client
             .create_schema(CreateSchemaRequest {
-                parent,
-                schema_id,
+                parent: params.parent,
+                schema_id: params.schema_id,
                 schema: Some(super::api::Schema {
                     name: String::new(),
-                    r#type: schema_type.into(),
-                    definition,
+                    r#type: params.schema_type.into(),
+                    definition: params.definition,
                 }),
             })
             .await?;
