@@ -10,7 +10,10 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     config::Encoding,
-    pubsub::{ServiceAccountAuth, srvc::SchemaService},
+    pubsub::{
+        ServiceAccountAuth,
+        srvc::{CreateSchemaParams, SchemaService},
+    },
 };
 
 pub mod convert;
@@ -176,12 +179,12 @@ impl SchemaRegistry for SchemaProvider {
                 let pubsub_type = Self::encoding_to_pubsub_type(&entry.encoding);
 
                 service
-                    .create_schema(
+                    .create_schema(CreateSchemaParams {
                         parent,
-                        schema_id.to_string(),
-                        pubsub_type,
-                        entry.definition.clone(),
-                    )
+                        schema_id: schema_id.to_string(),
+                        schema_type: pubsub_type,
+                        definition: entry.definition.clone(),
+                    })
                     .await
                     .map_err(|e| SchemaRegistryError::Other(e.to_string()))?;
 

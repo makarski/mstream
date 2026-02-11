@@ -97,9 +97,12 @@ impl SourceBuilder {
             }
             Service::PubSub(ps_conf) => {
                 let tp = registry_read.gcp_auth(&ps_conf.name).await?;
+                let resolved = format!(
+                    "projects/{}/subscriptions/{}",
+                    ps_conf.project_id, self.config.resource
+                );
                 let subscriber =
-                    PubSubSubscriber::new(tp.clone(), self.config.resource.clone(), input_encoding)
-                        .await?;
+                    PubSubSubscriber::new(tp.clone(), resolved, input_encoding).await?;
                 Ok(SourceProvider::PubSub(subscriber))
             }
             _ => bail!(
