@@ -37,7 +37,7 @@ source = { service_name = "3tlm-prod", resource = "hubSpotContact", output_encod
 #     { service_name = "rhai-scripts", resource = "hubspot_contact_transform.rhai", output_encoding = "json" }
 # ]
 sinks = [
-    { service_name = "gcp-pubsub", resource = "projects/t-analytics-455613/topics/lm-hubspot-contacts-test", output_encoding = "json" },
+    { service_name = "gcp-pubsub", resource = "lm-hubspot-contacts-test", output_encoding = "json" },
     { service_name = "3tlm-local-exports", resource = "hubspot-contacts", output_encoding = "bson" }
 ]
 
@@ -50,5 +50,5 @@ source = { service_name = "lm-mongodb", resource = "hubSpotLicense", output_enco
 #     { service_name = "rhai-scripts", resource = "hubspot_license_transform.rhai", output_encoding = "json" }
 # ]
 sinks = [
-    { service_name = "gcp-pubsub", resource = "projects/PROJECT_ID/topics/hubspot-licenses", output_encoding = "bson" }
+    { service_name = "gcp-pubsub", resource = "hubspot-licenses", output_encoding = "bson" }
 ]
