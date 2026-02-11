@@ -1,9 +1,8 @@
-use std::{collections::HashMap, ffi::OsStr, path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use anyhow::{Context, anyhow};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
-use tokio::fs;
 use tracing::info;
 
 use crate::{
@@ -11,7 +10,7 @@ use crate::{
     config::{
         Service,
         service_config::{
-            GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine, UdfScript,
+            GcpAuthConfig, HttpConfig, MongoDbConfig, PubSubConfig, UdfConfig, UdfEngine,
         },
         system::SystemConfig,
     },
@@ -26,6 +25,7 @@ use crate::{
 
 pub mod in_memory;
 pub mod mongodb_storage;
+mod udf;
 
 type RhaiMiddlewareBuilder =
     Arc<dyn Fn(String) -> anyhow::Result<RhaiMiddleware> + Send + Sync + 'static>;
@@ -107,7 +107,7 @@ impl ServiceRegistry {
             );
         }
 
-        create_udf_script(&cfg).await?;
+        udf::create_udf_script(&cfg).await?;
 
         let script_path = cfg.script_path.clone();
         let callback = move |filename: String| -> anyhow::Result<RhaiMiddleware> {
@@ -195,15 +195,12 @@ impl ServiceRegistry {
 
     pub async fn remove_service(&mut self, service_name: &str) -> anyhow::Result<()> {
         if let Some(system_cfg) = &self.system_cfg {
-            match system_cfg.has_system_components(service_name) {
-                Some(components) => {
-                    anyhow::bail!(
-                        "cannot remove service '{}' as it is used by system components: {:?}",
-                        service_name,
-                        components
-                    );
-                }
-                None => {}
+            if let Some(components) = system_cfg.has_system_components(service_name) {
+                anyhow::bail!(
+                    "cannot remove service '{}' as it is used by system components: {:?}",
+                    service_name,
+                    components
+                );
             }
         }
 
@@ -219,34 +216,26 @@ impl ServiceRegistry {
         }
     }
 
+    fn lookup<T: Clone>(map: &HashMap<String, T>, name: &str, label: &str) -> anyhow::Result<T> {
+        map.get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("{} not found for service name: {}", label, name))
+    }
+
     pub async fn udf_middleware(&self, name: &str) -> anyhow::Result<RhaiMiddlewareBuilder> {
-        self.udf_middlewares.get(name).cloned().ok_or_else(|| {
-            anyhow!(
-                "udf middleware builder not found for service name: {}",
-                name
-            )
-        })
+        Self::lookup(&self.udf_middlewares, name, "udf middleware builder")
     }
 
     pub async fn mongodb_client(&self, name: &str) -> anyhow::Result<Client> {
-        self.mongo_clients
-            .get(name)
-            .cloned()
-            .ok_or_else(|| anyhow!("mongodb client not found for service name: {}", name))
+        Self::lookup(&self.mongo_clients, name, "mongodb client")
     }
 
     pub async fn gcp_auth(&self, name: &str) -> anyhow::Result<ServiceAccountAuth> {
-        self.gcp_token_providers
-            .get(name)
-            .cloned()
-            .ok_or_else(|| anyhow!("gcp token provider not found for service name: {}", name))
+        Self::lookup(&self.gcp_token_providers, name, "gcp token provider")
     }
 
     pub async fn http_client(&self, name: &str) -> anyhow::Result<http::HttpService> {
-        self.http_services
-            .get(name)
-            .cloned()
-            .ok_or_else(|| anyhow!("http service not found for service name: {}", name))
+        Self::lookup(&self.http_services, name, "http service")
     }
 
     pub fn checkpointer(&self) -> DynCheckpointer {
@@ -274,9 +263,8 @@ impl ServiceRegistry {
             Service::MongoDb(cfg) => {
                 let client = self.mongodb_client(&cfg.name).await?;
                 let db = client.database(&cfg.db_name);
-                Ok(Arc::new(MongoDbSchemaProvider::new(
-                    db,
-                    "schemas".to_string(),
+                Ok(Arc::new(SchemaProvider::MongoDb(
+                    MongoDbSchemaProvider::new(db, "schemas".to_string()),
                 )))
             }
             _ => Err(anyhow!(
@@ -333,92 +321,11 @@ impl ServiceRegistry {
 
     async fn enrich_udf_scripts(&self, service: &mut Service) -> anyhow::Result<()> {
         if let Service::Udf(udf_config) = service {
-            let scripts = read_udf_scripts(Path::new(&udf_config.script_path)).await?;
+            let scripts = udf::read_udf_scripts(Path::new(&udf_config.script_path)).await?;
             udf_config.sources = Some(scripts);
         }
         Ok(())
     }
-}
-
-async fn create_udf_script(cfg: &UdfConfig) -> anyhow::Result<()> {
-    let base_path = Path::new(&cfg.script_path);
-
-    let sources = match &cfg.sources {
-        Some(s) => s,
-        None => &vec![],
-    };
-
-    if sources.is_empty()
-        && (!base_path.exists() || fs::read_dir(base_path).await?.next_entry().await?.is_none())
-    {
-        anyhow::bail!(
-            "no udf sources provided and udf script dir is empty or does not exist for service: {}. script_path: {}",
-            cfg.name,
-            base_path.display()
-        );
-    }
-
-    if !base_path.exists() {
-        fs::create_dir_all(base_path).await.with_context(|| {
-            anyhow!(
-                "failed to create an udf script dir: {}",
-                base_path.display()
-            )
-        })?;
-    }
-
-    for source in sources {
-        let filename = &source.filename;
-        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-            anyhow::bail!(
-                "invalid filename '{}' in udf source for service '{}'",
-                filename,
-                cfg.name
-            );
-        }
-
-        let script_path = base_path.join(&source.filename);
-        tokio::fs::write(&script_path, &source.content)
-            .await
-            .with_context(|| {
-                anyhow!("failed to write udf script file: {}", script_path.display())
-            })?;
-    }
-
-    Ok(())
-}
-
-async fn read_udf_scripts(script_path: &Path) -> anyhow::Result<Vec<UdfScript>> {
-    let mut dir = fs::read_dir(&script_path).await.with_context(|| {
-        anyhow!(
-            "failed to read udf script directory: {}",
-            script_path.display()
-        )
-    })?;
-
-    let mut scripts = Vec::new();
-
-    while let Some(entry) = dir.next_entry().await? {
-        let path = entry.path();
-        if path.is_file() && path.extension() == Some(OsStr::new("rhai")) {
-            let content = fs::read_to_string(&path)
-                .await
-                .with_context(|| anyhow!("failed to read udf script file: {}", path.display()))?;
-
-            let filename = path.file_name().and_then(|n| n.to_str()).ok_or_else(|| {
-                anyhow!("failed to read filename from a script: {}", path.display())
-            })?;
-
-            let script = UdfScript {
-                filename: filename.to_string(),
-                content: content,
-            };
-
-            scripts.push(script);
-        }
-    }
-
-    Ok(scripts)
 }
 
 /// Type alias for a boxed ServiceLifecycleStorage trait object
