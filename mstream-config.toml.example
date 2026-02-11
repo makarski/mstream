@@ -94,7 +94,7 @@ schemas = [
 sinks = [
     { service_name = "kafka-local", resource = "local_topic", output_encoding = "json", schema_id = "basic_schema" },
     { service_name = "kafka-cloud", resource = "cloud_topic", output_encoding = "avro", schema_id = "extended_schema" },
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/example-topic", output_encoding = "avro", schema_id = "basic_schema" },
+    { service_name = "pubsub-example", resource = "example-topic", output_encoding = "avro", schema_id = "basic_schema" },
     { service_name = "mongodb-source", resource = "example_collection_copy", output_encoding = "bson" },
     { service_name = "http-local", resource = "http_sink", output_encoding = "json" }
 ]
@@ -122,14 +122,14 @@ schemas = [
 ]
 sinks = [
     { service_name = "kafka-local", resource = "processed_topic", output_encoding = "json" },
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-topic", output_encoding = "avro", schema_id = "kafka_schema" },
+    { service_name = "pubsub-example", resource = "processed-topic", output_encoding = "avro", schema_id = "kafka_schema" },
 ]
 
 [[connectors]]
 enabled = true
 name = "pubsub-source-connector"
 # Configure PubSub as a source
-source = { service_name = "pubsub-example", resource = "projects/your-project/subscriptions/example-subscription", input_encoding = "avro", output_encoding = "json" }
+source = { service_name = "pubsub-example", resource = "example-subscription", input_encoding = "avro", output_encoding = "json" }
 # Schema configuration is optional
 schemas = [
     { id = "pubsub_schema", service_name = "mongodb-source", resource = "example-schema-collection" }
@@ -178,7 +178,7 @@ middlewares = [
     { service_name = "http-local", resource = "analyze", schema_id = "processed_schema", output_encoding = "json" },
 ]
 sinks = [
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-events", output_encoding = "avro", schema_id = "processed_schema" },
+    { service_name = "pubsub-example", resource = "processed-events", output_encoding = "avro", schema_id = "processed_schema" },
 ]
 
 # examples for batch processing
@@ -226,5 +226,5 @@ middlewares = [
     { service_name = "transform-service", resource = "batch_process", schema_id = "batch_schema", output_encoding = "json" }
 ]
 sinks = [
-    { service_name = "pubsub-example", resource = "projects/your-project/topics/processed-batches", output_encoding = "avro", schema_id = "batch_schema" }
+    { service_name = "pubsub-example", resource = "processed-batches", output_encoding = "avro", schema_id = "batch_schema" }
 ]
