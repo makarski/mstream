@@ -20,6 +20,7 @@ pub mod convert;
 pub mod encoding;
 pub mod introspect;
 pub mod mongo;
+pub mod sanitize;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaEntry {
