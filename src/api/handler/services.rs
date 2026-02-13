@@ -301,3 +301,128 @@ async fn resolve_resource_content(
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn script(filename: &str, content: &str) -> UdfScript {
+        UdfScript {
+            filename: filename.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    fn write_file(dir: &TempDir, name: &str, content: &str) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn udf_resources_from_inline_sources() {
+        let sources = vec![
+            script("transform.rhai", "fn transform(d, a) { result(d, a) }"),
+            script(
+                "mask.rhai",
+                "fn transform(d, a) { d.email = \"***\"; result(d, a) }",
+            ),
+        ];
+        let result = udf_script_resources("unused", Some(&sources)).await;
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "transform.rhai");
+        assert_eq!(result[0].resource_type, "script");
+        assert_eq!(result[1].name, "mask.rhai");
+    }
+
+    #[tokio::test]
+    async fn udf_resources_from_single_file() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(&dir, "transform.rhai", "// script");
+        let result = udf_script_resources(path.to_str().unwrap(), None).await;
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "transform.rhai");
+        assert_eq!(result[0].resource_type, "script");
+    }
+
+    #[tokio::test]
+    async fn udf_resources_from_directory() {
+        let dir = TempDir::new().unwrap();
+        write_file(&dir, "a.rhai", "// a");
+        write_file(&dir, "b.rhai", "// b");
+        let mut result = udf_script_resources(dir.path().to_str().unwrap(), None).await;
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "a.rhai");
+        assert_eq!(result[1].name, "b.rhai");
+    }
+
+    #[tokio::test]
+    async fn udf_resources_nonexistent_path() {
+        let result = udf_script_resources("/tmp/does-not-exist-12345", None).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_content_from_inline_sources_match() {
+        let sources = vec![
+            script("mask.rhai", "// mask script"),
+            script("transform.rhai", "// transform script"),
+        ];
+        let content = resolve_resource_content("transform.rhai", "unused", Some(&sources)).await;
+        assert_eq!(content, Some("// transform script".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_content_from_inline_sources_no_match() {
+        let sources = vec![script("mask.rhai", "// mask")];
+        let content = resolve_resource_content("other.rhai", "unused", Some(&sources)).await;
+        assert_eq!(content, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_content_from_single_file_match() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(
+            &dir,
+            "transform.rhai",
+            "fn transform(d, a) { result(d, a) }",
+        );
+        let content =
+            resolve_resource_content("transform.rhai", path.to_str().unwrap(), None).await;
+        assert_eq!(
+            content,
+            Some("fn transform(d, a) { result(d, a) }".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_content_from_single_file_wrong_name() {
+        let dir = TempDir::new().unwrap();
+        let path = write_file(&dir, "transform.rhai", "// content");
+        let content = resolve_resource_content("other.rhai", path.to_str().unwrap(), None).await;
+        assert_eq!(content, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_content_from_directory_match() {
+        let dir = TempDir::new().unwrap();
+        write_file(&dir, "mask.rhai", "// mask content");
+        write_file(&dir, "transform.rhai", "// transform content");
+        let content =
+            resolve_resource_content("mask.rhai", dir.path().to_str().unwrap(), None).await;
+        assert_eq!(content, Some("// mask content".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_content_from_directory_no_match() {
+        let dir = TempDir::new().unwrap();
+        write_file(&dir, "transform.rhai", "// content");
+        let content =
+            resolve_resource_content("missing.rhai", dir.path().to_str().unwrap(), None).await;
+        assert_eq!(content, None);
+    }
+}
