@@ -149,6 +149,7 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `GET` | `/services/{name}` | Get service details |
 | `DELETE` | `/services/{name}` | Remove a service (if not in use) |
 | `GET` | `/services/{name}/resources` | List resources for a service |
+| `GET` | `/services/{name}/resources/{resource}` | Get resource content (e.g. UDF script) |
 | `GET` | `/services/{name}/schema/introspect` | Introspect schema for a resource |
 | `GET` | `/services/{name}/schemas` | List schemas stored on this service |
 | `GET` | `/services/{name}/schemas/{id}` | Get a schema by ID |
@@ -159,13 +160,13 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 
 #### List Service Resources
 
-List available resources (collections, topics) for a service:
+List available resources (collections, scripts, topics) for a service:
 
 ```
 GET /services/{name}/resources
 ```
 
-**Response:**
+**Response (MongoDB):**
 ```json
 {
   "service_name": "mongo-local",
@@ -176,7 +177,37 @@ GET /services/{name}/resources
 }
 ```
 
-> **Note:** Currently supports MongoDB services only. System collections (prefixed with `system.`) are excluded.
+**Response (UDF):**
+```json
+{
+  "service_name": "my-udf",
+  "resources": [
+    { "name": "transform.rhai", "resource_type": "script" },
+    { "name": "mask.rhai", "resource_type": "script" }
+  ]
+}
+```
+
+Supported providers:
+- **MongoDB** — lists collections (excludes `system.*` prefixed collections)
+- **UDF** — lists script filenames from `sources` config or from the `script_path` directory
+
+#### Get Resource Content
+
+Fetch the content of a specific resource (currently supports UDF script content):
+
+```
+GET /services/{name}/resources/{resource}
+```
+
+**Response:**
+```json
+{
+  "content": "fn transform(data, attributes) {\n  result(data, attributes)\n}"
+}
+```
+
+Returns `404` if the resource is not found, `400` if the service provider does not support content retrieval.
 
 #### Schema Introspection
 
