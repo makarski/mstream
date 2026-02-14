@@ -180,7 +180,51 @@ impl ServiceRegistry {
             _ => {}
         }
 
-        self.storage.save(service_cfg).await?;
+        let mut to_save = service_cfg;
+        self.enrich_udf_scripts(&mut to_save).await?;
+        self.storage.save(to_save).await?;
+
+        Ok(())
+    }
+
+    pub async fn update_udf_resource(
+        &mut self,
+        service_name: &str,
+        filename: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        udf::validate_script_filename(filename)?;
+
+        let mut service = self.storage.get_by_name(service_name).await?;
+
+        let udf_config = match &mut service {
+            Service::Udf(cfg) => cfg,
+            _ => anyhow::bail!("service '{}' is not a UDF service", service_name),
+        };
+
+        let script_path = Path::new(&udf_config.script_path);
+        let file_path = script_path.join(filename);
+        if !file_path.exists() {
+            anyhow::bail!(
+                "resource '{}' not found in service '{}'",
+                filename,
+                service_name
+            );
+        }
+
+        tokio::fs::write(&file_path, content)
+            .await
+            .with_context(|| {
+                anyhow!(
+                    "failed to write resource '{}' for service '{}'",
+                    filename,
+                    service_name
+                )
+            })?;
+
+        let scripts = udf::read_udf_scripts(script_path).await?;
+        udf_config.sources = Some(scripts);
+        self.storage.save(service).await?;
 
         Ok(())
     }
@@ -531,7 +575,7 @@ mod service_registry_tests {
                     UdfEngine::Rhai,
                     Some(vec![udf_script("../script.rhai", "fn noop() {}")]),
                 ),
-                "invalid filename",
+                "invalid script filename",
             ),
             (
                 udf_service(

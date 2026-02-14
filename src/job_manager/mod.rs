@@ -320,6 +320,51 @@ impl JobManager {
         Ok(())
     }
 
+    pub async fn update_resource(
+        &self,
+        service_name: &str,
+        resource: &str,
+        content: &str,
+    ) -> Result<()> {
+        if !self
+            .service_registry
+            .read()
+            .await
+            .service_exists(service_name)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(JobManagerError::ServiceNotFound(service_name.to_string()));
+        }
+
+        let result = self
+            .service_registry
+            .write()
+            .await
+            .update_udf_resource(service_name, resource, content)
+            .await;
+
+        if let Err(e) = result {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                return Err(JobManagerError::ResourceNotFound(
+                    resource.to_string(),
+                    service_name.to_string(),
+                ));
+            }
+            return Err(JobManagerError::InternalError(format!(
+                "failed to update resource: {}",
+                msg
+            )));
+        }
+
+        info!(
+            "resource '{}' updated for service '{}'",
+            resource, service_name
+        );
+        Ok(())
+    }
+
     pub async fn remove_service(&self, service_name: &str) -> Result<()> {
         // Check if service exists first
         if !self

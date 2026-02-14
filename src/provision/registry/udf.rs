@@ -6,6 +6,13 @@ use tokio::fs;
 
 use crate::config::service_config::{UdfConfig, UdfScript};
 
+pub fn validate_script_filename(filename: &str) -> anyhow::Result<()> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        anyhow::bail!("invalid script filename '{}'", filename);
+    }
+    Ok(())
+}
+
 pub async fn create_udf_script(cfg: &UdfConfig) -> anyhow::Result<()> {
     let base_path = Path::new(&cfg.script_path);
 
@@ -34,14 +41,7 @@ pub async fn create_udf_script(cfg: &UdfConfig) -> anyhow::Result<()> {
     }
 
     for source in sources {
-        let filename = &source.filename;
-        if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-            anyhow::bail!(
-                "invalid filename '{}' in udf source for service '{}'",
-                filename,
-                cfg.name
-            );
-        }
+        validate_script_filename(&source.filename)?;
 
         let script_path = base_path.join(&source.filename);
         tokio::fs::write(&script_path, &source.content)

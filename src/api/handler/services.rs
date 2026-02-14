@@ -23,6 +23,11 @@ pub struct ResourceContentResponse {
     pub content: String,
 }
 
+#[derive(Deserialize)]
+pub struct UpdateResourceRequest {
+    pub content: String,
+}
+
 /// GET /services
 pub async fn list_services(
     State(state): State<AppState>,
@@ -65,6 +70,30 @@ pub async fn create_service(
         MaskedJson(Message {
             message: "service created successfully".to_string(),
             item: Some(service),
+        }),
+    ))
+}
+
+/// PUT /services/{name}/resources/{resource}
+pub async fn update_resource_content(
+    State(state): State<AppState>,
+    Path((service_name, resource)): Path<(String, String)>,
+    Json(body): Json<UpdateResourceRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    info!(
+        "updating resource '{}' for service '{}'",
+        resource, service_name
+    );
+
+    let jm = state.job_manager.lock().await;
+    jm.update_resource(&service_name, &resource, &body.content)
+        .await?;
+
+    Ok((
+        StatusCode::OK,
+        Json(ResourceContentResponse {
+            filename: resource,
+            content: body.content,
         }),
     ))
 }

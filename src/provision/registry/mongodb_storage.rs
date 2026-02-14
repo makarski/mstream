@@ -59,12 +59,7 @@ impl MongoDbServiceStorage {
 #[async_trait::async_trait]
 impl ServiceLifecycleStorage for MongoDbServiceStorage {
     async fn save(&mut self, service: Service) -> anyhow::Result<()> {
-        let mut service_to_save = service.clone();
-        if let Service::Udf(ref mut udf_config) = service_to_save {
-            udf_config.sources = None;
-        }
-
-        let encrypted = self.encrypt_service(&service_to_save)?;
+        let encrypted = self.encrypt_service(&service)?;
 
         let filter = doc! { "name": service.name() };
         let update = doc! { "$set": bson::to_document(&encrypted)? };
