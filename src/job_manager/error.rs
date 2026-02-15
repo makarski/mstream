@@ -17,6 +17,9 @@ pub enum JobManagerError {
     #[error("Resource '{0}' not found in service '{1}'")]
     ResourceNotFound(String, String),
 
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("Internal error: {0}")]
     InternalError(String),
 
@@ -64,6 +67,15 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "Resource 'script.rhai' not found in service 'my-udf'"
+        );
+    }
+
+    #[test]
+    fn invalid_request_display() {
+        let err = JobManagerError::InvalidRequest("service 'foo' is not a UDF service".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Invalid request: service 'foo' is not a UDF service"
         );
     }
 

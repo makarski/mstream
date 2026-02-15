@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use anyhow::{Context, anyhow};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
+use thiserror::Error;
 use tracing::info;
 
 use crate::{
@@ -26,6 +27,21 @@ use crate::{
 pub mod in_memory;
 pub mod mongodb_storage;
 mod udf;
+
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    #[error("service '{0}' is not a UDF service")]
+    NotUdfService(String),
+
+    #[error("resource '{0}' not found in service '{1}'")]
+    ResourceNotFound(String, String),
+
+    #[error("script_path '{0}' for service '{1}' is not a directory")]
+    ScriptPathNotDirectory(String, String),
+
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
 
 type RhaiMiddlewareBuilder =
     Arc<dyn Fn(String) -> anyhow::Result<RhaiMiddleware> + Send + Sync + 'static>;
@@ -180,9 +196,7 @@ impl ServiceRegistry {
             _ => {}
         }
 
-        let mut to_save = service_cfg;
-        self.enrich_udf_scripts(&mut to_save).await?;
-        self.storage.save(to_save).await?;
+        self.storage.save(service_cfg).await?;
 
         Ok(())
     }
@@ -192,24 +206,30 @@ impl ServiceRegistry {
         service_name: &str,
         filename: &str,
         content: &str,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), RegistryError> {
         udf::validate_script_filename(filename)?;
 
-        let mut service = self.storage.get_by_name(service_name).await?;
+        let service = self.storage.get_by_name(service_name).await?;
 
-        let udf_config = match &mut service {
+        let udf_config = match &service {
             Service::Udf(cfg) => cfg,
-            _ => anyhow::bail!("service '{}' is not a UDF service", service_name),
+            _ => return Err(RegistryError::NotUdfService(service_name.to_string())),
         };
 
         let script_path = Path::new(&udf_config.script_path);
+        if !script_path.is_dir() {
+            return Err(RegistryError::ScriptPathNotDirectory(
+                udf_config.script_path.clone(),
+                service_name.to_string(),
+            ));
+        }
+
         let file_path = script_path.join(filename);
-        if !file_path.exists() {
-            anyhow::bail!(
-                "resource '{}' not found in service '{}'",
-                filename,
-                service_name
-            );
+        if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
+            return Err(RegistryError::ResourceNotFound(
+                filename.to_string(),
+                service_name.to_string(),
+            ));
         }
 
         tokio::fs::write(&file_path, content)
@@ -221,10 +241,6 @@ impl ServiceRegistry {
                     service_name
                 )
             })?;
-
-        let scripts = udf::read_udf_scripts(script_path).await?;
-        udf_config.sources = Some(scripts);
-        self.storage.save(service).await?;
 
         Ok(())
     }

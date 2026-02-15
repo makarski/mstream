@@ -23,7 +23,10 @@ use crate::{
 };
 use crate::{
     config::{Connector, Masked, Service},
-    provision::{pipeline::builder::PipelineBuilder, registry::ServiceRegistry},
+    provision::{
+        pipeline::builder::PipelineBuilder,
+        registry::{RegistryError, ServiceRegistry},
+    },
 };
 
 pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
@@ -336,37 +339,33 @@ impl JobManager {
         resource: &str,
         content: &str,
     ) -> Result<()> {
-        if !self
-            .service_registry
-            .read()
-            .await
-            .service_exists(service_name)
-            .await
-            .unwrap_or(false)
-        {
+        let mut registry = self.service_registry.write().await;
+
+        if !registry.service_exists(service_name).await.unwrap_or(false) {
             return Err(JobManagerError::ServiceNotFound(service_name.to_string()));
         }
 
-        let result = self
-            .service_registry
-            .write()
-            .await
+        registry
             .update_udf_resource(service_name, resource, content)
-            .await;
-
-        if let Err(e) = result {
-            let msg = e.to_string();
-            if msg.contains("not found") {
-                return Err(JobManagerError::ResourceNotFound(
-                    resource.to_string(),
-                    service_name.to_string(),
-                ));
-            }
-            return Err(JobManagerError::InternalError(format!(
-                "failed to update resource: {}",
-                msg
-            )));
-        }
+            .await
+            .map_err(|e| match e {
+                RegistryError::ResourceNotFound(res, svc) => {
+                    JobManagerError::ResourceNotFound(res, svc)
+                }
+                RegistryError::NotUdfService(svc) => JobManagerError::InvalidRequest(format!(
+                    "service '{}' is not a UDF service",
+                    svc
+                )),
+                RegistryError::ScriptPathNotDirectory(path, svc) => {
+                    JobManagerError::InvalidRequest(format!(
+                        "script_path '{}' for service '{}' is not a directory",
+                        path, svc
+                    ))
+                }
+                RegistryError::Other(err) => {
+                    JobManagerError::InternalError(format!("failed to update resource: {}", err))
+                }
+            })?;
 
         info!(
             "resource '{}' updated for service '{}'",

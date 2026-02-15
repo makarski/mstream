@@ -1,5 +1,5 @@
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Component, Path};
 
 use anyhow::{Context, anyhow};
 use tokio::fs;
@@ -7,9 +7,25 @@ use tokio::fs;
 use crate::config::service_config::{UdfConfig, UdfScript};
 
 pub fn validate_script_filename(filename: &str) -> anyhow::Result<()> {
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        anyhow::bail!("invalid script filename '{}'", filename);
+    if filename.is_empty() {
+        anyhow::bail!("invalid script filename: empty");
     }
+
+    let path = Path::new(filename);
+    let mut components = path.components();
+
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => {}
+        _ => anyhow::bail!("invalid script filename '{}'", filename),
+    }
+
+    if path.extension() != Some(OsStr::new("rhai")) {
+        anyhow::bail!(
+            "invalid script filename '{}': must have .rhai extension",
+            filename
+        );
+    }
+
     Ok(())
 }
 

@@ -88,6 +88,7 @@ impl ApiErrorDetails for JobManagerError {
                 StatusCode::NOT_FOUND,
                 format!("Resource '{}' not found in service '{}'", resource, service),
             ),
+            JobManagerError::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             JobManagerError::ServiceInUse(name, used_by) => (
                 StatusCode::CONFLICT,
                 format!("Service '{}' is in use by jobs: {}", name, used_by),
