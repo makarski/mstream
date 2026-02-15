@@ -22,7 +22,7 @@ use handler::{
     get_one_service, get_resource_content, get_resource_schema, get_schema, get_test_suite,
     list_checkpoints, list_jobs, list_schemas, list_service_resources, list_services,
     list_test_suites, remove_service, restart_job, save_schema, save_test_suite, schema_convert,
-    stop_job, transform_run, transform_test_generate, transform_test_run,
+    stop_job, transform_run, transform_test_generate, transform_test_run, update_resource_content,
 };
 
 #[derive(Clone)]
@@ -61,7 +61,7 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}/resources", get(list_service_resources))
         .route(
             "/services/{name}/resources/{resource}",
-            get(get_resource_content),
+            get(get_resource_content).put(update_resource_content),
         )
         .route(
             "/services/{name}/schema/introspect",

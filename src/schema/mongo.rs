@@ -25,7 +25,7 @@ impl MongoDbSchemaProvider {
 impl MongoDbSchemaProvider {
     pub async fn get(&self, id: &str) -> Result<SchemaEntry, SchemaRegistryError> {
         self.collection()
-            .find_one(doc! { "id": id })
+            .find_one(doc! { "$or": [ { "id": id }, { "name": id } ] })
             .await?
             .ok_or_else(|| SchemaRegistryError::NotFound(id.to_string()))
     }

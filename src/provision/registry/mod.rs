@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path, sync::Arc};
 use anyhow::{Context, anyhow};
 use gauth::{serv_account::ServiceAccount, token_provider::AsyncTokenProvider};
 use mongodb::Client;
+use thiserror::Error;
 use tracing::info;
 
 use crate::{
@@ -26,6 +27,21 @@ use crate::{
 pub mod in_memory;
 pub mod mongodb_storage;
 mod udf;
+
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    #[error("service '{0}' is not a UDF service")]
+    NotUdfService(String),
+
+    #[error("resource '{0}' not found in service '{1}'")]
+    ResourceNotFound(String, String),
+
+    #[error("script_path '{0}' for service '{1}' is not a directory")]
+    ScriptPathNotDirectory(String, String),
+
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
 
 type RhaiMiddlewareBuilder =
     Arc<dyn Fn(String) -> anyhow::Result<RhaiMiddleware> + Send + Sync + 'static>;
@@ -185,6 +201,50 @@ impl ServiceRegistry {
         Ok(())
     }
 
+    pub async fn update_udf_resource(
+        &mut self,
+        service_name: &str,
+        filename: &str,
+        content: &str,
+    ) -> Result<(), RegistryError> {
+        udf::validate_script_filename(filename)?;
+
+        let service = self.storage.get_by_name(service_name).await?;
+
+        let udf_config = match &service {
+            Service::Udf(cfg) => cfg,
+            _ => return Err(RegistryError::NotUdfService(service_name.to_string())),
+        };
+
+        let script_path = Path::new(&udf_config.script_path);
+        if !script_path.is_dir() {
+            return Err(RegistryError::ScriptPathNotDirectory(
+                udf_config.script_path.clone(),
+                service_name.to_string(),
+            ));
+        }
+
+        let file_path = script_path.join(filename);
+        if !tokio::fs::try_exists(&file_path).await.unwrap_or(false) {
+            return Err(RegistryError::ResourceNotFound(
+                filename.to_string(),
+                service_name.to_string(),
+            ));
+        }
+
+        tokio::fs::write(&file_path, content)
+            .await
+            .with_context(|| {
+                anyhow!(
+                    "failed to write resource '{}' for service '{}'",
+                    filename,
+                    service_name
+                )
+            })?;
+
+        Ok(())
+    }
+
     /// Returns true if the service is used by system configuration
     pub fn is_system_service(&self, service_name: &str) -> bool {
         self.system_cfg
@@ -261,10 +321,16 @@ impl ServiceRegistry {
                 }))
             }
             Service::MongoDb(cfg) => {
+                let collection_name = self
+                    .system_cfg
+                    .as_ref()
+                    .and_then(|sys| sys.schemas.as_ref())
+                    .map(|s| s.resource.clone())
+                    .unwrap_or_else(|| "schemas".to_string());
                 let client = self.mongodb_client(&cfg.name).await?;
                 let db = client.database(&cfg.db_name);
                 Ok(Arc::new(SchemaProvider::MongoDb(
-                    MongoDbSchemaProvider::new(db, "schemas".to_string()),
+                    MongoDbSchemaProvider::new(db, collection_name),
                 )))
             }
             _ => Err(anyhow!(
@@ -531,7 +597,7 @@ mod service_registry_tests {
                     UdfEngine::Rhai,
                     Some(vec![udf_script("../script.rhai", "fn noop() {}")]),
                 ),
-                "invalid filename",
+                "invalid script filename",
             ),
             (
                 udf_service(

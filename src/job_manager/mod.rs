@@ -23,7 +23,10 @@ use crate::{
 };
 use crate::{
     config::{Connector, Masked, Service},
-    provision::{pipeline::builder::PipelineBuilder, registry::ServiceRegistry},
+    provision::{
+        pipeline::builder::PipelineBuilder,
+        registry::{RegistryError, ServiceRegistry},
+    },
 };
 
 pub type JobStorage = Box<dyn JobLifecycleStorage + Send + Sync>;
@@ -145,20 +148,22 @@ impl JobManager {
 
     pub async fn stop_job(&mut self, job_name: &str) -> Result<()> {
         // Check if job exists first
-        let job_exists = self.job_store.get(job_name).await.ok().flatten().is_some();
-        if !job_exists {
-            return Err(JobManagerError::JobNotFound(job_name.to_string()));
-        }
+        let metadata = self
+            .job_store
+            .get(job_name)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| JobManagerError::JobNotFound(job_name.to_string()))?;
 
         self.set_desired_job_state(job_name, JobState::Stopped)
             .await
-            .ok(); // Ignore errors here since we already checked existence
+            .ok();
 
         if let Some(jc) = self.running_jobs.remove(job_name) {
             info!(job_name = %job_name, "stopping job");
             jc.cancel_token.cancel();
 
-            // wait for the job to finish
             let (work_res, source_res) = tokio::join!(jc.work_handle, jc.source_handle);
             if let Err(err) = work_res {
                 error!(job_name = %job_name, "job work task panicked: {}", err);
@@ -169,6 +174,14 @@ impl JobManager {
             }
 
             info!(job_name = %job_name, "job stopped");
+        } else if matches!(metadata.state, JobState::Running) {
+            warn!(job_name = %job_name, "no running task found, marking as stopped");
+            if let Some(mut meta) = self.job_store.get(job_name).await? {
+                meta.state = JobState::Stopped;
+                meta.stopped_at = Some(chrono::Utc::now());
+                meta.service_deps.clear();
+                self.job_store.save(meta).await?;
+            }
         }
 
         Ok(())
@@ -317,6 +330,47 @@ impl JobManager {
             })?;
 
         info!("service '{}' created", service_name);
+        Ok(())
+    }
+
+    pub async fn update_resource(
+        &self,
+        service_name: &str,
+        resource: &str,
+        content: &str,
+    ) -> Result<()> {
+        let mut registry = self.service_registry.write().await;
+
+        if !registry.service_exists(service_name).await.unwrap_or(false) {
+            return Err(JobManagerError::ServiceNotFound(service_name.to_string()));
+        }
+
+        registry
+            .update_udf_resource(service_name, resource, content)
+            .await
+            .map_err(|e| match e {
+                RegistryError::ResourceNotFound(res, svc) => {
+                    JobManagerError::ResourceNotFound(res, svc)
+                }
+                RegistryError::NotUdfService(svc) => JobManagerError::InvalidRequest(format!(
+                    "service '{}' is not a UDF service",
+                    svc
+                )),
+                RegistryError::ScriptPathNotDirectory(path, svc) => {
+                    JobManagerError::InvalidRequest(format!(
+                        "script_path '{}' for service '{}' is not a directory",
+                        path, svc
+                    ))
+                }
+                RegistryError::Other(err) => {
+                    JobManagerError::InternalError(format!("failed to update resource: {}", err))
+                }
+            })?;
+
+        info!(
+            "resource '{}' updated for service '{}'",
+            resource, service_name
+        );
         Ok(())
     }
 

@@ -14,6 +14,12 @@ pub enum JobManagerError {
     #[error("Service '{0}' already exists")]
     ServiceAlreadyExists(String),
 
+    #[error("Resource '{0}' not found in service '{1}'")]
+    ResourceNotFound(String, String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("Internal error: {0}")]
     InternalError(String),
 
@@ -52,6 +58,25 @@ mod tests {
     fn service_already_exists_display() {
         let err = JobManagerError::ServiceAlreadyExists("mongo-service".to_string());
         assert_eq!(err.to_string(), "Service 'mongo-service' already exists");
+    }
+
+    #[test]
+    fn resource_not_found_display() {
+        let err =
+            JobManagerError::ResourceNotFound("script.rhai".to_string(), "my-udf".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Resource 'script.rhai' not found in service 'my-udf'"
+        );
+    }
+
+    #[test]
+    fn invalid_request_display() {
+        let err = JobManagerError::InvalidRequest("service 'foo' is not a UDF service".to_string());
+        assert_eq!(
+            err.to_string(),
+            "Invalid request: service 'foo' is not a UDF service"
+        );
     }
 
     #[test]
