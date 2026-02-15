@@ -305,10 +305,16 @@ impl ServiceRegistry {
                 }))
             }
             Service::MongoDb(cfg) => {
+                let collection_name = self
+                    .system_cfg
+                    .as_ref()
+                    .and_then(|sys| sys.schemas.as_ref())
+                    .map(|s| s.resource.clone())
+                    .unwrap_or_else(|| "schemas".to_string());
                 let client = self.mongodb_client(&cfg.name).await?;
                 let db = client.database(&cfg.db_name);
                 Ok(Arc::new(SchemaProvider::MongoDb(
-                    MongoDbSchemaProvider::new(db, "schemas".to_string()),
+                    MongoDbSchemaProvider::new(db, collection_name),
                 )))
             }
             _ => Err(anyhow!(

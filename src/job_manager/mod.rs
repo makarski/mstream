@@ -145,20 +145,22 @@ impl JobManager {
 
     pub async fn stop_job(&mut self, job_name: &str) -> Result<()> {
         // Check if job exists first
-        let job_exists = self.job_store.get(job_name).await.ok().flatten().is_some();
-        if !job_exists {
-            return Err(JobManagerError::JobNotFound(job_name.to_string()));
-        }
+        let metadata = self
+            .job_store
+            .get(job_name)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| JobManagerError::JobNotFound(job_name.to_string()))?;
 
         self.set_desired_job_state(job_name, JobState::Stopped)
             .await
-            .ok(); // Ignore errors here since we already checked existence
+            .ok();
 
         if let Some(jc) = self.running_jobs.remove(job_name) {
             info!(job_name = %job_name, "stopping job");
             jc.cancel_token.cancel();
 
-            // wait for the job to finish
             let (work_res, source_res) = tokio::join!(jc.work_handle, jc.source_handle);
             if let Err(err) = work_res {
                 error!(job_name = %job_name, "job work task panicked: {}", err);
@@ -169,6 +171,14 @@ impl JobManager {
             }
 
             info!(job_name = %job_name, "job stopped");
+        } else if matches!(metadata.state, JobState::Running) {
+            warn!(job_name = %job_name, "no running task found, marking as stopped");
+            if let Some(mut meta) = self.job_store.get(job_name).await? {
+                meta.state = JobState::Stopped;
+                meta.stopped_at = Some(chrono::Utc::now());
+                meta.service_deps.clear();
+                self.job_store.save(meta).await?;
+            }
         }
 
         Ok(())
