@@ -18,7 +18,7 @@ pub enum CompletionKind {
 }
 
 pub fn completions() -> Vec<CompletionItem> {
-    let mut items = Vec::with_capacity(18);
+    let mut items = Vec::new();
     items.extend(core_completions());
     items.extend(masking_completions());
     items.extend(aggregation_completions());
@@ -44,7 +44,7 @@ fn core_completions() -> Vec<CompletionItem> {
             detail: "(data, attributes?) → TransformResult".into(),
             documentation: "Return the transform result. Pass data and optionally attributes."
                 .into(),
-            insert_text: "result(${1:data}, ${2:attributes})".into(),
+            insert_text: "result(${1:data}${2:, attributes})".into(),
             is_snippet: true,
         },
     ]
@@ -76,7 +76,7 @@ fn masking_completions() -> Vec<CompletionItem> {
             label: "mask_year_only".into(),
             kind: CompletionKind::Function,
             detail: "(date: string) → string".into(),
-            documentation: "Extracts only the year from a date string. \"1990-05-15\" → \"1990\""
+            documentation: "Masks date to January 1st of the same year, preserving the date format. \"1990-05-15\" → \"1990-01-01\""
                 .into(),
             insert_text: "mask_year_only(${1:data.date})".into(),
             is_snippet: true,

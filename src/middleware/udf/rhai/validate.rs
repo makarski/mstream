@@ -14,9 +14,10 @@ pub struct Diagnostic {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code)]
 pub enum DiagnosticSeverity {
     Error,
+    /// Reserved for future use (e.g. deprecation warnings, style hints)
+    #[allow(dead_code)]
     Warning,
 }
 
@@ -50,9 +51,7 @@ fn error_to_diagnostics(err: &RhaiMiddlewareError) -> Vec<Diagnostic> {
                 column: 1,
                 end_line: 1,
                 end_column: 1,
-                message: "Script must define a 'transform(data, attributes)' function \
-                          with exactly 2 parameters"
-                    .to_string(),
+                message: "Script must define a 'transform(data, attributes)' function with exactly 2 parameters".to_string(),
                 severity: DiagnosticSeverity::Error,
             }]
         }
