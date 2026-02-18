@@ -22,7 +22,8 @@ use handler::{
     get_one_service, get_resource_content, get_resource_schema, get_schema, get_test_suite,
     list_checkpoints, list_jobs, list_schemas, list_service_resources, list_services,
     list_test_suites, remove_service, restart_job, save_schema, save_test_suite, schema_convert,
-    stop_job, transform_run, transform_test_generate, transform_test_run, update_resource_content,
+    stop_job, transform_completions, transform_run, transform_test_generate, transform_test_run,
+    transform_validate, update_resource_content,
 };
 
 #[derive(Clone)]
@@ -73,6 +74,8 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/services/{name}", delete(remove_service))
         .route("/jobs/{name}/checkpoints", get(list_checkpoints))
         .route("/transform/run", post(transform_run))
+        .route("/transform/validate", post(transform_validate))
+        .route("/transform/completions", get(transform_completions))
         .route("/transform/test/generate", post(transform_test_generate))
         .route("/transform/test/run", post(transform_test_run))
         .route("/test-suites", get(list_test_suites))

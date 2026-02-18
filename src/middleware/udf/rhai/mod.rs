@@ -98,9 +98,11 @@ use crate::source::SourceEvent;
 use rhai::{AST, Dynamic};
 use tokio::task::block_in_place;
 
+pub mod completions;
 pub mod convert;
 pub(crate) mod masks;
 pub(crate) mod transforms;
+pub mod validate;
 
 /// The required name for the transformation function in Rhai scripts
 const UDF_NAME: &str = "transform";
