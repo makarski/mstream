@@ -310,8 +310,8 @@ pub struct HealthStatus {
 
 #[derive(Serialize)]
 pub struct SystemStats {
-    pub total_docs_processed: u64,
-    pub total_bytes_transferred: u64,
+    pub total_events_processed: u64,
+    pub total_bytes_processed: u64,
     pub uptime_seconds: u64,
     pub running_jobs: usize,
     pub stopped_jobs: usize,
@@ -688,15 +688,15 @@ mod tests {
         fn system_stats_serializes() {
             assert_serializes_to(
                 &SystemStats {
-                    total_docs_processed: 1000,
-                    total_bytes_transferred: 50000,
+                    total_events_processed: 1000,
+                    total_bytes_processed: 50000,
                     uptime_seconds: 3600,
                     running_jobs: 3,
                     stopped_jobs: 1,
                     error_jobs: 2,
                 },
                 json!({
-                    "total_docs_processed": 1000, "total_bytes_transferred": 50000,
+                    "total_events_processed": 1000, "total_bytes_processed": 50000,
                     "uptime_seconds": 3600, "running_jobs": 3, "stopped_jobs": 1, "error_jobs": 2,
                 }),
             );
