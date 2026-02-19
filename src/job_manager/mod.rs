@@ -640,31 +640,11 @@ mod tests {
     #[tokio::test]
     async fn job_state_counts_mixed_states() {
         let (mut jm, _rx) = test_job_manager();
-        jm.job_store
-            .save(make_job("a", JobState::Running))
-            .await
-            .unwrap();
-        jm.job_store
-            .save(make_job("b", JobState::Running))
-            .await
-            .unwrap();
-        jm.job_store
-            .save(make_job("c", JobState::Stopped))
-            .await
-            .unwrap();
-        jm.job_store
-            .save(make_job("d", JobState::Failed))
-            .await
-            .unwrap();
-        jm.job_store
-            .save(make_job("e", JobState::Failed))
-            .await
-            .unwrap();
+        save_jobs(&mut jm, &["a", "b"], JobState::Running).await;
+        save_jobs(&mut jm, &["c"], JobState::Stopped).await;
+        save_jobs(&mut jm, &["d", "e"], JobState::Failed).await;
 
-        let counts = jm.job_state_counts().await.unwrap();
-        assert_eq!(counts.running, 2);
-        assert_eq!(counts.stopped, 1);
-        assert_eq!(counts.failed, 2);
+        assert_state_counts(&jm, 2, 1, 2).await;
     }
 
     async fn assert_state_counts(jm: &JobManager, running: usize, stopped: usize, failed: usize) {
@@ -674,19 +654,24 @@ mod tests {
         assert_eq!(counts.failed, failed, "failed mismatch");
     }
 
-    #[tokio::test]
-    async fn job_state_counts_all_running() {
-        let (mut jm, _rx) = test_job_manager();
-        jm.job_store
-            .save(make_job("x", JobState::Running))
-            .await
-            .unwrap();
-        jm.job_store
-            .save(make_job("y", JobState::Running))
-            .await
-            .unwrap();
+    async fn save_jobs(jm: &mut JobManager, names: &[&str], state: JobState) {
+        for name in names {
+            jm.job_store
+                .save(make_job(name, state.clone()))
+                .await
+                .unwrap();
+        }
+    }
 
+    #[tokio::test]
+    async fn job_state_counts_single_state() {
+        let (mut jm, _rx) = test_job_manager();
+        save_jobs(&mut jm, &["x", "y"], JobState::Running).await;
         assert_state_counts(&jm, 2, 0, 0).await;
+
+        let (mut jm, _rx) = test_job_manager();
+        save_jobs(&mut jm, &["f1", "f2"], JobState::Failed).await;
+        assert_state_counts(&jm, 0, 0, 2).await;
     }
 
     #[test]
@@ -732,20 +717,5 @@ mod tests {
         assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
         assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 300);
         assert_eq!(m.errors.load(Ordering::Relaxed), 2);
-    }
-
-    #[tokio::test]
-    async fn job_state_counts_all_failed() {
-        let (mut jm, _rx) = test_job_manager();
-        jm.job_store
-            .save(make_job("f1", JobState::Failed))
-            .await
-            .unwrap();
-        jm.job_store
-            .save(make_job("f2", JobState::Failed))
-            .await
-            .unwrap();
-
-        assert_state_counts(&jm, 0, 0, 2).await;
     }
 }

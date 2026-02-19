@@ -657,108 +657,86 @@ mod tests {
 
     mod system_types_tests {
         use super::super::{HealthStatus, JobMetrics, SystemStats};
+        use serde::Serialize;
+        use serde_json::json;
 
-        #[test]
-        fn health_status_serializes_correctly() {
-            let health = HealthStatus {
-                status: "healthy",
-                version: env!("CARGO_PKG_VERSION"),
-                uptime_seconds: 120,
-            };
-            let json: serde_json::Value = serde_json::to_value(&health).unwrap();
-
-            assert_eq!(json["status"], "healthy");
-            assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
-            assert_eq!(json["uptime_seconds"], 120);
+        fn assert_serializes_to(actual: &impl Serialize, expected: serde_json::Value) {
+            assert_eq!(serde_json::to_value(actual).unwrap(), expected);
         }
 
         #[test]
-        fn health_status_degraded() {
-            let health = HealthStatus {
-                status: "degraded",
-                version: env!("CARGO_PKG_VERSION"),
-                uptime_seconds: 0,
-            };
-            let json: serde_json::Value = serde_json::to_value(&health).unwrap();
-
-            assert_eq!(json["status"], "degraded");
-            assert_eq!(json["uptime_seconds"], 0);
+        fn health_status_serializes_all_variants() {
+            assert_serializes_to(
+                &HealthStatus {
+                    status: "healthy",
+                    version: env!("CARGO_PKG_VERSION"),
+                    uptime_seconds: 120,
+                },
+                json!({ "status": "healthy", "version": env!("CARGO_PKG_VERSION"), "uptime_seconds": 120 }),
+            );
+            assert_serializes_to(
+                &HealthStatus {
+                    status: "degraded",
+                    version: env!("CARGO_PKG_VERSION"),
+                    uptime_seconds: 0,
+                },
+                json!({ "status": "degraded", "version": env!("CARGO_PKG_VERSION"), "uptime_seconds": 0 }),
+            );
         }
 
         #[test]
-        fn system_stats_serializes_correctly() {
-            let stats = SystemStats {
-                total_docs_processed: 1000,
-                total_bytes_transferred: 50000,
-                uptime_seconds: 3600,
-                running_jobs: 3,
-                stopped_jobs: 1,
-                error_jobs: 2,
-            };
-            let json: serde_json::Value = serde_json::to_value(&stats).unwrap();
-
-            assert_eq!(json["total_docs_processed"], 1000);
-            assert_eq!(json["total_bytes_transferred"], 50000);
-            assert_eq!(json["uptime_seconds"], 3600);
-            assert_eq!(json["running_jobs"], 3);
-            assert_eq!(json["stopped_jobs"], 1);
-            assert_eq!(json["error_jobs"], 2);
+        fn system_stats_serializes() {
+            assert_serializes_to(
+                &SystemStats {
+                    total_docs_processed: 1000,
+                    total_bytes_transferred: 50000,
+                    uptime_seconds: 3600,
+                    running_jobs: 3,
+                    stopped_jobs: 1,
+                    error_jobs: 2,
+                },
+                json!({
+                    "total_docs_processed": 1000, "total_bytes_transferred": 50000,
+                    "uptime_seconds": 3600, "running_jobs": 3, "stopped_jobs": 1, "error_jobs": 2,
+                }),
+            );
         }
 
         #[test]
-        fn system_stats_zeroed() {
-            let stats = SystemStats {
-                total_docs_processed: 0,
-                total_bytes_transferred: 0,
-                uptime_seconds: 0,
-                running_jobs: 0,
-                stopped_jobs: 0,
-                error_jobs: 0,
-            };
-            let json: serde_json::Value = serde_json::to_value(&stats).unwrap();
-
-            assert_eq!(json["running_jobs"], 0);
-            assert_eq!(json["error_jobs"], 0);
-        }
-
-        #[test]
-        fn job_metrics_serializes_with_nulls() {
-            let metrics = JobMetrics {
-                events_processed: 0,
-                bytes_processed: 0,
-                current_lag_seconds: 0.0,
-                throughput_per_second: 0.0,
-                total_errors: 0,
-                last_processed_at: None,
-            };
-            let json: serde_json::Value = serde_json::to_value(&metrics).unwrap();
-
-            assert_eq!(json["events_processed"], 0);
-            assert_eq!(json["bytes_processed"], 0);
-            assert_eq!(json["current_lag_seconds"], 0.0);
-            assert_eq!(json["throughput_per_second"], 0.0);
-            assert_eq!(json["total_errors"], 0);
-            assert!(json["last_processed_at"].is_null());
+        fn job_metrics_serializes_zeroed() {
+            assert_serializes_to(
+                &JobMetrics {
+                    events_processed: 0,
+                    bytes_processed: 0,
+                    current_lag_seconds: 0.0,
+                    throughput_per_second: 0.0,
+                    total_errors: 0,
+                    last_processed_at: None,
+                },
+                json!({
+                    "events_processed": 0, "bytes_processed": 0, "current_lag_seconds": 0.0,
+                    "throughput_per_second": 0.0, "total_errors": 0, "last_processed_at": null,
+                }),
+            );
         }
 
         #[test]
         fn job_metrics_serializes_with_values() {
-            let metrics = JobMetrics {
-                events_processed: 5000,
-                bytes_processed: 1_200_000,
-                current_lag_seconds: 2.5,
-                throughput_per_second: 150.7,
-                total_errors: 3,
-                last_processed_at: Some("2025-01-15T10:30:00Z".to_string()),
-            };
-            let json: serde_json::Value = serde_json::to_value(&metrics).unwrap();
-
-            assert_eq!(json["events_processed"], 5000);
-            assert_eq!(json["bytes_processed"], 1_200_000);
-            assert_eq!(json["current_lag_seconds"], 2.5);
-            assert_eq!(json["throughput_per_second"], 150.7);
-            assert_eq!(json["total_errors"], 3);
-            assert_eq!(json["last_processed_at"], "2025-01-15T10:30:00Z");
+            assert_serializes_to(
+                &JobMetrics {
+                    events_processed: 5000,
+                    bytes_processed: 1_200_000,
+                    current_lag_seconds: 2.5,
+                    throughput_per_second: 150.7,
+                    total_errors: 3,
+                    last_processed_at: Some("2025-01-15T10:30:00Z".to_string()),
+                },
+                json!({
+                    "events_processed": 5000, "bytes_processed": 1200000, "current_lag_seconds": 2.5,
+                    "throughput_per_second": 150.7, "total_errors": 3,
+                    "last_processed_at": "2025-01-15T10:30:00Z",
+                }),
+            );
         }
     }
 }
