@@ -662,13 +662,13 @@ mod tests {
         fn health_status_serializes_correctly() {
             let health = HealthStatus {
                 status: "healthy",
-                version: "0.43.0",
+                version: env!("CARGO_PKG_VERSION"),
                 uptime_seconds: 120,
             };
             let json: serde_json::Value = serde_json::to_value(&health).unwrap();
 
             assert_eq!(json["status"], "healthy");
-            assert_eq!(json["version"], "0.43.0");
+            assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
             assert_eq!(json["uptime_seconds"], 120);
         }
 
@@ -676,7 +676,7 @@ mod tests {
         fn health_status_degraded() {
             let health = HealthStatus {
                 status: "degraded",
-                version: "0.43.0",
+                version: env!("CARGO_PKG_VERSION"),
                 uptime_seconds: 0,
             };
             let json: serde_json::Value = serde_json::to_value(&health).unwrap();
