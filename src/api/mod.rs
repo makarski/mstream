@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Router;
 use axum::routing::{delete, get, post};
@@ -19,11 +20,11 @@ pub(crate) mod types;
 
 use handler::{
     create_service, create_start_job, delete_schema, delete_test_suite, fill_schema,
-    get_one_service, get_resource_content, get_resource_schema, get_schema, get_test_suite,
-    list_checkpoints, list_jobs, list_schemas, list_service_resources, list_services,
+    get_one_service, get_resource_content, get_resource_schema, get_schema, get_test_suite, health,
+    job_metrics, list_checkpoints, list_jobs, list_schemas, list_service_resources, list_services,
     list_test_suites, remove_service, restart_job, save_schema, save_test_suite, schema_convert,
-    stop_job, transform_completions, transform_run, transform_test_generate, transform_test_run,
-    transform_validate, update_resource_content,
+    stats, stop_job, transform_completions, transform_run, transform_test_generate,
+    transform_test_run, transform_validate, update_resource_content,
 };
 
 #[derive(Clone)]
@@ -32,6 +33,7 @@ pub struct AppState {
     pub(crate) log_buffer: LogBuffer,
     pub(crate) logs_config: LogsConfig,
     pub(crate) test_suite_store: DynTestSuiteStore,
+    pub(crate) start_time: Instant,
 }
 
 impl AppState {
@@ -46,6 +48,7 @@ impl AppState {
             log_buffer,
             logs_config,
             test_suite_store,
+            start_time: Instant::now(),
         }
     }
 }
@@ -53,12 +56,18 @@ impl AppState {
 pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
     let app = Router::new()
         .merge(crate::ui::ui_routes())
+        .route("/health", get(health))
+        .route("/stats", get(stats))
         .route("/jobs", get(list_jobs))
         .route("/jobs", post(create_start_job))
         .route("/jobs/{name}/stop", post(stop_job))
         .route("/jobs/{name}/restart", post(restart_job))
+        .route("/jobs/{name}/metrics", get(job_metrics))
+        .route("/jobs/{name}/checkpoints", get(list_checkpoints))
         .route("/services", get(list_services))
+        .route("/services", post(create_service))
         .route("/services/{name}", get(get_one_service))
+        .route("/services/{name}", delete(remove_service))
         .route("/services/{name}/resources", get(list_service_resources))
         .route(
             "/services/{name}/resources/{resource}",
@@ -68,11 +77,12 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
             "/services/{name}/schema/introspect",
             get(get_resource_schema),
         )
+        .route("/services/{name}/schemas", get(list_schemas))
+        .route("/services/{name}/schemas", post(save_schema))
+        .route("/services/{name}/schemas/{id}", get(get_schema))
+        .route("/services/{name}/schemas/{id}", delete(delete_schema))
         .route("/schema/fill", post(fill_schema))
         .route("/schema/convert", post(schema_convert))
-        .route("/services", post(create_service))
-        .route("/services/{name}", delete(remove_service))
-        .route("/jobs/{name}/checkpoints", get(list_checkpoints))
         .route("/transform/run", post(transform_run))
         .route("/transform/validate", post(transform_validate))
         .route("/transform/completions", get(transform_completions))
@@ -82,10 +92,6 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/test-suites", post(save_test_suite))
         .route("/test-suites/{id}", get(get_test_suite))
         .route("/test-suites/{id}", delete(delete_test_suite))
-        .route("/services/{name}/schemas", get(list_schemas))
-        .route("/services/{name}/schemas", post(save_schema))
-        .route("/services/{name}/schemas/{id}", get(get_schema))
-        .route("/services/{name}/schemas/{id}", delete(delete_schema))
         .route("/logs", get(logs::get_logs))
         .route("/logs/stream", get(logs::stream_logs))
         .with_state(state);

@@ -1,4 +1,5 @@
 use core::iter::Iterator;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail};
 use chrono::Utc;
@@ -7,6 +8,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::{
     checkpoint::Checkpoint,
+    job_manager::JobMetricsCounter,
     provision::pipeline::Pipeline,
     schema::encoding::SchemaEncoder,
     sink::{EventSink, encoding::SinkEvent},
@@ -15,11 +17,12 @@ use crate::{
 
 pub(super) struct EventHandler {
     pipeline: Pipeline,
+    metrics: Option<Arc<JobMetricsCounter>>,
 }
 
 impl EventHandler {
-    pub fn new(pipeline: Pipeline) -> Self {
-        Self { pipeline }
+    pub fn new(pipeline: Pipeline, metrics: Option<Arc<JobMetricsCounter>>) -> Self {
+        Self { pipeline, metrics }
     }
 
     /// Entry point for the pipeline's event processing logic.
@@ -155,6 +158,7 @@ impl EventHandler {
     }
 
     async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
+        let event_bytes = source_event.raw_bytes.len() as u64;
         let event_holder = self.apply_middlewares(source_event).await?;
         let mut all_sinks_succeeded = true;
 
@@ -227,11 +231,23 @@ impl EventHandler {
             };
         }
 
+        self.record_event_outcome(all_sinks_succeeded, event_bytes);
+
         if self.pipeline.with_checkpoints && all_sinks_succeeded {
             self.save_checkpoint(cursor).await?;
         }
 
         Ok(())
+    }
+
+    fn record_event_outcome(&self, success: bool, bytes: u64) {
+        if let Some(ref m) = self.metrics {
+            if success {
+                m.record_success(bytes);
+            } else {
+                m.record_error();
+            }
+        }
     }
 
     async fn save_checkpoint(&self, cursor: Option<Vec<u8>>) -> anyhow::Result<()> {
