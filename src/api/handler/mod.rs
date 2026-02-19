@@ -2,6 +2,7 @@ pub mod jobs;
 pub mod schema;
 pub mod schemas;
 pub mod services;
+pub mod system;
 pub mod test_gen;
 pub mod test_suites;
 pub mod transform;
@@ -14,6 +15,7 @@ pub use services::{
     create_service, get_one_service, get_resource_content, list_service_resources, list_services,
     remove_service, update_resource_content,
 };
+pub use system::{health, job_metrics, stats};
 pub use test_gen::{transform_test_generate, transform_test_run};
 pub use test_suites::{delete_test_suite, get_test_suite, list_test_suites, save_test_suite};
 pub use transform::transform_run;

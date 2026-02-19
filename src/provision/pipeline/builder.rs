@@ -59,6 +59,7 @@ impl PipelineBuilder {
             sinks: Vec::new(),
             checkpointer: Arc::new(NoopCheckpointer::new()),
             with_checkpoints,
+            metrics: None,
         };
 
         Self {

@@ -297,6 +297,37 @@ pub(crate) struct ServiceResourcesResponse {
     pub resources: Vec<ResourceInfo>,
 }
 
+// =============================================================================
+// System / Health / Metrics Types
+// =============================================================================
+
+#[derive(Serialize)]
+pub struct HealthStatus {
+    pub status: &'static str,
+    pub version: &'static str,
+    pub uptime_seconds: u64,
+}
+
+#[derive(Serialize)]
+pub struct SystemStats {
+    pub total_docs_processed: u64,
+    pub total_bytes_transferred: u64,
+    pub uptime_seconds: u64,
+    pub running_jobs: usize,
+    pub stopped_jobs: usize,
+    pub error_jobs: usize,
+}
+
+#[derive(Serialize)]
+pub struct JobMetrics {
+    pub events_processed: u64,
+    pub bytes_processed: u64,
+    pub current_lag_seconds: f64,
+    pub throughput_per_second: f64,
+    pub total_errors: u64,
+    pub last_processed_at: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde::Serialize;
@@ -621,6 +652,91 @@ mod tests {
 
             assert!(parsed["document"].is_array());
             assert_eq!(parsed["document"].as_array().unwrap().len(), 2);
+        }
+    }
+
+    mod system_types_tests {
+        use super::super::{HealthStatus, JobMetrics, SystemStats};
+        use serde::Serialize;
+        use serde_json::json;
+
+        fn assert_serializes_to(actual: &impl Serialize, expected: serde_json::Value) {
+            assert_eq!(serde_json::to_value(actual).unwrap(), expected);
+        }
+
+        #[test]
+        fn health_status_serializes_all_variants() {
+            assert_serializes_to(
+                &HealthStatus {
+                    status: "healthy",
+                    version: env!("CARGO_PKG_VERSION"),
+                    uptime_seconds: 120,
+                },
+                json!({ "status": "healthy", "version": env!("CARGO_PKG_VERSION"), "uptime_seconds": 120 }),
+            );
+            assert_serializes_to(
+                &HealthStatus {
+                    status: "degraded",
+                    version: env!("CARGO_PKG_VERSION"),
+                    uptime_seconds: 0,
+                },
+                json!({ "status": "degraded", "version": env!("CARGO_PKG_VERSION"), "uptime_seconds": 0 }),
+            );
+        }
+
+        #[test]
+        fn system_stats_serializes() {
+            assert_serializes_to(
+                &SystemStats {
+                    total_docs_processed: 1000,
+                    total_bytes_transferred: 50000,
+                    uptime_seconds: 3600,
+                    running_jobs: 3,
+                    stopped_jobs: 1,
+                    error_jobs: 2,
+                },
+                json!({
+                    "total_docs_processed": 1000, "total_bytes_transferred": 50000,
+                    "uptime_seconds": 3600, "running_jobs": 3, "stopped_jobs": 1, "error_jobs": 2,
+                }),
+            );
+        }
+
+        #[test]
+        fn job_metrics_serializes_zeroed() {
+            assert_serializes_to(
+                &JobMetrics {
+                    events_processed: 0,
+                    bytes_processed: 0,
+                    current_lag_seconds: 0.0,
+                    throughput_per_second: 0.0,
+                    total_errors: 0,
+                    last_processed_at: None,
+                },
+                json!({
+                    "events_processed": 0, "bytes_processed": 0, "current_lag_seconds": 0.0,
+                    "throughput_per_second": 0.0, "total_errors": 0, "last_processed_at": null,
+                }),
+            );
+        }
+
+        #[test]
+        fn job_metrics_serializes_with_values() {
+            assert_serializes_to(
+                &JobMetrics {
+                    events_processed: 5000,
+                    bytes_processed: 1_200_000,
+                    current_lag_seconds: 2.5,
+                    throughput_per_second: 150.7,
+                    total_errors: 3,
+                    last_processed_at: Some("2025-01-15T10:30:00Z".to_string()),
+                },
+                json!({
+                    "events_processed": 5000, "bytes_processed": 1200000, "current_lag_seconds": 2.5,
+                    "throughput_per_second": 150.7, "total_errors": 3,
+                    "last_processed_at": "2025-01-15T10:30:00Z",
+                }),
+            );
         }
     }
 }

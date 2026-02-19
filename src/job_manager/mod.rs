@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+    },
 };
 
 use serde::{Deserialize, Serialize};
@@ -43,6 +46,36 @@ struct JobContainer {
     work_handle: JoinHandle<()>,
     source_handle: JoinHandle<()>,
     cancel_token: CancellationToken,
+    metrics: Arc<JobMetricsCounter>,
+}
+
+pub struct JobMetricsCounter {
+    pub events_processed: AtomicU64,
+    pub bytes_processed: AtomicU64,
+    pub errors: AtomicU64,
+    pub last_processed_at: AtomicI64,
+}
+
+impl JobMetricsCounter {
+    pub fn new() -> Self {
+        Self {
+            events_processed: AtomicU64::new(0),
+            bytes_processed: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            last_processed_at: AtomicI64::new(0),
+        }
+    }
+
+    pub fn record_success(&self, bytes: u64) {
+        self.events_processed.fetch_add(1, Ordering::Relaxed);
+        self.bytes_processed.fetch_add(bytes, Ordering::Relaxed);
+        self.last_processed_at
+            .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+    }
+
+    pub fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,6 +90,13 @@ pub struct JobMetadata {
     pub service_deps: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<Connector>,
+}
+
+/// Summary of job counts by state, used by health and stats endpoints.
+pub struct JobStateCounts {
+    pub running: usize,
+    pub stopped: usize,
+    pub failed: usize,
 }
 
 pub struct JobStateChange {
@@ -103,6 +143,7 @@ impl JobManager {
         work_handle: JoinHandle<()>,
         source_handle: JoinHandle<()>,
         cancel_token: CancellationToken,
+        metrics: Arc<JobMetricsCounter>,
         service_deps: Vec<String>,
         pipeline: Option<Connector>,
     ) -> anyhow::Result<JobMetadata> {
@@ -120,6 +161,7 @@ impl JobManager {
             work_handle,
             source_handle,
             cancel_token,
+            metrics,
         };
 
         self.job_store.save(metadata.clone()).await?;
@@ -212,6 +254,29 @@ impl JobManager {
         self.job_store.list_all().await
     }
 
+    /// Returns live metrics for a running job, or None if the job is not running.
+    pub fn job_metrics(&self, name: &str) -> Option<&Arc<JobMetricsCounter>> {
+        self.running_jobs.get(name).map(|jc| &jc.metrics)
+    }
+
+    /// Returns job counts grouped by state.
+    pub async fn job_state_counts(&self) -> anyhow::Result<JobStateCounts> {
+        let jobs = self.job_store.list_all().await?;
+        let mut counts = JobStateCounts {
+            running: 0,
+            stopped: 0,
+            failed: 0,
+        };
+        for job in &jobs {
+            match job.state {
+                JobState::Running => counts.running += 1,
+                JobState::Stopped => counts.stopped += 1,
+                JobState::Failed => counts.failed += 1,
+            }
+        }
+        Ok(counts)
+    }
+
     pub async fn restart_job(&mut self, job_name: &str) -> Result<JobMetadata> {
         let job_metadata = self
             .job_store
@@ -256,12 +321,15 @@ impl JobManager {
             PipelineBuilder::new(self.service_registry.clone(), conn_cfg.clone(), checkpoint);
 
         let service_deps = pipeline_builder.service_deps();
-        let pipeline = pipeline_builder.build().await.map_err(|e| {
+        let mut pipeline = pipeline_builder.build().await.map_err(|e| {
             JobManagerError::InternalError(format!("failed to build pipeline: {}", e))
         })?;
 
+        let metrics = Arc::new(JobMetricsCounter::new());
         let job_cancel = self.cancel_all.child_token();
         let task_cancel = job_cancel.clone();
+
+        pipeline.metrics = Some(metrics.clone());
 
         let (job_name, work_handle, source_handle) =
             pipeline.run(task_cancel, exit_tx).await.map_err(|e| {
@@ -273,6 +341,7 @@ impl JobManager {
             work_handle,
             source_handle,
             job_cancel,
+            metrics,
             service_deps,
             Some(conn_cfg),
         )
@@ -525,4 +594,128 @@ pub trait JobLifecycleStorage {
     async fn save(&mut self, metadata: JobMetadata) -> anyhow::Result<()>;
     async fn get(&self, name: &str) -> anyhow::Result<Option<JobMetadata>>;
     async fn get_dependent_jobs(&self, service_name: &str) -> anyhow::Result<Vec<String>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provision::registry::{
+        ServiceRegistry, ServiceStorage, in_memory::InMemoryServiceStorage,
+    };
+    use tokio::sync::mpsc;
+
+    fn test_job_manager() -> (JobManager, mpsc::UnboundedReceiver<JobStateChange>) {
+        let storage: ServiceStorage = Box::new(InMemoryServiceStorage::new());
+        let registry = ServiceRegistry::new(storage, None);
+        let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+        let jm = JobManager::new(
+            Arc::new(RwLock::new(registry)),
+            Box::new(in_memory::InMemoryJobStore::new()),
+            exit_tx,
+        );
+        (jm, exit_rx)
+    }
+
+    fn make_job(name: &str, state: JobState) -> JobMetadata {
+        JobMetadata {
+            name: name.to_string(),
+            started_at: chrono::Utc::now(),
+            stopped_at: None,
+            state,
+            desired_state: JobState::Running,
+            service_deps: vec![],
+            pipeline: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn job_state_counts_empty() {
+        let (jm, _rx) = test_job_manager();
+        let counts = jm.job_state_counts().await.unwrap();
+        assert_eq!(counts.running, 0);
+        assert_eq!(counts.stopped, 0);
+        assert_eq!(counts.failed, 0);
+    }
+
+    #[tokio::test]
+    async fn job_state_counts_mixed_states() {
+        let (mut jm, _rx) = test_job_manager();
+        save_jobs(&mut jm, &["a", "b"], JobState::Running).await;
+        save_jobs(&mut jm, &["c"], JobState::Stopped).await;
+        save_jobs(&mut jm, &["d", "e"], JobState::Failed).await;
+
+        assert_state_counts(&jm, 2, 1, 2).await;
+    }
+
+    async fn assert_state_counts(jm: &JobManager, running: usize, stopped: usize, failed: usize) {
+        let counts = jm.job_state_counts().await.unwrap();
+        assert_eq!(counts.running, running, "running mismatch");
+        assert_eq!(counts.stopped, stopped, "stopped mismatch");
+        assert_eq!(counts.failed, failed, "failed mismatch");
+    }
+
+    async fn save_jobs(jm: &mut JobManager, names: &[&str], state: JobState) {
+        for name in names {
+            jm.job_store
+                .save(make_job(name, state.clone()))
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn job_state_counts_single_state() {
+        let (mut jm, _rx) = test_job_manager();
+        save_jobs(&mut jm, &["x", "y"], JobState::Running).await;
+        assert_state_counts(&jm, 2, 0, 0).await;
+
+        let (mut jm, _rx) = test_job_manager();
+        save_jobs(&mut jm, &["f1", "f2"], JobState::Failed).await;
+        assert_state_counts(&jm, 0, 0, 2).await;
+    }
+
+    #[test]
+    fn metrics_counter_starts_at_zero() {
+        let m = JobMetricsCounter::new();
+        assert_eq!(m.events_processed.load(Ordering::Relaxed), 0);
+        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 0);
+        assert_eq!(m.errors.load(Ordering::Relaxed), 0);
+        assert_eq!(m.last_processed_at.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn metrics_counter_record_success() {
+        let m = JobMetricsCounter::new();
+        m.record_success(256);
+        m.record_success(512);
+
+        assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
+        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 768);
+        assert_eq!(m.errors.load(Ordering::Relaxed), 0);
+        assert!(m.last_processed_at.load(Ordering::Relaxed) > 0);
+    }
+
+    #[test]
+    fn metrics_counter_record_error() {
+        let m = JobMetricsCounter::new();
+        m.record_error();
+        m.record_error();
+        m.record_error();
+
+        assert_eq!(m.errors.load(Ordering::Relaxed), 3);
+        assert_eq!(m.events_processed.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn metrics_counter_mixed_success_and_errors() {
+        let m = JobMetricsCounter::new();
+        m.record_success(100);
+        m.record_error();
+        m.record_success(200);
+        m.record_error();
+
+        assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
+        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 300);
+        assert_eq!(m.errors.load(Ordering::Relaxed), 2);
+    }
 }

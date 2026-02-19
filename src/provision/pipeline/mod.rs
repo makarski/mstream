@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::anyhow;
 use tokio::{
     select,
@@ -10,7 +12,7 @@ use tracing::{Instrument, error, info, info_span, warn};
 use crate::{
     checkpoint::DynCheckpointer,
     config::Encoding,
-    job_manager::{JobState, JobStateChange},
+    job_manager::{JobMetricsCounter, JobState, JobStateChange},
     provision::pipeline::{
         middleware::MiddlewareDefinition, processor::EventHandler, schema::SchemaDefinition,
         sink::SinkDefinition,
@@ -38,6 +40,7 @@ pub struct Pipeline {
     pub is_batching_enabled: bool,
     pub checkpointer: DynCheckpointer,
     pub with_checkpoints: bool,
+    pub metrics: Option<Arc<JobMetricsCounter>>,
 }
 
 impl Pipeline {
@@ -108,7 +111,8 @@ impl PipelineRuntime {
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             let cnt_name = pipeline.name.clone();
-            let mut eh = EventHandler::new(pipeline);
+            let metrics = pipeline.metrics.clone();
+            let mut eh = EventHandler::new(pipeline, metrics);
 
             let job_state = select! {
                 _ = self.cancel_token.cancelled() => {
