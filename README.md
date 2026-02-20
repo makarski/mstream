@@ -559,7 +559,7 @@ service_name = "system-db"
 resource = "workspaces"
 ```
 
-Requires a MongoDB service. Without this configuration, workspaces use an in-memory noop store.
+Requires a MongoDB service. Without this configuration, workspaces use a noop store and workspace data is not persisted.
 
 ## Checkpoints
 

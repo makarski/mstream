@@ -46,6 +46,35 @@ pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     run_app_with_log_buffer(config, log_buffer, logs_config).await
 }
 
+async fn log_job_count(jm: &job_manager::JobManager) {
+    match jm.list_jobs().await {
+        Ok(jobs) if jobs.is_empty() => warn!("no jobs configured"),
+        Ok(jobs) => info!("configured jobs: {}", jobs.len()),
+        Err(err) => error!("failed to list jobs: {}", err),
+    }
+}
+
+async fn extract_stores(shared_jm: &Arc<Mutex<job_manager::JobManager>>) -> Stores {
+    let jm_lock = shared_jm.lock().await;
+    let registry = jm_lock.service_registry.read().await;
+    Stores {
+        test_suite_store: registry.test_suite_store(),
+        workspace_store: registry.workspace_store(),
+    }
+}
+
+async fn handle_job_exit(
+    shared_jm: &Arc<Mutex<job_manager::JobManager>>,
+    state_change: JobStateChange,
+) {
+    let job_name = state_change.job_name.clone();
+    tracing::warn!(job_name = %job_name, "stream listener exited");
+    match shared_jm.lock().await.handle_job_exit(state_change).await {
+        Ok(_) => tracing::info!(job_name = %job_name, "handled job exit"),
+        Err(err) => tracing::error!(job_name = %job_name, "failed to handle job exit: {}", err),
+    }
+}
+
 pub async fn run_app_with_log_buffer(
     config: config::Config,
     log_buffer: LogBuffer,
@@ -58,27 +87,10 @@ pub async fn run_app_with_log_buffer(
 
     let (exit_tx, mut exit_rx) = mpsc::unbounded_channel::<JobStateChange>();
     let jm = cmd::listen_streams(exit_tx, config).await?;
-    match jm.list_jobs().await {
-        Ok(jobs) if jobs.is_empty() => {
-            warn!("no jobs configured");
-        }
-        Ok(jobs) => {
-            info!("configured jobs: {}", jobs.len());
-        }
-        Err(err) => {
-            error!("failed to list jobs: {}", err);
-        }
-    };
+    log_job_count(&jm).await;
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let stores = {
-        let jm_lock = shared_jm.lock().await;
-        let registry = jm_lock.service_registry.read().await;
-        Stores {
-            test_suite_store: registry.test_suite_store(),
-            workspace_store: registry.workspace_store(),
-        }
-    };
+    let stores = extract_stores(&shared_jm).await;
     let api_app_state = AppState::new(shared_jm.clone(), log_buffer, logs_config, stores);
 
     tokio::spawn(async move {
@@ -95,23 +107,7 @@ pub async fn run_app_with_log_buffer(
             }
             res = exit_rx.recv() => {
                 match res {
-                    Some(state_change) => {
-                        let job_name = state_change.job_name.clone();
-                        tracing::warn!(job_name = %job_name, "stream listener exited");
-                        match shared_jm
-                            .lock()
-                            .await
-                            .handle_job_exit(state_change)
-                            .await
-                        {
-                            Ok(_) => {
-                                tracing::info!(job_name = %job_name, "handled job exit");
-                            }
-                            Err(err) => {
-                                tracing::error!(job_name = %job_name, "failed to handle job exit: {}", err);
-                            }
-                        }
-                    }
+                    Some(state_change) => handle_job_exit(&shared_jm, state_change).await,
                     None => {
                         warn!("all stream listeners have exited");
                         break;

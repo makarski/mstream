@@ -68,7 +68,15 @@ pub async fn update_workspace(
     Path(id): Path<String>,
     Json(mut workspace): Json<Workspace>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let existing = state
+        .stores
+        .workspace_store
+        .get(&id)
+        .await
+        .map_err(workspace_error_to_api)?;
+
     workspace.id = id;
+    workspace.created_at = existing.created_at;
     workspace.updated_at = chrono::Utc::now();
 
     state
@@ -347,6 +355,8 @@ mod tests {
         let store = Arc::new(InMemoryWorkspaceStore::with_seed(vec![sample_workspace(
             "ws-1", "Old Name",
         )]));
+        let original_created_at = store.get("ws-1").await.unwrap().created_at;
+
         let (status, json) = send_json(
             store.clone(),
             "PUT",
@@ -358,7 +368,27 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["item"]["id"], "ws-1");
         assert_eq!(json["item"]["name"], "New Name");
-        assert_eq!(store.get("ws-1").await.unwrap().name, "New Name");
+
+        let updated = store.get("ws-1").await.unwrap();
+        assert_eq!(updated.name, "New Name");
+        assert_eq!(
+            updated.created_at, original_created_at,
+            "created_at must be preserved on update"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_returns_404_when_not_found() {
+        let store = Arc::new(InMemoryWorkspaceStore::new());
+        let (status, _) = send_json(
+            store,
+            "PUT",
+            "/workspaces/missing",
+            json!({"name": "Ghost"}),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
