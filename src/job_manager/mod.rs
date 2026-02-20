@@ -66,8 +66,9 @@ impl JobMetricsCounter {
         }
     }
 
-    pub fn record_success(&self, bytes: u64) {
-        self.events_processed.fetch_add(1, Ordering::Relaxed);
+    pub fn record_success(&self, doc_count: u64, bytes: u64) {
+        self.events_processed
+            .fetch_add(doc_count, Ordering::Relaxed);
         self.bytes_processed.fetch_add(bytes, Ordering::Relaxed);
         self.last_processed_at
             .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
@@ -257,6 +258,18 @@ impl JobManager {
     /// Returns live metrics for a running job, or None if the job is not running.
     pub fn job_metrics(&self, name: &str) -> Option<&Arc<JobMetricsCounter>> {
         self.running_jobs.get(name).map(|jc| &jc.metrics)
+    }
+
+    /// Sums metrics across all running jobs.
+    pub fn aggregate_metrics(&self) -> (u64, u64, u64) {
+        self.running_jobs.values().fold((0, 0, 0), |acc, jc| {
+            let m = &jc.metrics;
+            (
+                acc.0 + m.events_processed.load(Ordering::Relaxed),
+                acc.1 + m.bytes_processed.load(Ordering::Relaxed),
+                acc.2 + m.errors.load(Ordering::Relaxed),
+            )
+        })
     }
 
     /// Returns job counts grouped by state.
@@ -686,8 +699,8 @@ mod tests {
     #[test]
     fn metrics_counter_record_success() {
         let m = JobMetricsCounter::new();
-        m.record_success(256);
-        m.record_success(512);
+        m.record_success(1, 256);
+        m.record_success(1, 512);
 
         assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
         assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 768);
@@ -709,13 +722,22 @@ mod tests {
     #[test]
     fn metrics_counter_mixed_success_and_errors() {
         let m = JobMetricsCounter::new();
-        m.record_success(100);
+        m.record_success(1, 100);
         m.record_error();
-        m.record_success(200);
+        m.record_success(1, 200);
         m.record_error();
 
         assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
         assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 300);
         assert_eq!(m.errors.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn metrics_counter_batch_counts_all_docs() {
+        let m = JobMetricsCounter::new();
+        m.record_success(100, 5000);
+
+        assert_eq!(m.events_processed.load(Ordering::Relaxed), 100);
+        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 5000);
     }
 }

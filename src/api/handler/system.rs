@@ -46,13 +46,13 @@ pub async fn stats(State(state): State<AppState>) -> Result<impl IntoResponse, A
 
     let uptime = state.start_time.elapsed().as_secs();
 
-    // TODO: wire total_docs_processed / total_bytes_transferred once
-    // in-engine metrics collection is implemented
+    let (total_events, total_bytes, _) = jm.aggregate_metrics();
+
     Ok((
         StatusCode::OK,
         Json(SystemStats {
-            total_docs_processed: 0,
-            total_bytes_transferred: 0,
+            total_events_processed: total_events,
+            total_bytes_processed: total_bytes,
             uptime_seconds: uptime,
             running_jobs: counts.running,
             stopped_jobs: counts.stopped,

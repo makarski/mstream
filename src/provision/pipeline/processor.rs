@@ -66,7 +66,7 @@ impl EventHandler {
                             .map_err(|err| anyhow!("failed to apply source schema: {}", err))
                     })?;
 
-                    if let Err(err) = self.process_event(event).await {
+                    if let Err(err) = self.process_event(event, 1).await {
                         error!(job_name = %self.pipeline.name, "failed to process event: {}", err)
                     }
                 }
@@ -127,6 +127,7 @@ impl EventHandler {
         let source_encoding = batch[0].encoding.clone();
         let attributes = batch[0].attributes.clone();
         let last_cursor = batch.last().and_then(|event| event.cursor.clone());
+        let doc_count = batch.len() as u64;
         let payloads: Vec<Vec<u8>> = batch.drain(..).map(|event| event.raw_bytes).collect();
 
         let batch_event = block_in_place(|| {
@@ -150,37 +151,55 @@ impl EventHandler {
             batch_event.raw_bytes.len()
         );
 
-        if let Err(err) = self.process_event(batch_event).await {
+        if let Err(err) = self.process_event(batch_event, doc_count).await {
             error!(job_name = %self.pipeline.name, "failed to process event: {}", err)
         }
 
         Ok(())
     }
 
-    async fn process_event(&mut self, source_event: SourceEvent) -> anyhow::Result<()> {
+    async fn process_event(
+        &mut self,
+        source_event: SourceEvent,
+        doc_count: u64,
+    ) -> anyhow::Result<()> {
         let event_bytes = source_event.raw_bytes.len() as u64;
-        let event_holder = self.apply_middlewares(source_event).await?;
-        let mut all_sinks_succeeded = true;
 
-        // Extract cursor before the loop for checkpointing
+        let event_holder = match self.apply_middlewares(source_event).await {
+            Ok(holder) => holder,
+            Err(err) => {
+                self.record_event_outcome(false, doc_count, event_bytes);
+                return Err(err);
+            }
+        };
+
         let cursor = event_holder.cursor.clone();
+        let all_sinks_succeeded = self.publish_to_sinks(event_holder).await;
 
+        self.record_event_outcome(all_sinks_succeeded, doc_count, event_bytes);
+
+        if self.pipeline.with_checkpoints && all_sinks_succeeded {
+            self.save_checkpoint(cursor).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn publish_to_sinks(&mut self, event_holder: SourceEvent) -> bool {
+        let mut all_succeeded = true;
         let mut event_option = Some(event_holder);
         let sinks_len = self.pipeline.sinks.len();
 
         for (i, sink_def) in self.pipeline.sinks.iter_mut().enumerate() {
             let sink_event_result = block_in_place(|| {
                 let event = if i == sinks_len - 1 {
-                    // Move the event on the last iteration to avoid clone
                     event_option.take().expect("event should be present")
                 } else {
-                    // Clone for intermediate sinks
                     event_option
                         .as_ref()
                         .expect("event should be present")
                         .clone()
                 };
-                // apply sink schema
                 event.apply_schema(Some(&sink_def.config.output_encoding), &sink_def.schema)
             });
 
@@ -193,16 +212,13 @@ impl EventHandler {
                     error!(
                         job_name = %self.pipeline.name,
                         "failed to encode for sink {}/{}: {}",
-                        sink_def.config.service_name,
-                        sink_def.config.resource,
-                        err
+                        sink_def.config.service_name, sink_def.config.resource, err
                     );
-                    all_sinks_succeeded = false;
+                    all_succeeded = false;
                     continue;
                 }
             };
 
-            // maybe we need a config in publisher, ie explode batch
             match sink_def
                 .sink
                 .publish(sink_event, sink_def.config.resource.clone(), None)
@@ -212,38 +228,28 @@ impl EventHandler {
                     info!(
                         job_name = %self.pipeline.name,
                         "published to {}/{}: {}",
-                        sink_def.config.service_name,
-                        sink_def.config.resource,
-                        message
+                        sink_def.config.service_name, sink_def.config.resource, message
                     );
                 }
                 Err(err) => {
                     error!(
                         job_name = %self.pipeline.name,
                         "failed to publish to {}/{}: {:#}",
-                        sink_def.config.service_name,
-                        sink_def.config.resource,
-                        err
+                        sink_def.config.service_name, sink_def.config.resource, err
                     );
-                    all_sinks_succeeded = false;
+                    all_succeeded = false;
                     continue;
                 }
             };
         }
 
-        self.record_event_outcome(all_sinks_succeeded, event_bytes);
-
-        if self.pipeline.with_checkpoints && all_sinks_succeeded {
-            self.save_checkpoint(cursor).await?;
-        }
-
-        Ok(())
+        all_succeeded
     }
 
-    fn record_event_outcome(&self, success: bool, bytes: u64) {
+    fn record_event_outcome(&self, success: bool, doc_count: u64, bytes: u64) {
         if let Some(ref m) = self.metrics {
             if success {
-                m.record_success(bytes);
+                m.record_success(doc_count, bytes);
             } else {
                 m.record_error();
             }
