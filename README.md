@@ -517,6 +517,50 @@ For MongoDB services, the `id` field is auto-assigned if omitted. For PubSub ser
 
 Test suites persist test cases, assertions, and optionally a reference to the transform script they were authored against. Used by the Transform Studio to save and reload testing sessions.
 
+### Workspaces
+
+Workspaces persist a named development context — script reference, sample input, schema, and test suite — so that work-in-progress can be saved, shared, and restored later.
+
+> **Workspaces vs Connectors (Pipelines)**
+>
+> A **connector** is a deployed, running pipeline: it binds a source → middlewares → sinks and processes live data. A **workspace** is a development-time concept: it captures what you're *working on* (which script, which sample input, which schema, which test suite) without running anything. When ready, a workspace can pre-fill a connector's configuration, but the two are independent records.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/workspaces` | List saved workspaces (id + name) |
+| `GET` | `/workspaces/{id}` | Get a workspace by ID |
+| `POST` | `/workspaces` | Create a workspace |
+| `PUT` | `/workspaces/{id}` | Update a workspace |
+| `DELETE` | `/workspaces/{id}` | Delete a workspace |
+
+#### Create Workspace
+
+```
+POST /workspaces
+```
+
+```json
+{
+  "name": "PII Masking Workspace",
+  "script": { "service_name": "udf-anonymizer", "resource": "mask_pii.rhai" },
+  "input": "{\"name\": \"John\", \"email\": \"john@acme.com\"}",
+  "schema": { "schema_id": "schema-1", "service_name": "etl-test-data" },
+  "test_suite_id": "suite-1"
+}
+```
+
+All fields except `name` are optional. The `id` is auto-assigned if omitted.
+
+#### System Configuration
+
+```toml
+[system.workspaces]
+service_name = "system-db"
+resource = "workspaces"
+```
+
+Requires a MongoDB service. Without this configuration, workspaces use an in-memory noop store.
+
 ## Checkpoints
 
 Checkpoints allow connectors to resume from their last processed position after a restart, preventing data loss or reprocessing.

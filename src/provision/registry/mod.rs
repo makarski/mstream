@@ -17,11 +17,15 @@ use crate::{
     },
     http,
     middleware::udf::rhai::RhaiMiddleware,
-    mongodb::{checkpoint::MongoDbCheckpointer, db_client, test_suite::MongoDbTestSuiteStore},
+    mongodb::{
+        checkpoint::MongoDbCheckpointer, db_client, test_suite::MongoDbTestSuiteStore,
+        workspace::MongoDbWorkspaceStore,
+    },
     pubsub::srvc::SchemaService,
     pubsub::{SCOPES, ServiceAccountAuth, StaticAccessToken},
     schema::{DynSchemaRegistry, NoopSchemaRegistry, SchemaProvider, mongo::MongoDbSchemaProvider},
     testing::{DynTestSuiteStore, NoopTestSuiteStore},
+    workspace::{DynWorkspaceStore, NoopWorkspaceStore},
 };
 
 pub mod in_memory;
@@ -56,6 +60,7 @@ pub struct ServiceRegistry {
     checkpointer: DynCheckpointer,
     schema_registry: DynSchemaRegistry,
     test_suite_store: DynTestSuiteStore,
+    workspace_store: DynWorkspaceStore,
 }
 
 impl ServiceRegistry {
@@ -73,6 +78,7 @@ impl ServiceRegistry {
             checkpointer: Arc::new(NoopCheckpointer::new()),
             schema_registry: Arc::new(NoopSchemaRegistry),
             test_suite_store: Arc::new(NoopTestSuiteStore),
+            workspace_store: Arc::new(NoopWorkspaceStore),
         }
     }
 
@@ -182,6 +188,13 @@ impl ServiceRegistry {
                 .mongo_database_for(&cfg.service_name, "test_suites")
                 .await?;
             self.test_suite_store = Arc::new(MongoDbTestSuiteStore::new(db, cfg.resource.clone()));
+        }
+
+        if let Some(cfg) = &sys_cfg.workspaces {
+            let db = self
+                .mongo_database_for(&cfg.service_name, "workspaces")
+                .await?;
+            self.workspace_store = Arc::new(MongoDbWorkspaceStore::new(db, cfg.resource.clone()));
         }
 
         Ok(())
@@ -342,6 +355,10 @@ impl ServiceRegistry {
 
     pub fn test_suite_store(&self) -> DynTestSuiteStore {
         self.test_suite_store.clone()
+    }
+
+    pub fn workspace_store(&self) -> DynWorkspaceStore {
+        self.workspace_store.clone()
     }
 
     async fn create_gcp_token_provider(auth: &GcpAuthConfig) -> anyhow::Result<ServiceAccountAuth> {

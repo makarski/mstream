@@ -7,6 +7,7 @@ pub mod test_gen;
 pub mod test_suites;
 pub mod transform;
 pub mod validate;
+pub mod workspaces;
 
 pub use jobs::{create_start_job, list_checkpoints, list_jobs, restart_job, stop_job};
 pub use schema::{fill_schema, get_resource_schema, schema_convert};
@@ -20,3 +21,6 @@ pub use test_gen::{transform_test_generate, transform_test_run};
 pub use test_suites::{delete_test_suite, get_test_suite, list_test_suites, save_test_suite};
 pub use transform::transform_run;
 pub use validate::{transform_completions, transform_validate};
+pub use workspaces::{
+    delete_workspace, get_workspace, list_workspaces, save_workspace, update_workspace,
+};

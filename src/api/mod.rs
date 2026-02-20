@@ -12,6 +12,13 @@ use crate::config::system::LogsConfig;
 use crate::job_manager::JobManager;
 use crate::logs::LogBuffer;
 use crate::testing::DynTestSuiteStore;
+use crate::workspace::DynWorkspaceStore;
+
+#[derive(Clone)]
+pub struct Stores {
+    pub test_suite_store: DynTestSuiteStore,
+    pub workspace_store: DynWorkspaceStore,
+}
 
 pub(crate) mod error;
 pub(crate) mod handler;
@@ -19,12 +26,13 @@ pub(crate) mod logs;
 pub(crate) mod types;
 
 use handler::{
-    create_service, create_start_job, delete_schema, delete_test_suite, fill_schema,
-    get_one_service, get_resource_content, get_resource_schema, get_schema, get_test_suite, health,
-    job_metrics, list_checkpoints, list_jobs, list_schemas, list_service_resources, list_services,
-    list_test_suites, remove_service, restart_job, save_schema, save_test_suite, schema_convert,
-    stats, stop_job, transform_completions, transform_run, transform_test_generate,
-    transform_test_run, transform_validate, update_resource_content,
+    create_service, create_start_job, delete_schema, delete_test_suite, delete_workspace,
+    fill_schema, get_one_service, get_resource_content, get_resource_schema, get_schema,
+    get_test_suite, get_workspace, health, job_metrics, list_checkpoints, list_jobs, list_schemas,
+    list_service_resources, list_services, list_test_suites, list_workspaces, remove_service,
+    restart_job, save_schema, save_test_suite, save_workspace, schema_convert, stats, stop_job,
+    transform_completions, transform_run, transform_test_generate, transform_test_run,
+    transform_validate, update_resource_content, update_workspace,
 };
 
 #[derive(Clone)]
@@ -32,7 +40,7 @@ pub struct AppState {
     pub(crate) job_manager: Arc<Mutex<JobManager>>,
     pub(crate) log_buffer: LogBuffer,
     pub(crate) logs_config: LogsConfig,
-    pub(crate) test_suite_store: DynTestSuiteStore,
+    pub(crate) stores: Stores,
     pub(crate) start_time: Instant,
 }
 
@@ -41,13 +49,13 @@ impl AppState {
         jb: Arc<Mutex<JobManager>>,
         log_buffer: LogBuffer,
         logs_config: LogsConfig,
-        test_suite_store: DynTestSuiteStore,
+        stores: Stores,
     ) -> Self {
         Self {
             job_manager: jb,
             log_buffer,
             logs_config,
-            test_suite_store,
+            stores,
             start_time: Instant::now(),
         }
     }
@@ -92,6 +100,14 @@ pub async fn start_server(state: AppState, port: u16) -> anyhow::Result<()> {
         .route("/test-suites", post(save_test_suite))
         .route("/test-suites/{id}", get(get_test_suite))
         .route("/test-suites/{id}", delete(delete_test_suite))
+        .route("/workspaces", get(list_workspaces))
+        .route("/workspaces", post(save_workspace))
+        .route(
+            "/workspaces/{id}",
+            get(get_workspace)
+                .put(update_workspace)
+                .delete(delete_workspace),
+        )
         .route("/logs", get(logs::get_logs))
         .route("/logs/stream", get(logs::stream_logs))
         .with_state(state);

@@ -8,7 +8,7 @@ use tracing::{error, warn};
 use crate::{
     api::types::Message, job_manager::error::JobManagerError,
     middleware::udf::rhai::RhaiMiddlewareError, schema::introspect::SchemaIntrospectError,
-    testing::store::TestSuiteStoreError,
+    testing::store::TestSuiteStoreError, workspace::WorkspaceStoreError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +33,9 @@ pub enum ApiError {
 
     #[error(transparent)]
     TestSuiteStore(#[from] TestSuiteStoreError),
+
+    #[error(transparent)]
+    WorkspaceStore(#[from] WorkspaceStoreError),
 }
 
 impl IntoResponse for ApiError {
@@ -46,6 +49,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             ApiError::TestSuiteStore(err) => err.response_data(),
+            ApiError::WorkspaceStore(err) => err.response_data(),
         };
 
         if status.is_server_error() {
@@ -132,6 +136,22 @@ impl ApiErrorDetails for TestSuiteStoreError {
                 format!("Database error: {}", e),
             ),
             TestSuiteStoreError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+        }
+    }
+}
+
+impl ApiErrorDetails for WorkspaceStoreError {
+    fn response_data(&self) -> (StatusCode, String) {
+        match self {
+            WorkspaceStoreError::NotFound(id) => (
+                StatusCode::NOT_FOUND,
+                format!("Workspace '{}' not found", id),
+            ),
+            WorkspaceStoreError::MongoDb(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Database error: {}", e),
+            ),
+            WorkspaceStoreError::Other(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         }
     }
 }
@@ -346,6 +366,29 @@ mod tests {
         async fn other_error_returns_500() {
             let error: ApiError =
                 TestSuiteStoreError::Other("unexpected failure".to_string()).into();
+            let (status, message) = extract_response(error.into_response()).await;
+
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(message.contains("unexpected failure"));
+        }
+    }
+
+    mod workspace_store_error_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn not_found_returns_404() {
+            let error: ApiError = WorkspaceStoreError::NotFound("ws-123".to_string()).into();
+            let (status, message) = extract_response(error.into_response()).await;
+
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert!(message.contains("ws-123"));
+        }
+
+        #[tokio::test]
+        async fn other_error_returns_500() {
+            let error: ApiError =
+                WorkspaceStoreError::Other("unexpected failure".to_string()).into();
             let (status, message) = extract_response(error.into_response()).await;
 
             assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);

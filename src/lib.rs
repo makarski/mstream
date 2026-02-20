@@ -8,7 +8,10 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::{
-    api::AppState, config::system::LogsConfig, job_manager::JobStateChange, logs::LogBuffer,
+    api::{AppState, Stores},
+    config::system::LogsConfig,
+    job_manager::JobStateChange,
+    logs::LogBuffer,
 };
 
 mod http;
@@ -30,6 +33,7 @@ pub mod schema;
 pub mod source;
 pub mod testing;
 pub mod ui;
+pub mod workspace;
 
 pub async fn run_app(config_path: &str) -> anyhow::Result<()> {
     let config = config::Config::load(config_path).with_context(|| "failed to load config")?;
@@ -67,12 +71,15 @@ pub async fn run_app_with_log_buffer(
     };
 
     let shared_jm = Arc::new(Mutex::new(jm));
-    let test_suite_store = {
+    let stores = {
         let jm_lock = shared_jm.lock().await;
         let registry = jm_lock.service_registry.read().await;
-        registry.test_suite_store()
+        Stores {
+            test_suite_store: registry.test_suite_store(),
+            workspace_store: registry.workspace_store(),
+        }
     };
-    let api_app_state = AppState::new(shared_jm.clone(), log_buffer, logs_config, test_suite_store);
+    let api_app_state = AppState::new(shared_jm.clone(), log_buffer, logs_config, stores);
 
     tokio::spawn(async move {
         if let Err(err) = api::start_server(api_app_state, api_port).await {

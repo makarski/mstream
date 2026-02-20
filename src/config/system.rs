@@ -8,6 +8,7 @@ pub struct SystemConfig {
     pub checkpoints: Option<CheckpointSystemConfig>,
     pub schemas: Option<StorageConfig>,
     pub test_suites: Option<StorageConfig>,
+    pub workspaces: Option<StorageConfig>,
     pub logs: Option<LogsConfig>,
 }
 
@@ -42,67 +43,46 @@ impl LogsConfig {
 
 impl SystemConfig {
     pub fn has_system_components(&self, service_name: &str) -> Option<Vec<&'static str>> {
-        let mut components = Vec::new();
-        if self.has_job_lifecycle(service_name) {
-            components.push("job_lifecycle");
-        }
+        let checks: &[(&'static str, Option<&str>)] = &[
+            (
+                "job_lifecycle",
+                self.job_lifecycle.as_ref().map(|c| c.service_name.as_str()),
+            ),
+            (
+                "service_lifecycle",
+                self.service_lifecycle
+                    .as_ref()
+                    .map(|c| c.service_name.as_str()),
+            ),
+            (
+                "checkpoints",
+                self.checkpoints.as_ref().map(|c| c.service_name.as_str()),
+            ),
+            (
+                "schemas",
+                self.schemas.as_ref().map(|c| c.service_name.as_str()),
+            ),
+            (
+                "test_suites",
+                self.test_suites.as_ref().map(|c| c.service_name.as_str()),
+            ),
+            (
+                "workspaces",
+                self.workspaces.as_ref().map(|c| c.service_name.as_str()),
+            ),
+        ];
 
-        if self.has_service_lifecycle(service_name) {
-            components.push("service_lifecycle");
-        }
-
-        if self.has_checkpoints(service_name) {
-            components.push("checkpoints");
-        }
-
-        if self.has_schemas(service_name) {
-            components.push("schemas");
-        }
-
-        if self.has_test_suites(service_name) {
-            components.push("test_suites");
-        }
+        let components: Vec<&'static str> = checks
+            .iter()
+            .filter(|(_, svc)| svc == &Some(service_name))
+            .map(|(label, _)| *label)
+            .collect();
 
         if components.is_empty() {
             None
         } else {
             Some(components)
         }
-    }
-
-    fn has_job_lifecycle(&self, service_name: &str) -> bool {
-        self.job_lifecycle
-            .as_ref()
-            .filter(|jlc| -> bool { jlc.service_name == service_name })
-            .is_some()
-    }
-
-    fn has_service_lifecycle(&self, service_name: &str) -> bool {
-        self.service_lifecycle
-            .as_ref()
-            .filter(|slc| -> bool { slc.service_name == service_name })
-            .is_some()
-    }
-
-    fn has_checkpoints(&self, service_name: &str) -> bool {
-        self.checkpoints
-            .as_ref()
-            .filter(|cp| -> bool { cp.service_name == service_name })
-            .is_some()
-    }
-
-    fn has_schemas(&self, service_name: &str) -> bool {
-        self.schemas
-            .as_ref()
-            .filter(|s| -> bool { s.service_name == service_name })
-            .is_some()
-    }
-
-    fn has_test_suites(&self, service_name: &str) -> bool {
-        self.test_suites
-            .as_ref()
-            .filter(|t| -> bool { t.service_name == service_name })
-            .is_some()
     }
 }
 
@@ -181,6 +161,13 @@ mod tests {
         }
     }
 
+    fn workspaces(service_name: &str) -> StorageConfig {
+        StorageConfig {
+            service_name: service_name.to_string(),
+            resource: "workspaces".to_string(),
+        }
+    }
+
     mod has_system_components_tests {
         use super::*;
 
@@ -235,16 +222,18 @@ mod tests {
                 checkpoints: Some(checkpoints("system-db")),
                 schemas: Some(schemas("system-db")),
                 test_suites: Some(test_suites("system-db")),
+                workspaces: Some(workspaces("system-db")),
                 ..Default::default()
             };
 
             let components = config.has_system_components("system-db").unwrap();
-            assert_eq!(components.len(), 5);
+            assert_eq!(components.len(), 6);
             assert!(components.contains(&"job_lifecycle"));
             assert!(components.contains(&"service_lifecycle"));
             assert!(components.contains(&"checkpoints"));
             assert!(components.contains(&"schemas"));
             assert!(components.contains(&"test_suites"));
+            assert!(components.contains(&"workspaces"));
         }
 
         #[test]
@@ -267,6 +256,17 @@ mod tests {
 
             let components = config.has_system_components("test-db");
             assert_eq!(components.unwrap(), vec!["test_suites"]);
+        }
+
+        #[test]
+        fn returns_workspaces_when_matched() {
+            let config = SystemConfig {
+                workspaces: Some(workspaces("ws-db")),
+                ..Default::default()
+            };
+
+            let components = config.has_system_components("ws-db");
+            assert_eq!(components.unwrap(), vec!["workspaces"]);
         }
 
         #[test]
