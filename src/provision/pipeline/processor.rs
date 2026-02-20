@@ -133,7 +133,7 @@ impl EventHandler {
         let source_encoding = batch[0].encoding.clone();
         let attributes = batch[0].attributes.clone();
         let last_cursor = batch.last().and_then(|event| event.cursor.clone());
-        let last_source_ts = batch.last().and_then(|event| event.source_timestamp);
+        let last_source_ts = batch.iter().rev().find_map(|event| event.source_timestamp);
         let doc_count = batch.len() as u64;
         let payloads: Vec<Vec<u8>> = batch.drain(..).map(|event| event.raw_bytes).collect();
 

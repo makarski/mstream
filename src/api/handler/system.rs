@@ -82,8 +82,9 @@ pub async fn job_metrics(
             let last_ts = m.last_processed_at.load(Ordering::Relaxed);
             let source_ts = m.last_source_timestamp.load(Ordering::Relaxed);
 
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let elapsed = (chrono::Utc::now() - job.started_at).num_seconds().max(1) as f64;
+            let now = chrono::Utc::now();
+            let now_ms = now.timestamp_millis();
+            let elapsed = (now - job.started_at).num_seconds().max(1) as f64;
             let throughput = events as f64 / elapsed;
 
             let current_lag_seconds = compute_lag_seconds(source_ts, now_ms);
