@@ -14,6 +14,7 @@ pub async fn list_test_suites(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
     let summaries = state
+        .stores
         .test_suite_store
         .list()
         .await
@@ -28,6 +29,7 @@ pub async fn get_test_suite(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let suite = state
+        .stores
         .test_suite_store
         .get(&id)
         .await
@@ -47,6 +49,7 @@ pub async fn save_test_suite(
     suite.updated_at = chrono::Utc::now();
 
     state
+        .stores
         .test_suite_store
         .save(&suite)
         .await
@@ -67,6 +70,7 @@ pub async fn delete_test_suite(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     state
+        .stores
         .test_suite_store
         .delete(&id)
         .await

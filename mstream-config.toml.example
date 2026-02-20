@@ -77,6 +77,11 @@ resource = "mstream-checkpoints"
 buffer_capacity = 10000       # Max entries in ring buffer (default: 10000)
 stream_preload_count = 100    # Entries sent on SSE connect (default: 100)
 
+# Optional: persist Transform Studio workspaces to MongoDB
+[system.workspaces]
+service_name = "mongodb-source"
+resource = "workspaces"
+
 # Connector Configurations
 [[connectors]]
 enabled = true
