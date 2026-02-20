@@ -54,6 +54,7 @@ pub struct JobMetricsCounter {
     pub bytes_processed: AtomicU64,
     pub errors: AtomicU64,
     pub last_processed_at: AtomicI64,
+    pub last_source_timestamp: AtomicI64,
 }
 
 impl JobMetricsCounter {
@@ -63,15 +64,19 @@ impl JobMetricsCounter {
             bytes_processed: AtomicU64::new(0),
             errors: AtomicU64::new(0),
             last_processed_at: AtomicI64::new(0),
+            last_source_timestamp: AtomicI64::new(0),
         }
     }
 
-    pub fn record_success(&self, doc_count: u64, bytes: u64) {
+    pub fn record_success(&self, doc_count: u64, bytes: u64, source_timestamp: Option<i64>) {
         self.events_processed
             .fetch_add(doc_count, Ordering::Relaxed);
         self.bytes_processed.fetch_add(bytes, Ordering::Relaxed);
         self.last_processed_at
             .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
+        if let Some(ts) = source_timestamp {
+            self.last_source_timestamp.store(ts, Ordering::Relaxed);
+        }
     }
 
     pub fn record_error(&self) {
@@ -694,18 +699,20 @@ mod tests {
         assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 0);
         assert_eq!(m.errors.load(Ordering::Relaxed), 0);
         assert_eq!(m.last_processed_at.load(Ordering::Relaxed), 0);
+        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), 0);
     }
 
     #[test]
     fn metrics_counter_record_success() {
         let m = JobMetricsCounter::new();
-        m.record_success(1, 256);
-        m.record_success(1, 512);
+        m.record_success(1, 256, Some(1_000_000));
+        m.record_success(1, 512, None);
 
         assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
         assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 768);
         assert_eq!(m.errors.load(Ordering::Relaxed), 0);
         assert!(m.last_processed_at.load(Ordering::Relaxed) > 0);
+        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), 1_000_000);
     }
 
     #[test]
@@ -722,9 +729,9 @@ mod tests {
     #[test]
     fn metrics_counter_mixed_success_and_errors() {
         let m = JobMetricsCounter::new();
-        m.record_success(1, 100);
+        m.record_success(1, 100, None);
         m.record_error();
-        m.record_success(1, 200);
+        m.record_success(1, 200, None);
         m.record_error();
 
         assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
@@ -735,9 +742,27 @@ mod tests {
     #[test]
     fn metrics_counter_batch_counts_all_docs() {
         let m = JobMetricsCounter::new();
-        m.record_success(100, 5000);
+        m.record_success(100, 5000, Some(chrono::Utc::now().timestamp_millis()));
 
         assert_eq!(m.events_processed.load(Ordering::Relaxed), 100);
         assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 5000);
+    }
+    #[test]
+    fn source_timestamp_none_does_not_overwrite() {
+        let m = JobMetricsCounter::new();
+        m.record_success(1, 100, Some(5_000_000));
+        m.record_success(1, 100, None);
+
+        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), 5_000_000);
+    }
+
+    #[test]
+    fn source_timestamp_latest_wins() {
+        let m = JobMetricsCounter::new();
+        m.record_success(1, 100, Some(1_000_000));
+        m.record_success(1, 100, Some(2_000_000));
+        m.record_success(1, 100, Some(3_000_000));
+
+        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), 3_000_000);
     }
 }

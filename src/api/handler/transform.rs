@@ -23,6 +23,7 @@ pub async fn transform_run(
         encoding: Encoding::Json,
         is_framed_batch: false,
         raw_bytes: transform_req.payload.as_bytes().to_vec(),
+        source_timestamp: None,
     };
 
     let mut transformed = middleware.transform(source_event).await?;
@@ -133,6 +134,7 @@ mod tests {
             encoding: Encoding::Json,
             is_framed_batch: false,
             raw_bytes: payload.as_bytes().to_vec(),
+            source_timestamp: None,
         };
         middleware.transform(source_event).await.unwrap()
     }
@@ -273,6 +275,7 @@ mod tests {
             encoding: Encoding::Json,
             is_framed_batch: false,
             raw_bytes: payload.as_bytes().to_vec(),
+            source_timestamp: None,
         };
 
         let transformed = middleware.transform(source_event).await.unwrap();
@@ -302,6 +305,7 @@ mod tests {
             encoding: Encoding::Json,
             is_framed_batch: false,
             raw_bytes: payload.as_bytes().to_vec(),
+            source_timestamp: None,
         };
 
         let transformed = middleware.transform(source_event).await.unwrap();
@@ -334,6 +338,7 @@ mod tests {
             encoding: Encoding::Json,
             is_framed_batch: false, // JSON array is parsed as a single value
             raw_bytes: payload.as_bytes().to_vec(),
+            source_timestamp: None,
         };
 
         let transformed = middleware.transform(source_event).await.unwrap();
@@ -365,6 +370,7 @@ mod tests {
             encoding: Encoding::Json,
             is_framed_batch: false,
             raw_bytes: payload.as_bytes().to_vec(),
+            source_timestamp: None,
         };
 
         let transformed = middleware.transform(source_event).await.unwrap();

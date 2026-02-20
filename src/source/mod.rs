@@ -22,6 +22,9 @@ pub struct SourceEvent {
     pub encoding: Encoding,
     pub is_framed_batch: bool,
     pub cursor: Option<Vec<u8>>,
+    /// Millis since epoch when the event was produced at the source.
+    /// Used to compute current_lag_seconds at read time.
+    pub source_timestamp: Option<i64>,
 }
 
 #[cfg(test)]
@@ -33,6 +36,7 @@ impl Default for SourceEvent {
             encoding: Encoding::Json,
             is_framed_batch: false,
             cursor: None,
+            source_timestamp: None,
         }
     }
 }
@@ -53,7 +57,45 @@ impl SourceEvent {
                 encoding: target_encoding.clone(),
                 is_framed_batch: self.is_framed_batch,
                 cursor: self.cursor,
+                source_timestamp: self.source_timestamp,
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_source_timestamp_is_none() {
+        let event = SourceEvent::default();
+        assert!(event.source_timestamp.is_none());
+    }
+
+    #[test]
+    fn apply_schema_preserves_source_timestamp() {
+        let ts = Some(1_700_000_000_000i64);
+        let event = SourceEvent {
+            raw_bytes: b"{}".to_vec(),
+            encoding: Encoding::Json,
+            source_timestamp: ts,
+            ..Default::default()
+        };
+
+        let result = event.apply_schema(None, &Schema::Undefined).unwrap();
+        assert_eq!(result.source_timestamp, ts);
+    }
+
+    #[test]
+    fn apply_schema_preserves_none_source_timestamp() {
+        let event = SourceEvent {
+            raw_bytes: b"{}".to_vec(),
+            encoding: Encoding::Json,
+            ..Default::default()
+        };
+
+        let result = event.apply_schema(None, &Schema::Undefined).unwrap();
+        assert!(result.source_timestamp.is_none());
     }
 }
 

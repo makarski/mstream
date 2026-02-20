@@ -38,6 +38,7 @@ pub async fn transform_test_generate(
         encoding: Encoding::Json,
         is_framed_batch: false,
         raw_bytes: payload.as_bytes().to_vec(),
+        source_timestamp: None,
     };
 
     let start = Instant::now();

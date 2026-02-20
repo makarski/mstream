@@ -36,6 +36,7 @@ impl HttpMiddleware {
             encoding: self.output_encoding.clone(),
             is_framed_batch: event.is_framed_batch,
             cursor: event.cursor,
+            source_timestamp: event.source_timestamp,
         })
     }
 }
