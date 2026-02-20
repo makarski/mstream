@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rdkafka::Timestamp as KafkaTimestamp;
+
 use anyhow::{Context, anyhow, bail};
 use async_trait::async_trait;
 use rdkafka::consumer::{Consumer, stream_consumer::StreamConsumer};
@@ -263,6 +265,13 @@ impl EventSource for KafkaConsumer {
 
                     let cursor = offset.try_into()?;
 
+                    let source_timestamp = match msg.timestamp() {
+                        KafkaTimestamp::CreateTime(ms) | KafkaTimestamp::LogAppendTime(ms) => {
+                            Some(ms)
+                        }
+                        KafkaTimestamp::NotAvailable => None,
+                    };
+
                     let attr = HashMap::from([
                         ("origin".to_string(), "kafka".to_string()),
                         ("topic".to_string(), msg.topic().to_string()),
@@ -278,6 +287,7 @@ impl EventSource for KafkaConsumer {
                                 encoding,
                                 is_framed_batch: false,
                                 cursor: Some(cursor),
+                                source_timestamp,
                             })
                             .await
                         {

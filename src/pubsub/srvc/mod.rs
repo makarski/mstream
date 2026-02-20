@@ -267,6 +267,9 @@ impl<I: Interceptor> PubSubSubscriber<I> {
                 ack_ids.push(m.ack_id.clone());
                 if let Some(payload) = m.message {
                     log::debug!("received pubsub message: {}", payload.message_id);
+                    let source_timestamp = payload
+                        .publish_time
+                        .map(|pt| pt.seconds * 1000 + pt.nanos as i64 / 1_000_000);
                     let source_event = SourceEvent {
                         raw_bytes: payload.data,
                         attributes: Some(payload.attributes),
@@ -274,6 +277,7 @@ impl<I: Interceptor> PubSubSubscriber<I> {
                         is_framed_batch: false,
                         // todo: check whether pubsub provides a cursor-like mechanism
                         cursor: None,
+                        source_timestamp,
                     };
                     events.send(source_event).await?;
                 }

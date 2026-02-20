@@ -1,6 +1,12 @@
 use core::iter::Iterator;
 use std::sync::Arc;
 
+struct EventMetrics {
+    doc_count: u64,
+    bytes: u64,
+    source_timestamp: Option<i64>,
+}
+
 use anyhow::{anyhow, bail};
 use chrono::Utc;
 use tokio::{sync::mpsc::Receiver, task::block_in_place};
@@ -127,6 +133,7 @@ impl EventHandler {
         let source_encoding = batch[0].encoding.clone();
         let attributes = batch[0].attributes.clone();
         let last_cursor = batch.last().and_then(|event| event.cursor.clone());
+        let last_source_ts = batch.iter().rev().find_map(|event| event.source_timestamp);
         let doc_count = batch.len() as u64;
         let payloads: Vec<Vec<u8>> = batch.drain(..).map(|event| event.raw_bytes).collect();
 
@@ -143,6 +150,7 @@ impl EventHandler {
                 encoding: self.pipeline.source_out_encoding.clone(),
                 is_framed_batch: true,
                 cursor: last_cursor,
+                source_timestamp: last_source_ts,
             })
         })?;
 
@@ -163,12 +171,16 @@ impl EventHandler {
         source_event: SourceEvent,
         doc_count: u64,
     ) -> anyhow::Result<()> {
-        let event_bytes = source_event.raw_bytes.len() as u64;
+        let metrics = EventMetrics {
+            doc_count,
+            bytes: source_event.raw_bytes.len() as u64,
+            source_timestamp: source_event.source_timestamp,
+        };
 
         let event_holder = match self.apply_middlewares(source_event).await {
             Ok(holder) => holder,
             Err(err) => {
-                self.record_event_outcome(false, doc_count, event_bytes);
+                self.record_event_outcome(false, &metrics);
                 return Err(err);
             }
         };
@@ -176,7 +188,7 @@ impl EventHandler {
         let cursor = event_holder.cursor.clone();
         let all_sinks_succeeded = self.publish_to_sinks(event_holder).await;
 
-        self.record_event_outcome(all_sinks_succeeded, doc_count, event_bytes);
+        self.record_event_outcome(all_sinks_succeeded, &metrics);
 
         if self.pipeline.with_checkpoints && all_sinks_succeeded {
             self.save_checkpoint(cursor).await?;
@@ -246,10 +258,10 @@ impl EventHandler {
         all_succeeded
     }
 
-    fn record_event_outcome(&self, success: bool, doc_count: u64, bytes: u64) {
+    fn record_event_outcome(&self, success: bool, em: &EventMetrics) {
         if let Some(ref m) = self.metrics {
             if success {
-                m.record_success(doc_count, bytes);
+                m.record_success(em.doc_count, em.bytes, em.source_timestamp);
             } else {
                 m.record_error();
             }

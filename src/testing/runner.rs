@@ -55,6 +55,7 @@ fn create_source_event(case: &TestCase) -> SourceEvent {
         encoding: Encoding::Json,
         is_framed_batch: false,
         raw_bytes: payload.as_bytes().to_vec(),
+        source_timestamp: None,
     }
 }
 

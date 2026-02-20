@@ -54,6 +54,7 @@
 //!     encoding: mstream::config::Encoding::Json,
 //!     is_framed_batch: false,
 //!     cursor: None,
+//!     source_timestamp: None,
 //! };
 //!
 //! // Transform the event
@@ -291,6 +292,7 @@ impl RhaiMiddleware {
     ///     encoding: mstream::config::Encoding::Json,
     ///     is_framed_batch: false,
     ///     cursor: None,
+    ///     source_timestamp: None,
     /// };
     ///
     /// let transformed = middleware.transform(event).await?;

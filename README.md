@@ -183,12 +183,14 @@ GET /jobs/{name}/metrics
 {
   "events_processed": 5000,
   "bytes_processed": 1200000,
-  "current_lag_seconds": 0.0,
+  "current_lag_seconds": 2.5,
   "throughput_per_second": 150.7,
   "total_errors": 3,
   "last_processed_at": "2025-01-15T10:30:00Z"
 }
 ```
+
+`current_lag_seconds` is computed at read time as `now - last_source_timestamp` (in seconds). The source timestamp is extracted from each source adapter: MongoDB CDC `wall_time`/`cluster_time`, Kafka message timestamp, or PubSub `publish_time`. Returns `0.0` when no source timestamp is available yet. A growing lag indicates the pipeline is falling behind the source ingestion rate.
 
 `last_processed_at` is `null` when no events have been processed yet. Returns zeroed metrics if the job exists but has no counter (e.g. stopped jobs). Returns `404` if the job is not found.
 

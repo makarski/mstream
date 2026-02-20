@@ -110,6 +110,10 @@ impl EventSource for MongoDbChangeStreamListener {
                 continue;
             };
             let attributes = self.event_metadata(&event);
+            let source_timestamp = event
+                .wall_time
+                .map(|wt| wt.timestamp_millis())
+                .or_else(|| event.cluster_time.map(|ct| ct.time as i64 * 1000));
 
             let bson_doc = match event.operation_type {
                 OperationType::Insert | OperationType::Update => {
@@ -145,6 +149,7 @@ impl EventSource for MongoDbChangeStreamListener {
                         encoding: Encoding::Bson,
                         is_framed_batch: false,
                         cursor,
+                        source_timestamp,
                     })
                     .await?;
             }
