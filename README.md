@@ -130,6 +130,68 @@ stream_preload_count = 100    # Entries sent on SSE connect (default: 100)
 
 REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 
+### Monitoring
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | System health, version, and uptime |
+| `GET` | `/stats` | Aggregate metrics across all running jobs |
+| `GET` | `/jobs/{name}/metrics` | Live per-job metrics |
+
+#### Health
+
+```
+GET /health
+```
+
+```json
+{
+  "status": "healthy",
+  "version": "0.45.0",
+  "uptime_seconds": 3600
+}
+```
+
+Status is `"healthy"` when no jobs have failed, `"degraded"` when any job has failed. Stopped jobs do not affect health status.
+
+#### Stats
+
+```
+GET /stats
+```
+
+```json
+{
+  "total_events_processed": 15000,
+  "total_bytes_processed": 4820000,
+  "uptime_seconds": 3600,
+  "running_jobs": 3,
+  "stopped_jobs": 1,
+  "error_jobs": 0
+}
+```
+
+Event and byte counters are aggregated across all running jobs using lock-free atomic counters. Batch jobs count individual documents, not batches.
+
+#### Job Metrics
+
+```
+GET /jobs/{name}/metrics
+```
+
+```json
+{
+  "events_processed": 5000,
+  "bytes_processed": 1200000,
+  "current_lag_seconds": 0.0,
+  "throughput_per_second": 150.7,
+  "total_errors": 3,
+  "last_processed_at": "2025-01-15T10:30:00Z"
+}
+```
+
+`last_processed_at` is `null` when no events have been processed yet. Returns zeroed metrics if the job exists but has no counter (e.g. stopped jobs). Returns `404` if the job is not found.
+
 ### Jobs
 
 | Method | Endpoint | Description |
@@ -139,6 +201,7 @@ REST API available at port `8719` (configurable via `MSTREAM_API_PORT`).
 | `POST` | `/jobs/{name}/stop` | Stop a job |
 | `POST` | `/jobs/{name}/restart` | Restart a job |
 | `GET` | `/jobs/{name}/checkpoints` | List checkpoint history for a job |
+| `GET` | `/jobs/{name}/metrics` | Live metrics for a running job |
 
 ### Services
 
