@@ -692,14 +692,19 @@ mod tests {
         assert_state_counts(&jm, 0, 0, 2).await;
     }
 
+    fn assert_counter(m: &JobMetricsCounter, expected: (u64, u64, u64, i64)) {
+        let (events, bytes, errors, source_ts) = expected;
+        assert_eq!(m.events_processed.load(Ordering::Relaxed), events);
+        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), bytes);
+        assert_eq!(m.errors.load(Ordering::Relaxed), errors);
+        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), source_ts);
+    }
+
     #[test]
     fn metrics_counter_starts_at_zero() {
         let m = JobMetricsCounter::new();
-        assert_eq!(m.events_processed.load(Ordering::Relaxed), 0);
-        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 0);
-        assert_eq!(m.errors.load(Ordering::Relaxed), 0);
+        assert_counter(&m, (0, 0, 0, 0));
         assert_eq!(m.last_processed_at.load(Ordering::Relaxed), 0);
-        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -708,11 +713,8 @@ mod tests {
         m.record_success(1, 256, Some(1_000_000));
         m.record_success(1, 512, None);
 
-        assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
-        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 768);
-        assert_eq!(m.errors.load(Ordering::Relaxed), 0);
+        assert_counter(&m, (2, 768, 0, 1_000_000));
         assert!(m.last_processed_at.load(Ordering::Relaxed) > 0);
-        assert_eq!(m.last_source_timestamp.load(Ordering::Relaxed), 1_000_000);
     }
 
     #[test]
@@ -734,18 +736,16 @@ mod tests {
         m.record_success(1, 200, None);
         m.record_error();
 
-        assert_eq!(m.events_processed.load(Ordering::Relaxed), 2);
-        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 300);
-        assert_eq!(m.errors.load(Ordering::Relaxed), 2);
+        assert_counter(&m, (2, 300, 2, 0));
     }
 
     #[test]
     fn metrics_counter_batch_counts_all_docs() {
+        let now_ms = chrono::Utc::now().timestamp_millis();
         let m = JobMetricsCounter::new();
-        m.record_success(100, 5000, Some(chrono::Utc::now().timestamp_millis()));
+        m.record_success(100, 5000, Some(now_ms));
 
-        assert_eq!(m.events_processed.load(Ordering::Relaxed), 100);
-        assert_eq!(m.bytes_processed.load(Ordering::Relaxed), 5000);
+        assert_counter(&m, (100, 5000, 0, now_ms));
     }
     #[test]
     fn source_timestamp_none_does_not_overwrite() {
